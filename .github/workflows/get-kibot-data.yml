@@ -30,9 +30,9 @@ jobs:
       - name: Create bucket if not present
         run: |
           if ! aws s3 ls "s3://kibotdata" 2>&1 | grep -q 'NoSuchBucket'; then
-            echo "Bucket exists or you do not have access."
+            echo "Bucket exists or no permission."
           else
-            aws s3 mb s3://kibotdata
+            aws s3 mb s3://kibotdata --region us-east-1
           fi
 
       - name: Download and zip files
