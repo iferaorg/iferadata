@@ -2,6 +2,9 @@ name: "Get Kibot Data"
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   download-and-upload:
     runs-on: ubuntu-latest
@@ -35,7 +38,7 @@ jobs:
       - name: Download and zip files
         working-directory: data
         run: |
-          echo "${{ secrets.KIBOT_URLS }}" | while read url; do
+          echo "${{ secrets.KIBOT_URLS }}" | while read -r url; do
             [ -z "$url" ] && continue
             wget --content-disposition "$url"
             for file in *.txt; do
