@@ -1,0 +1,49 @@
+name: "Get Kibot Data"
+on:
+  workflow_dispatch:
+
+jobs:
+  download-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Prepare data folder
+        run: mkdir -p data
+
+      - name: Install AWS CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y awscli
+
+      - name: Configure AWS
+        run: |
+          mkdir -p ~/.aws
+          echo "[default]" > ~/.aws/credentials
+          echo "aws_access_key_id=${{ secrets.AWS_LOGIN }}" >> ~/.aws/credentials
+          echo "aws_secret_access_key=${{ secrets.AWS_PASSWORD }}" >> ~/.aws/credentials
+
+      - name: Create bucket if not present
+        run: |
+          if ! aws s3 ls "s3://kibotdata" 2>&1 | grep -q 'NoSuchBucket'; then
+            echo "Bucket exists or you do not have access."
+          else
+            aws s3 mb s3://kibotdata
+          fi
+
+      - name: Download and zip files
+        working-directory: data
+        run: |
+          echo "${{ secrets.KIBOT_URLS }}" | while read url; do
+            [ -z "$url" ] && continue
+            wget --content-disposition "$url"
+            for file in *.txt; do
+              zip "${file%.txt}.zip" "$file"
+              rm "$file"
+            done
+          done
+
+      - name: Upload zips to S3
+        working-directory: data
+        run: aws s3 cp . s3://kibotdata --recursive --exclude "*" --include "*.zip"
