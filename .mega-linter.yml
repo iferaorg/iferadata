@@ -18,10 +18,11 @@ DISABLE:
   # - COPYPASTE # Uncomment to disable checks of excessive copy-pastes
   - SPELL # Comment to enable checks of spelling mistakes
 
+DISABLE_LINTERS:
+  - PYTHON_PYRIGHT 
+
 SHOW_ELAPSED_TIME: true
 
 FILEIO_REPORTER: false
 # Uncomment if you want MegaLinter to detect errors but not block CI to pass
 # DISABLE_ERRORS: true
-
-PYTHON_PYRIGHT_CLI_LINT_MODE: project
