@@ -44,28 +44,5 @@
         "minSlippage" : 0.01,
         "referencePrice" : 160,
         "removeDates" : [] 
-    },
-    "TEST01" : {
-        "symbol" : "CL",
-        "currency" : "USD",
-        "type" : "futures",
-        "broker" : "IBKR",
-        "interval" : "30m",
-        "tradingStart" : "-06:00:00", 
-        "tradingEnd" : "17:00:00",
-        "liquidStart" : "03:00:00",
-        "liquidEnd" : "16:00:00",
-        "regularStart" : "09:30:00",
-        "regularEnd" : "16:00:00",
-        "contractMultiplier" : 1000,
-        "tickSize" : 0.01,
-        "margin" : 17550,
-        "commission" : 0.0,
-        "minCommission" : 0.0,
-        "maxCommissionPct" : 0.0,
-        "slippage" : 0.0,
-        "minSlippage" : 0.0,
-        "referencePrice" : 20.0,
-        "removeDates" : ["2020-04-02", "2020-04-21", "2020-04-22", "2020-04-28"]
     }
 }
