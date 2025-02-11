@@ -19,7 +19,6 @@ def make_path(
     file_name = instrument.symbol
     path = Path(settings.DATA_FOLDER, source, instrument.type, interval, file_name)
     path = path.with_suffix(".zip" if zipfile else ".csv")
-
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e:

@@ -45,7 +45,7 @@ tensor = load_data_tensor(instrument=instrument)
 
 ## Project Structure
 
-```
+```text
 ifera/
 ├── ifera/
 │   ├── __init__.py      # Package initialization

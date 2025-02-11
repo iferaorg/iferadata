@@ -82,22 +82,16 @@ class InstrumentData(BaseModel):
             if self.interval is None:
                 raise ValueError("Interval is required.")
             self.time_step = pd.to_timedelta(self.interval)
-
             if self.trading_start is None or self.trading_end is None:
                 raise ValueError("Both trading_start and trading_end are required.")
-
             self.end_time = self.trading_end - self.trading_start - self.time_step
             total_seconds = self.end_time.total_seconds()
             step_seconds = self.time_step.total_seconds()
-
             if step_seconds <= 0:
                 raise ValueError("Invalid time_step: must be positive.")
-
             self.total_steps = int(total_seconds / step_seconds) + 1
-            
             if self.last_update is None:
                 self.last_update = -float("inf")
-                
         except Exception as exc:
             raise ValueError(f"Error computing derived fields: {exc}") from exc
         return self
@@ -110,7 +104,6 @@ class InstrumentData(BaseModel):
 
 class InstrumentConfig:
     """Loads and manages instrument configurations from JSON."""
-
     def __init__(self, filename: str = "data/instruments.json"):
         """Initialize with configuration filename."""
         self.filename = filename

@@ -5,6 +5,7 @@ Contains configuration settings that can be loaded from environment variables or
 
 from pydantic_settings import BaseSettings
 
+# pylint: disable=too-few-public-methods
 class Settings(BaseSettings):
     """
     Application settings class that handles configuration through environment variables.

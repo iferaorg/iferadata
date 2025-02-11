@@ -1,6 +1,7 @@
 """
 Functions for loading and processing financial data.
 """
+
 from pathlib import Path
 from typing import Optional
 import pandas as pd
@@ -12,22 +13,24 @@ from .s3_utils import (
     download_s3_file,
     upload_s3_file,
     check_s3_file_exists,
-    get_s3_last_modified
+    get_s3_last_modified,
 )
 from .data_processing import process_data
 from .file_utils import make_path
+
 
 def make_s3_key(instrument: InstrumentData, zipfile: bool) -> str:
     """Build an S3 key for the instrument data file."""
     extension = ".zip" if zipfile else ".csv"
     return f"{instrument.type}/{instrument.interval}/{instrument.symbol}{extension}"
 
+
 def try_download_processed_file(
     instrument: InstrumentData,
     target_path: str,  # Changed from Path to str to match s3_utils functions
     threshold: float,
     reset: bool,
-    zipfile: bool
+    zipfile: bool,
 ) -> bool:
     """Attempt to download an up-to-date processed file from S3."""
     processed_s3_key = make_s3_key(instrument, zipfile)
@@ -40,7 +43,9 @@ def try_download_processed_file(
     try:
         s3_processed_timestamp = get_s3_last_modified(s3_bucket, processed_s3_key)
     except Exception as e:
-        msg = f"Error retrieving processed S3 metadata for instrument {instrument.symbol}"
+        msg = (
+            f"Error retrieving processed S3 metadata for instrument {instrument.symbol}"
+        )
         raise RuntimeError(msg) from e
 
     if s3_processed_timestamp < threshold or reset:
@@ -57,6 +62,7 @@ def try_download_processed_file(
         msg = f"Error downloading processed file from S3 for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
     return True
+
 
 def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> Path:
     """Ensure raw data file is available locally and up-to-date."""
@@ -83,10 +89,14 @@ def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> P
             print(f"Local raw file {raw_path} is up-to-date.")
 
     if not raw_path.exists() or reset:
-        print(f"Raw file {raw_path} missing or reset requested. Downloading raw data...")
+        print(
+            f"Raw file {raw_path} missing or reset requested. Downloading raw data..."
+        )
         try:
             raw_s3_key = make_s3_key(instrument, zipfile)
-            download_s3_file(settings.S3_BUCKET, raw_s3_key, str(raw_path))  # Convert Path to str
+            download_s3_file(
+                settings.S3_BUCKET, raw_s3_key, str(raw_path)
+            )  # Convert Path to str
         except Exception as e:
             msg = f"Error downloading raw data for instrument {instrument.symbol}"
             raise RuntimeError(msg) from e
@@ -95,7 +105,10 @@ def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> P
 
     return raw_path
 
-def ensure_processed_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> Path:
+
+def ensure_processed_data(
+    instrument: InstrumentData, zipfile: bool, reset: bool
+) -> Path:
     """Ensure processed data file is available locally and up-to-date."""
     try:
         local_path = make_path(raw=False, instrument=instrument, zipfile=zipfile)
@@ -108,12 +121,12 @@ def ensure_processed_data(instrument: InstrumentData, zipfile: bool, reset: bool
     except Exception as e:
         msg = f"Error retrieving raw S3 metadata for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
-    
+
     # Ensure we have valid timestamps to compare
     threshold = raw_s3_timestamp
     if instrument.last_update is not None:
         threshold = max(raw_s3_timestamp, instrument.last_update)
-    
+
     if local_path.exists():
         local_mtime = local_path.stat().st_mtime
         if local_mtime >= threshold and not reset:
@@ -124,18 +137,16 @@ def ensure_processed_data(instrument: InstrumentData, zipfile: bool, reset: bool
         print(f"Local processed file {local_path} does not exist.")
 
     if try_download_processed_file(
-        instrument,
-        str(local_path),  # Convert Path to str
-        threshold,
-        reset,
-        zipfile
+        instrument, str(local_path), threshold, reset, zipfile
     ):
         return local_path
 
     print(f"Reprocessing raw data for instrument {instrument.symbol}.")
+
     try:
-        # Load raw data first, then process it
-        raw_df = load_data(raw=True, instrument=instrument, dtype="float64", zipfile=zipfile)
+        raw_df = load_data(
+            raw=True, instrument=instrument, dtype="float64", zipfile=zipfile
+        )
         process_data(raw_df, instrument, zipfile)
     except Exception as e:
         msg = f"Error processing data for instrument {instrument.symbol}"
@@ -144,13 +155,15 @@ def ensure_processed_data(instrument: InstrumentData, zipfile: bool, reset: bool
     processed_s3_key = make_s3_key(instrument, zipfile)
     s3_bucket = settings.S3_BUCKET_PROCESSED
     print(f"Uploading processed file to S3: s3://{s3_bucket}/{processed_s3_key}")
+
     try:
-        upload_s3_file(s3_bucket, processed_s3_key, str(local_path))  # Convert Path to str
+        upload_s3_file(s3_bucket, processed_s3_key, str(local_path))
     except Exception as e:
         msg = f"Error uploading processed file to S3 for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
 
     return local_path
+
 
 def load_data(
     raw: bool,
@@ -178,12 +191,19 @@ def load_data(
             "high": dtype,
             "low": dtype,
             "close": dtype,
-            "volume": "int32"
+            "volume": "int32",
         }
     else:
         columns = [
-            "date", "time", "trade_date", "offset_time",
-            "open", "high", "low", "close", "volume"
+            "date",
+            "time",
+            "trade_date",
+            "offset_time",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
         ]
         dtypes = {
             "open": dtype,
@@ -215,21 +235,25 @@ def load_data(
         try:
             df["date_time"] = pd.to_datetime(df["date"] + " " + df["time"])
         except Exception as e:
-            raise ValueError("Error converting 'date' and 'time' columns to datetime") from e
+            raise ValueError(
+                "Error converting 'date' and 'time' columns to datetime"
+            ) from e
         df = df.drop(columns=["date", "time"]).set_index("date_time")
 
     return df
 
+
 def torch_dtype_to_numpy_dtype(dtype: torch.dtype) -> np.dtype:
     """Convert torch dtype to numpy dtype."""
     return torch.empty((), dtype=dtype).numpy().dtype
+
 
 def load_data_tensor(
     instrument: InstrumentData,
     reset: bool = False,
     zipfile: bool = True,
     dtype: torch.dtype = torch.float32,
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
 ) -> torch.Tensor:
     """Load processed data as a PyTorch tensor."""
     if device is None:
@@ -237,11 +261,7 @@ def load_data_tensor(
 
     dtype_str = torch_dtype_to_numpy_dtype(dtype).name
     df: pd.DataFrame = load_data(
-        raw=False,
-        instrument=instrument,
-        dtype=dtype_str,
-        reset=reset,
-        zipfile=zipfile
+        raw=False, instrument=instrument, dtype=dtype_str, reset=reset, zipfile=zipfile
     )
     np_array = df.to_numpy()
     tensor = torch.as_tensor(np_array, dtype=dtype, device=device)
