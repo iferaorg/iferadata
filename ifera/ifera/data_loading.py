@@ -143,12 +143,26 @@ def ensure_processed_data(
 
     print(f"Reprocessing raw data for instrument {instrument.symbol}.")
 
+    # Check if raw file exists before processing
+    raw_path = make_path(raw=True, instrument=instrument, zipfile=zipfile)
+    raw_existed = raw_path.exists()
+
     try:
         raw_df = load_data(
             raw=True, instrument=instrument, dtype="float64", zipfile=zipfile
         )
         process_data(raw_df, instrument, zipfile)
+
+        # Clean up raw file if it didn't exist before
+        if not raw_existed and raw_path.exists():
+            print(f"Cleaning up temporary raw file {raw_path}")
+            raw_path.unlink()
+
     except Exception as e:
+        # Clean up raw file even on error if it didn't exist before
+        if not raw_existed and raw_path.exists():
+            print(f"Cleaning up temporary raw file {raw_path} after error")
+            raw_path.unlink()
         msg = f"Error processing data for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
 
