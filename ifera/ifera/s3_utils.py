@@ -3,10 +3,11 @@ Utilities for interacting with AWS S3.
 """
 import os
 import boto3
+from tqdm import tqdm
 
 def download_s3_file(bucket: str, key: str, target_path: str) -> None:
     """
-    Download a file from S3 to the specified local target path.
+    Download a file from S3 to the specified local target path with a progress bar.
     """
     try:
         s3 = boto3.client('s3')
@@ -21,7 +22,21 @@ def download_s3_file(bucket: str, key: str, target_path: str) -> None:
         ) from e
 
     try:
-        s3.download_file(bucket, key, target_path)
+        # Get file size for progress bar
+        response = s3.head_object(Bucket=bucket, Key=key)
+        file_size = response['ContentLength']
+
+        # Set up progress bar
+        progress = tqdm(total=file_size, unit='B', unit_scale=True, desc=f'Downloading {key}')
+
+        def callback(bytes_transferred):
+            progress.update(bytes_transferred)
+
+        # Download with progress tracking
+        s3.download_file(bucket, key, target_path, 
+                        Callback=callback)
+        progress.close()
+
     except Exception as e:
         raise RuntimeError(
             f"Error downloading file from S3 (bucket='{bucket}', key='{key}')"
@@ -29,7 +44,7 @@ def download_s3_file(bucket: str, key: str, target_path: str) -> None:
 
 def upload_s3_file(bucket: str, key: str, local_path: str) -> str:
     """
-    Upload a file from the local directory to S3.
+    Upload a file from the local directory to S3 with a progress bar.
     """
     try:
         s3 = boto3.client('s3')
@@ -37,7 +52,20 @@ def upload_s3_file(bucket: str, key: str, local_path: str) -> str:
         raise RuntimeError("Error initializing S3 client") from e
 
     try:
-        s3.upload_file(local_path, bucket, key)
+        # Get local file size for progress bar
+        file_size = os.path.getsize(local_path)
+        
+        # Set up progress bar
+        progress = tqdm(total=file_size, unit='B', unit_scale=True, desc=f'Uploading {key}')
+
+        def callback(bytes_transferred):
+            progress.update(bytes_transferred)
+
+        # Upload with progress tracking
+        s3.upload_file(local_path, bucket, key,
+                      Callback=callback)
+        progress.close()
+
     except Exception as e:
         raise RuntimeError(
             f"Error uploading file to S3 (bucket='{bucket}', key='{key}', "

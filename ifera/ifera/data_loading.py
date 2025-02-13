@@ -4,9 +4,12 @@ Functions for loading and processing financial data.
 
 from pathlib import Path
 from typing import Optional
+import os
+import zipfile as zip_module  # Renamed to avoid parameter conflict
 import pandas as pd
 import numpy as np
 import torch
+from tqdm import tqdm
 from .models import InstrumentData
 from .settings import settings
 from .s3_utils import (
@@ -179,6 +182,19 @@ def ensure_processed_data(
     return local_path
 
 
+def count_lines(file_path: str, is_zip: bool = False) -> int:
+    """Count number of lines in a file, handling both regular and zip files."""
+    if is_zip:
+        with zip_module.ZipFile(file_path, 'r') as z:
+            # Get the first file in the zip
+            filename = z.namelist()[0]
+            with z.open(filename) as f:
+                return sum(1 for _ in f)
+    else:
+        with open(file_path, 'rb') as f:
+            return sum(1 for _ in f)
+
+
 def load_data(
     raw: bool,
     instrument: InstrumentData,
@@ -195,8 +211,6 @@ def load_data(
     except Exception as e:
         msg = f"Error ensuring data availability for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
-
-    print(f"Loading data from {file_path}")
 
     if raw:
         columns = ["date", "time", "open", "high", "low", "close", "volume"]
@@ -241,7 +255,23 @@ def load_data(
         read_csv_kwargs["compression"] = "zip"
 
     try:
-        df: pd.DataFrame = pd.read_csv(file_path, **read_csv_kwargs)
+        # Count total lines for progress tracking
+        total_lines = count_lines(str(file_path), zipfile)
+        
+        # Use a reasonable chunk size based on total lines
+        chunksize = max(1000, min(100000, total_lines // 100))
+        read_csv_kwargs["chunksize"] = chunksize
+        
+        # Initialize empty list for chunks and progress bar
+        chunks = []
+        desc = f"Loading data from {file_path}"
+        with tqdm(total=total_lines, unit='lines', desc=desc) as pbar:
+            for chunk in pd.read_csv(file_path, **read_csv_kwargs):
+                chunks.append(chunk)
+                pbar.update(len(chunk))
+
+        df = pd.concat(chunks, ignore_index=True)
+
     except Exception as e:
         raise ValueError(f"Error reading CSV file at {file_path}: {e}") from e
 

@@ -249,13 +249,7 @@ def aggregate_large_quote_file(
 
 
 def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) -> None:
-    """Process raw data into a standardized format.
-
-    Args:
-        df: DataFrame containing raw data, already loaded and indexed by datetime
-        instrument: Configuration for the instrument being processed
-        zipfile: Whether to save the processed file as a zip file
-    """
+    """Process raw data into a standardized format."""
     try:
         params = {
             "time_step": instrument.time_step,
@@ -266,29 +260,56 @@ def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) ->
             "offset_seconds": instrument.trading_start.total_seconds(),
         }
 
-        # Convert index to datetime if it's not already
+        print("Converting datetime columns...")
+        # Pre-allocate all columns we'll need
         dt_index = pd.to_datetime(df.index)
-
-        # Extract date components using datetime objects
-        df["date"] = pd.to_datetime([d.date() for d in dt_index])
-        df["time"] = pd.to_timedelta(
-            [d.hour * 3600 + d.minute * 60 + d.second for d in dt_index], unit="s"
+        n_rows = len(df)
+        
+        # Create empty columns with appropriate dtypes
+        df = df.assign(
+            date=pd.Series(index=df.index, dtype='datetime64[ns]'),
+            time=pd.Series(index=df.index, dtype='timedelta64[ns]'),
+            offset_time=pd.Series(index=df.index, dtype='timedelta64[ns]'),
+            trade_date=pd.Series(index=df.index, dtype='datetime64[ns]'),
+            ord_trade_date=pd.Series(index=df.index, dtype='int32'),
+            time_seconds=pd.Series(index=df.index, dtype='int32'),
+            offset_time_seconds=pd.Series(index=df.index, dtype='int32'),
+            ord_date=pd.Series(index=df.index, dtype='int32')
         )
 
-        df["offset_time"] = df["time"] - params["start_time_offset"]
-        df["offset_time"] = df["offset_time"].apply(
-            lambda x: x - pd.to_timedelta(x.days, unit="d")
-        )
-        df["trade_date"] = pd.to_datetime(
-            [(d - params["start_time_offset"]).date() for d in dt_index]
-        )
+        # Fill datetime-related columns
+        print("Calculating time offsets...")
+        with tqdm(total=3, desc="Time calculations") as pbar:
+            # Convert date/time components
+            dates = [d.date() for d in dt_index]
+            df['date'].values[:] = pd.to_datetime(dates)
+            df['time'].values[:] = pd.to_timedelta(
+                [d.hour * 3600 + d.minute * 60 + d.second for d in dt_index], unit="s"
+            )
+            pbar.update(1)
+
+            # Calculate offset times
+            df['offset_time'].values[:] = df['time'] - params["start_time_offset"]
+            df['offset_time'].values[:] = df['offset_time'].apply(
+                lambda x: x - pd.to_timedelta(x.days, unit="d")
+            )
+            pbar.update(1)
+
+            # Calculate trade dates
+            df['trade_date'].values[:] = pd.to_datetime(
+                [(d - params["start_time_offset"]).date() for d in dt_index]
+            )
+            pbar.update(1)
 
         if instrument.remove_dates is not None:
             df = df[~df["trade_date"].isin(instrument.remove_dates)]
 
-        # Process each group separately to avoid type issues with apply
+        # Process each group separately with progress bar
+        print("Processing groups...")
+        unique_dates = df["trade_date"].unique()
         processed_groups = []
-        for _, group in df.groupby("trade_date"):
+        for date in tqdm(unique_dates, desc="Processing trade dates"):
+            group = df[df["trade_date"] == date]
             processed_group = add_missing_rows(
                 group,
                 start_time=params["start_time"],
@@ -300,7 +321,7 @@ def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) ->
         if processed_groups:
             df = pd.concat(processed_groups, ignore_index=True)
         else:
-            df = pd.DataFrame()  # Empty DataFrame with correct columns
+            df = pd.DataFrame()
 
         df = df[
             (df["offset_time"] >= params["start_time"])
@@ -311,22 +332,26 @@ def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) ->
         )
         df.sort_values(["trade_date", "offset_time"], inplace=True)
 
-        df["ord_trade_date"] = (
-            df["trade_date"].map(lambda x: x.toordinal()).astype("int32")
-        )
-        df["time_seconds"] = (
-            df["offset_time"]
-            .map(lambda x: x.total_seconds())
-            .add(params["offset_seconds"])
-            .mod(SECONDS_IN_DAY)
-            .astype("int32")
-        )
-        df["offset_time_seconds"] = (
-            df["offset_time"].map(lambda x: x.total_seconds()).astype("int32")
-        )
-        df["ord_date"] = df["ord_trade_date"] + (
-            (df["offset_time_seconds"] + params["offset_seconds"]) // SECONDS_IN_DAY
-        ).astype("int32")
+        print("Performing final calculations...")
+        with tqdm(total=4, desc="Final calculations") as pbar:
+            # Calculate ordinal dates and time values
+            df['ord_trade_date'].values[:] = df['trade_date'].map(lambda x: x.toordinal())
+            pbar.update(1)
+            
+            df['time_seconds'].values[:] = (
+                df['offset_time'].map(lambda x: x.total_seconds())
+                .add(params["offset_seconds"])
+                .mod(SECONDS_IN_DAY)
+            )
+            pbar.update(1)
+            
+            df['offset_time_seconds'].values[:] = df['offset_time'].map(lambda x: x.total_seconds())
+            pbar.update(1)
+            
+            df['ord_date'].values[:] = df['ord_trade_date'] + (
+                (df['offset_time_seconds'] + params["offset_seconds"]) // SECONDS_IN_DAY
+            )
+            pbar.update(1)
 
         cols = [
             "ord_date",
@@ -341,6 +366,7 @@ def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) ->
         ]
         df = df[cols].reset_index(drop=True)
 
+        print("Saving processed data...")
         try:
             output_path = make_path(
                 raw=False, instrument=instrument, remove_file=True, zipfile=zipfile
