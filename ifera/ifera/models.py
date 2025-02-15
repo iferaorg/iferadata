@@ -19,6 +19,7 @@ class InstrumentData(BaseModel):
     """
     # JSON -> Model Fields
     symbol: str
+    description: str
     currency: str
     type: str
     broker: str

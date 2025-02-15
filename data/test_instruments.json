@@ -1,6 +1,7 @@
 {
     "TEST01" : {
         "symbol" : "CL",
+        "description" : "Light Sweet Crude Oil",
         "currency" : "USD",
         "type" : "futures",
         "broker" : "IBKR",
