@@ -4,7 +4,7 @@ Data models for financial instruments.
 import datetime
 import json
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -13,16 +13,15 @@ def to_camel(string: str) -> str:
     parts = string.split('_')
     return parts[0] + ''.join(word.capitalize() for word in parts[1:])
 
-class InstrumentData(BaseModel):
+class BaseInstrumentData(BaseModel):
     """
-    Pydantic v2 model for an instrument's configuration.
+    Pydantic v2 model for an instrument's base configuration.
     """
     # JSON -> Model Fields
     symbol: str
     description: str
     currency: str
     type: str
-    broker: str
     interval: str
     trading_start: pd.Timedelta = Field(..., alias="tradingStart")
     trading_end: pd.Timedelta = Field(..., alias="tradingEnd")
@@ -32,17 +31,11 @@ class InstrumentData(BaseModel):
     regular_end: pd.Timedelta = Field(..., alias="regularEnd")
     contract_multiplier: int = Field(..., alias="contractMultiplier")
     tick_size: float = Field(..., alias="tickSize")
-    margin: float
-    commission: float
-    min_commission: float = Field(..., alias="minCommission")
-    max_commission_pct: float = Field(..., alias="maxCommissionPct")
-    slippage: float
-    min_slippage: float = Field(..., alias="minSlippage")
-    reference_price: float = Field(..., alias="referencePrice")
     remove_dates: Optional[List[datetime.date]] = Field(
         None, alias="removeDates", validate_default=True
     )
     last_update: Optional[float] = Field(default=None)
+
     # Derived Fields
     time_step: Optional[pd.Timedelta] = None
     end_time: Optional[pd.Timedelta] = None
@@ -77,7 +70,7 @@ class InstrumentData(BaseModel):
             raise ValueError(f"Error parsing remove_dates: {exc}") from exc
 
     @model_validator(mode="after")
-    def compute_derived_fields(self) -> "InstrumentData":
+    def compute_derived_fields(self) -> "BaseInstrumentData":
         """Compute derived fields after validation."""
         try:
             if self.interval is None:
@@ -103,55 +96,162 @@ class InstrumentData(BaseModel):
         "populate_by_name": True,         # allow field population by pythonic names
     }
 
+class BrokerInstrumentData(BaseModel):
+    """
+    Pydantic v2 model for broker-specific instrument configuration.
+    """
+    instrument_symbol: str = Field(..., alias="instrumentSymbol")
+    broker_symbol: str = Field(..., alias="brokerSymbol")
+    margin: float
+    commission: float
+    min_commission: float = Field(..., alias="minCommission")
+    max_commission_pct: float = Field(..., alias="maxCommissionPct")
+    slippage: float
+    min_slippage: float = Field(..., alias="minSlippage")
+    reference_price: float = Field(..., alias="referencePrice")
+
+    model_config = {
+        "alias_generator": to_camel,
+        "populate_by_name": True,
+    }
+
+class InstrumentData(BaseInstrumentData, BrokerInstrumentData):
+    """
+    Combined instrument configuration with both base and broker-specific data.
+    """
+    pass
+
+class BrokerData(BaseModel):
+    """
+    Pydantic v2 model for broker configuration.
+    """
+    name: str
+    instruments: Dict[str, BrokerInstrumentData]
+
+    model_config = {
+        "alias_generator": to_camel,
+        "populate_by_name": True,
+    }
+
 class InstrumentConfig:
     """Loads and manages instrument configurations from JSON."""
-    def __init__(self, filename: str = "data/instruments.json"):
-        """Initialize with configuration filename."""
-        self.filename = filename
-        self.last_update: Optional[float] = None
-        self.data = {}
+    def __init__(
+        self,
+        instruments_filename: str = "data/instruments.json",
+        brokers_filename: str = "data/brokers.json"
+    ):
+        """Initialize with configuration filenames."""
+        self.instruments_filename = instruments_filename
+        self.brokers_filename = brokers_filename
+        self.last_instruments_update: Optional[float] = None
+        self.last_brokers_update: Optional[float] = None
+        self.instruments_data = {}
+        self.brokers_data = {}
         self._load_data()
 
     def _load_data(self):
-        """Load data from the JSON file."""
+        """Load data from the JSON files."""
+        # Load instruments data
         try:
-            with open(self.filename, "r", encoding="utf-8") as f:
-                self.data = json.load(f)
+            with open(self.instruments_filename, "r", encoding="utf-8") as f:
+                self.instruments_data = json.load(f)
         except FileNotFoundError as e:
             raise FileNotFoundError(
-                f"Configuration file '{self.filename}' not found."
+                f"Configuration file '{self.instruments_filename}' not found."
             ) from e
         except json.JSONDecodeError as e:
             raise ValueError(
-                f"Error decoding JSON from '{self.filename}': {e}"
+                f"Error decoding JSON from '{self.instruments_filename}': {e}"
             ) from e
+
+        # Load brokers data
         try:
-            path = Path(self.filename)
-            self.last_update = path.stat().st_mtime
+            with open(self.brokers_filename, "r", encoding="utf-8") as f:
+                self.brokers_data = json.load(f)
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"Configuration file '{self.brokers_filename}' not found."
+            ) from e
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Error decoding JSON from '{self.brokers_filename}': {e}"
+            ) from e
+
+        try:
+            path = Path(self.instruments_filename)
+            self.last_instruments_update = path.stat().st_mtime
+            path = Path(self.brokers_filename)
+            self.last_brokers_update = path.stat().st_mtime
         except Exception as e:
-            raise OSError(f"Error accessing file '{self.filename}': {e}") from e
+            raise OSError(f"Error accessing configuration files: {e}") from e
 
     def reload_if_updated(self):
-        """Reload config if file has been modified."""
+        """Reload configs if files have been modified."""
         try:
-            current_mtime = Path(self.filename).stat().st_mtime
+            instruments_mtime = Path(self.instruments_filename).stat().st_mtime
+            brokers_mtime = Path(self.brokers_filename).stat().st_mtime
         except Exception as e:
-            raise OSError(f"Error accessing file '{self.filename}': {e}") from e
-        if self.last_update is None or current_mtime > self.last_update:
+            raise OSError(f"Error accessing configuration files: {e}") from e
+
+        if (self.last_instruments_update is None 
+            or instruments_mtime > self.last_instruments_update
+            or self.last_brokers_update is None
+            or brokers_mtime > self.last_brokers_update):
             self._load_data()
 
-    def get_config(self, instrument_key: str) -> InstrumentData:
-        """Get configuration for a specific instrument."""
+    def get_base_instrument_config(self, instrument_key: str) -> BaseInstrumentData:
+        """Get base configuration for a specific instrument."""
         self.reload_if_updated()
         try:
-            instrument_dict = self.data[instrument_key]
+            instrument_dict = self.instruments_data[instrument_key]
         except KeyError as e:
             raise KeyError(
-                f"Instrument configuration '{instrument_key}' not found in '{self.filename}'."
+                f"Instrument configuration '{instrument_key}' not found in '{self.instruments_filename}'."
             ) from e
         try:
-            return InstrumentData(**instrument_dict, last_update=self.last_update)
+            return BaseInstrumentData(**instrument_dict, last_update=self.last_instruments_update)
         except Exception as e:
             raise ValueError(
-                f"Error creating InstrumentData for '{instrument_key}': {e}"
+                f"Error creating BaseInstrumentData for '{instrument_key}': {e}"
             ) from e
+
+    def get_broker_config(self, broker_name: str) -> BrokerData:
+        """Get configuration for a specific broker."""
+        self.reload_if_updated()
+        try:
+            broker_dict = self.brokers_data[broker_name]
+        except KeyError as e:
+            raise KeyError(
+                f"Broker configuration '{broker_name}' not found in '{self.brokers_filename}'."
+            ) from e
+        try:
+            return BrokerData(**broker_dict)
+        except Exception as e:
+            raise ValueError(
+                f"Error creating BrokerData for '{broker_name}': {e}"
+            ) from e
+
+    def get_config(self, broker_name: str, instrument_key: str) -> InstrumentData:
+        """Get combined configuration for a specific instrument and broker."""
+        # Get base instrument configuration
+        base_config = self.get_base_instrument_config(instrument_key)
+        
+        # Get broker configuration and find matching instrument
+        broker_config = self.get_broker_config(broker_name)
+        try:
+            broker_instrument_config = broker_config.instruments[base_config.symbol]
+        except KeyError as e:
+            raise KeyError(
+                f"No broker configuration found for instrument '{base_config.symbol}' "
+                f"with broker '{broker_name}'"
+            ) from e
+
+        # Combine the configurations
+        combined_dict = {
+            **base_config.model_dump(),
+            **broker_instrument_config.model_dump(),
+            "last_update": max(self.last_instruments_update or float("-inf"),
+                             self.last_brokers_update or float("-inf"))
+        }
+        
+        return InstrumentData(**combined_dict)

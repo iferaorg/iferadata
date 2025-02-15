@@ -1,0 +1,73 @@
+{
+    "IBKR": {
+        "name": "Interactive Brokers",
+        "instruments": {
+            "ES": {
+                "instrumentSymbol": "ES",
+                "brokerSymbol": "ES",
+                "margin": 16860,
+                "commission": 2.25,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.25,
+                "referencePrice": 6000.0
+            },
+            "NQ": {
+                "instrumentSymbol": "NQ",
+                "brokerSymbol": "NQ",
+                "margin": 29784,
+                "commission": 2.25,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.25,
+                "referencePrice": 21900.0
+            },
+            "CL": {
+                "instrumentSymbol": "CL",
+                "brokerSymbol": "CL",
+                "margin": 16250,
+                "commission": 2.37,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.01,
+                "referencePrice": 70.0
+            },
+            "GC": {
+                "instrumentSymbol": "GC",
+                "brokerSymbol": "GC",
+                "margin": 20206,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.1,
+                "referencePrice": 2900.0
+            },
+            "YM": {
+                "instrumentSymbol": "YM",
+                "brokerSymbol": "YM",
+                "margin": 13373,
+                "commission": 2.25,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 1.0,
+                "referencePrice": 44800.0
+            },
+            "IBM": {
+                "instrumentSymbol": "IBM",
+                "brokerSymbol": "IBM",
+                "margin": 53,
+                "commission": 0.005,
+                "minCommission": 1.0,
+                "maxCommissionPct": 0.01,
+                "slippage": 0.02,
+                "minSlippage": 0.01,
+                "referencePrice": 160.0
+            }
+        }
+    }
+}
