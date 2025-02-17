@@ -57,6 +57,424 @@
                 "minSlippage": 1.0,
                 "referencePrice": 44800.0
             },
+            "EU": {
+                "instrumentSymbol": "EU",
+                "brokerSymbol": "EUR",
+                "margin": 3750,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00005,
+                "referencePrice": 1.05
+            },
+            "JY": {
+                "instrumentSymbol": "JY",
+                "brokerSymbol": "JPY",
+                "margin": 4346,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0000005,
+                "referencePrice": 0.0066
+            },
+            "AD": {
+                "instrumentSymbol": "AD",
+                "brokerSymbol": "AUD",
+                "margin": 1901,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00005,
+                "referencePrice": 0.63
+            },
+            "RTY": {
+                "instrumentSymbol": "RTY",
+                "brokerSymbol": "RTY",
+                "margin": 9492,
+                "commission": 2.25,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.1,
+                "referencePrice": 2290.0
+            },
+            "HG": {
+                "instrumentSymbol": "HG",
+                "brokerSymbol": "HG",
+                "margin": 13394,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0005,
+                "referencePrice": 4.65
+            },
+            "BP": {
+                "instrumentSymbol": "BP",
+                "brokerSymbol": "GBP",
+                "margin": 2800,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0001,
+                "referencePrice": 1.25
+            },
+            "SI": {
+                "instrumentSymbol": "SI",
+                "brokerSymbol": "SI",
+                "margin": 23564,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.005,
+                "referencePrice": 25.0
+            },
+            "TY": {
+                "instrumentSymbol": "TY",
+                "brokerSymbol": "ZN",
+                "margin": 3041,
+                "commission": 1.67,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.015625,
+                "referencePrice": 110.0
+            },
+            "CD": {
+                "instrumentSymbol": "CD",
+                "brokerSymbol": "CAD",
+                "margin": 1796,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00005,
+                "referencePrice": 0.7
+            },
+            "FV": {
+                "instrumentSymbol": "FV",
+                "brokerSymbol": "ZF",
+                "margin": 1855,
+                "commission": 1.52,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0078125,
+                "referencePrice": 110.0
+            },
+            "NG": {
+                "instrumentSymbol": "NG",
+                "brokerSymbol": "NG",
+                "margin": 10375,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.001,
+                "referencePrice": 3.0
+            },
+            "US": {
+                "instrumentSymbol": "US",
+                "brokerSymbol": "ZB",
+                "margin": 6759,
+                "commission": 1.74,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.03125,
+                "referencePrice": 120.0
+            },
+            "HO": {
+                "instrumentSymbol": "HO",
+                "brokerSymbol": "HO",
+                "margin": 25343,
+                "commission": 2.37,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0001,
+                "referencePrice": 2.3
+            },
+            "SF": {
+                "instrumentSymbol": "SF",
+                "brokerSymbol": "CHF",
+                "margin": 5618,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00005,
+                "referencePrice": 1.1
+            },
+            "PL": {
+                "instrumentSymbol": "PL",
+                "brokerSymbol": "PL",
+                "margin": 5507,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.1,
+                "referencePrice": 1000.0
+            },
+            "UB": {
+                "instrumentSymbol": "UB",
+                "brokerSymbol": "UB",
+                "margin": 8134,
+                "commission": 1.82,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.03125,
+                "referencePrice": 120.0
+            },
+            "RB": {
+                "instrumentSymbol": "RB",
+                "brokerSymbol": "RB",
+                "margin": 22050,
+                "commission": 2.37,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0001,
+                "referencePrice": 2.3
+            },
+            "NE": {
+                "instrumentSymbol": "NE",
+                "brokerSymbol": "NZD",
+                "margin": 2686,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00005,
+                "referencePrice": 0.6
+            },
+            "M6E": {
+                "instrumentSymbol": "M6E",
+                "brokerSymbol": "EUR",
+                "margin": 435,
+                "commission": 0.41,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0001,
+                "referencePrice": 1.05
+            },
+            "QM": {
+                "instrumentSymbol": "QM",
+                "brokerSymbol": "QM",
+                "margin": 8125,
+                "commission": 2.07,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.025,
+                "referencePrice": 70.0
+            },
+            "MGC": {
+                "instrumentSymbol": "MGC",
+                "brokerSymbol": "MGC",
+                "margin": 1778,
+                "commission": 0.87,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.1,
+                "referencePrice": 2800.0
+            },
+            "S": {
+                "instrumentSymbol": "S",
+                "brokerSymbol": "ZS",
+                "margin": 4487,
+                "commission": 3.0,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 1.0,
+                "referencePrice": 1000.0
+            },
+            "TU": {
+                "instrumentSymbol": "TU",
+                "brokerSymbol": "ZT",
+                "margin": 1382,
+                "commission": 1.52,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00390625,
+                "referencePrice": 104.0
+            },
+            "PX": {
+                "instrumentSymbol": "PX",
+                "brokerSymbol": "MXP",
+                "margin": 1693,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00001,
+                "referencePrice": 0.048
+            },
+            "EMD": {
+                "instrumentSymbol": "EMD",
+                "brokerSymbol": "EMD",
+                "margin": 22323,
+                "commission": 2.25,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.1,
+                "referencePrice": 3200.0
+            },
+            "NKD": {
+                "instrumentSymbol": "NKD",
+                "brokerSymbol": "NKD",
+                "margin": 14795,
+                "commission": 3.02,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 5.0,
+                "referencePrice": 3900.0
+            },
+            "W": {
+                "instrumentSymbol": "W",
+                "brokerSymbol": "ZW",
+                "margin": 3131,
+                "commission": 3.0,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0025,
+                "referencePrice": 600.0
+            },
+            "C": {
+                "instrumentSymbol": "C",
+                "brokerSymbol": "ZC",
+                "margin": 2276,
+                "commission": 3.0,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0025,
+                "referencePrice": 450.0
+            },
+            "TN": {
+                "instrumentSymbol": "TN",
+                "brokerSymbol": "TN",
+                "margin": 3850,
+                "commission": 1.67,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.015625,
+                "referencePrice": 115.0
+            },
+            "BO": {
+                "instrumentSymbol": "BO",
+                "brokerSymbol": "ZL",
+                "margin": 2826,
+                "commission": 3.0,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0001,
+                "referencePrice": 45.0
+            },
+            "BZ": {
+                "instrumentSymbol": "BZ",
+                "brokerSymbol": "BZ",
+                "margin": 16250,
+                "commission": 2.37,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.01,
+                "referencePrice": 75.0
+            },
+            "M6A": {
+                "instrumentSymbol": "M6A",
+                "brokerSymbol": "M6A",
+                "margin": 210,
+                "commission": 0.41,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.0001,
+                "referencePrice": 0.63
+            },
+            "SM": {
+                "instrumentSymbol": "SM",
+                "brokerSymbol": "ZM",
+                "margin": 3184,
+                "commission": 3.0,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.1,
+                "referencePrice": 310.0
+            },
+            "VX": {
+                "instrumentSymbol": "VX",
+                "brokerSymbol": "VIX",
+                "margin": 9781,
+                "commission": 2.38,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.05,
+                "referencePrice": 20.0
+            },
+            "PA": {
+                "instrumentSymbol": "PA",
+                "brokerSymbol": "PA",
+                "margin": 20956,
+                "commission": 2.47,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.5,
+                "referencePrice": 1000.0
+            },
+            "HE": {
+                "instrumentSymbol": "HE",
+                "brokerSymbol": "HE",
+                "margin": 4498,
+                "commission": 2.97,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00025,
+                "referencePrice": 90.0
+            },
+            "LE": {
+                "instrumentSymbol": "LE",
+                "brokerSymbol": "LE",
+                "margin": 4559,
+                "commission": 2.97,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00025,
+                "referencePrice": 200.0
+            },
+            "GF": {
+                "instrumentSymbol": "GF",
+                "brokerSymbol": "GF",
+                "margin": 9271,
+                "commission": 2.97,
+                "minCommission": 0.0,
+                "maxCommissionPct": 0.0,
+                "slippage": 0.0,
+                "minSlippage": 0.00025,
+                "referencePrice": 260.0
+            },
             "IBM": {
                 "instrumentSymbol": "IBM",
                 "brokerSymbol": "IBM",
@@ -68,6 +486,19 @@
                 "minSlippage": 0.01,
                 "referencePrice": 160.0
             }
+        }
+    },
+    "MISSING": {
+        "ME": {
+            "instrumentSymbol": "ME",
+            "brokerSymbol": "E7",
+            "margin": 2025,
+            "commission": 2.47,
+            "minCommission": 0.0,
+            "maxCommissionPct": 0.0,
+            "slippage": 0.0,
+            "minSlippage": 0.0001,
+            "referencePrice": 0.7
         }
     }
 }
