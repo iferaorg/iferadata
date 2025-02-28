@@ -46,15 +46,7 @@ tensor = load_data_tensor(instrument=instrument)
 ## Project Structure
 
 ```text
-ifera/
-├── ifera/
-│   ├── __init__.py      # Package initialization
-│   ├── config.py        # Configuration settings
-│   ├── models.py        # Data models
-│   ├── data_loading.py  # Data loading functionality
-│   ├── data_processing.py # Data processing functions
-│   └── s3_utils.py      # AWS S3 utilities
-└── setup.py            # Package setup configuration
+
 ```
 
 ## Requirements
