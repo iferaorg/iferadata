@@ -3,7 +3,7 @@ Functions for loading and processing financial data.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 import zipfile as zip_module  # Renamed to avoid parameter conflict
 import pandas as pd
 import numpy as np
@@ -176,7 +176,7 @@ def count_lines(file_path: str, is_zip: bool = False) -> int:
 
 
 def read_csv_with_progress(
-    file_path: str, read_csv_kwargs: dict, zipfile: bool
+    file_path: str, read_csv_kwargs: Dict[str, Any], zipfile: bool
 ) -> pd.DataFrame:
     """Read a CSV file with progress tracking, handling both regular and zip files."""
     total_lines = count_lines(file_path, zipfile)
@@ -209,6 +209,8 @@ def load_data(
         msg = f"Error ensuring data availability for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
 
+    read_csv_kwargs: Dict[str, Any] = {}
+
     if raw:
         read_csv_kwargs = {
             "header": None,
@@ -224,6 +226,7 @@ def load_data(
         }
     else:
         # pylint: disable=duplicate-code
+        # Use a different variable name to avoid redefinition
         read_csv_kwargs = {
             "header": None,
             "parse_dates": False,
@@ -255,9 +258,10 @@ def load_data(
     if zipfile:
         read_csv_kwargs["compression"] = "zip"
     try:
-        df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile) # type: ignore
+        df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile)
     except Exception as e:
         raise ValueError(f"Error reading CSV file at {file_path}: {e}") from e
+
     if raw:
         try:
             df["date_time"] = pd.to_datetime(df["date"] + " " + df["time"])
@@ -265,7 +269,8 @@ def load_data(
             raise ValueError(
                 "Error converting 'date' and 'time' columns to datetime"
             ) from e
-        df = df.drop(columns=["date", "time"]).set_index("date_time")
+
+        df = df.drop(columns=["date", "time"], inplace=False).set_index("date_time")
     return df
 
 

@@ -5,6 +5,7 @@ Data processing functionality for financial data.
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from typing import Optional, Tuple
 from .models import InstrumentData
 from .file_utils import make_path
 
@@ -44,7 +45,7 @@ def add_missing_rows(
     merged[["open", "high", "low", "close"]] = merged[
         ["open", "high", "low", "close"]
     ].bfill(axis=1)
-    merged["volume"] = merged["volume"].fillna(0).astype("int32")
+    merged["volume"] = merged["volume"].fillna(0, inplace=False).astype("int32")
     return merged
 
 
@@ -117,24 +118,27 @@ def aggregate_by_second(df: pd.DataFrame, max_decimals: int) -> pd.DataFrame:
             "PxSize": "sum",
         }
     )
-    grouped.columns = [
-        "Date",
-        "Time",
-        "BidOpen",
-        "BidHigh",
-        "BidLow",
-        "BidClose",
-        "AskOpen",
-        "AskHigh",
-        "AskLow",
-        "AskClose",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "Volume",
-        "PxSizeSum",
-    ]
+    # Convert list of strings to pandas Index to satisfy type checking
+    grouped.columns = pd.Index(
+        [
+            "Date",
+            "Time",
+            "BidOpen",
+            "BidHigh",
+            "BidLow",
+            "BidClose",
+            "AskOpen",
+            "AskHigh",
+            "AskLow",
+            "AskClose",
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume",
+            "PxSizeSum",
+        ]
+    )
     grouped["PxSizeSum"] = grouped["PxSizeSum"].astype(float)
     grouped["Volume"] = grouped["Volume"].astype(float)
     grouped["Close"] = grouped["Close"].astype(float)
@@ -168,7 +172,7 @@ def aggregate_by_second(df: pd.DataFrame, max_decimals: int) -> pd.DataFrame:
 
 def process_chunk(
     chunk: pd.DataFrame, partial_df: pd.DataFrame, max_decimals: int
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """Process a chunk of data, aggregating complete seconds and carrying over incomplete data."""
     if partial_df is None:
         combined = chunk
@@ -323,10 +327,13 @@ def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) ->
             df = df[~df["trade_date"].isin(instrument.remove_dates)]
 
         print("Processing groups...")
+        # Convert the unique dates to a list explicitly with the right type
         unique_dates = df["trade_date"].unique()
+        unique_dates_list = [pd.Timestamp(d) for d in unique_dates]
+
         processed_groups = [
             process_group(df[df["trade_date"] == date], instrument)
-            for date in tqdm(unique_dates, desc="Processing trade dates")
+            for date in tqdm(unique_dates_list, desc="Processing trade dates")
         ]
 
         if processed_groups:
@@ -359,7 +366,8 @@ def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) ->
             "close",
             "volume",
         ]
-        df = df[cols].reset_index(drop=True)
+        df = df[cols]
+        df = df.reset_index(drop=True, inplace=False)  # type: ignore
 
         print("Saving processed data...")
         output_path = make_path(
