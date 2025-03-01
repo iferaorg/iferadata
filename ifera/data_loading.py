@@ -255,7 +255,7 @@ def load_data(
     if zipfile:
         read_csv_kwargs["compression"] = "zip"
     try:
-        df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile)
+        df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile) # type: ignore
     except Exception as e:
         raise ValueError(f"Error reading CSV file at {file_path}: {e}") from e
     if raw:

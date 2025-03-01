@@ -5,7 +5,7 @@ Data models for financial instruments.
 import datetime
 import json
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -158,8 +158,8 @@ class InstrumentConfig:
         self.brokers_filename = brokers_filename
         self.last_instruments_update: Optional[float] = None
         self.last_brokers_update: Optional[float] = None
-        self.instruments_data = {}
-        self.brokers_data = {}
+        self.instruments_data: Dict[str, Dict[str, Any]] = {}
+        self.brokers_data: Dict[str, Dict[str, Any]] = {}
         self._load_data()
 
     def _load_data(self):

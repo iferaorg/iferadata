@@ -91,7 +91,8 @@ def test_ohlcv_to_masked():
         ]
     ])
     masked = ohlcv_to_masked(data)
-    # Expected mask: derived from volume: first time step (volume=0) becomes False, second time step becomes True.
+    # Expected mask: derived from volume: first time step (volume=0) becomes False, 
+    # second time step becomes True.
     # The mask should be broadcast to the shape of data, i.e. [1, 2, 5]
     expected_mask = torch.tensor([
         [
@@ -129,7 +130,10 @@ def test_masked_rtr(ohlcv_two_points_masked, ohlcv_two_points):
     expected = rtr(t)
     result_masked = masked_rtr(ohlcv_two_points_masked)
     # Remove the batch dimension for comparison.
-    torch.testing.assert_close(result_masked.get_data().squeeze(0), expected.squeeze(0), rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(
+        result_masked.get_data().squeeze(0), expected.squeeze(0), # type: ignore
+        rtol=1e-4, atol=1e-4
+    )
 
 # Tests for masked ARTR
 

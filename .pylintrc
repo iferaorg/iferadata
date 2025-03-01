@@ -1,2 +1,7 @@
 [MESSAGES CONTROL]
-disable=imports
+disable=imports,
+        too-few-public-methods
+
+[MASTER]
+ignore=tests
+ignore-patterns=test_.*\.py
