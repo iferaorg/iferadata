@@ -2,7 +2,7 @@ import torch
 from .series import sma, ema, rtr
 from torch.masked import masked_tensor, MaskedTensor
 from einops import rearrange, repeat
-from typing import Optional
+from typing import Optional, cast
 
 
 def ohlcv_to_masked(ohlcv_data: torch.Tensor) -> MaskedTensor:
@@ -215,13 +215,13 @@ def masked_artr(t: MaskedTensor, alpha: float, acrossday: bool = False, chunk_si
     rtr_t = masked_rtr(t)
 
     if acrossday:
-        # Flatten the date and time dimensions into one
-        rtr_flat = rtr_t.view(*rtr_t.shape[:-2], -1)
+        # Flatten the date and time dimensions into one. Use cast for Pylance.
+        rtr_flat = cast(MaskedTensor, rtr_t.view(*rtr_t.shape[:-2], -1))
         
         # Calculate the ARTR
         artr_flat = masked_ema(rtr_flat, alpha, chunk_size)
         
-        return artr_flat.view_as(rtr_t)
+        return cast(MaskedTensor, artr_flat.view_as(rtr_t))
     else:
         # Calculate the ARTR for each date separately
         artr_t = masked_ema(rtr_t, alpha, chunk_size)
