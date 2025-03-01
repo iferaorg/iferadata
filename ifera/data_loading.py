@@ -4,7 +4,6 @@ Functions for loading and processing financial data.
 
 from pathlib import Path
 from typing import Optional
-import os
 import zipfile as zip_module  # Renamed to avoid parameter conflict
 import pandas as pd
 import numpy as np
@@ -30,7 +29,7 @@ def make_s3_key(instrument: InstrumentData, zipfile: bool) -> str:
 
 def try_download_processed_file(
     instrument: InstrumentData,
-    target_path: str,  # Changed from Path to str to match s3_utils functions
+    target_path: str,
     threshold: float,
     reset: bool,
     zipfile: bool,
@@ -38,11 +37,9 @@ def try_download_processed_file(
     """Attempt to download an up-to-date processed file from S3."""
     processed_s3_key = make_s3_key(instrument, zipfile)
     s3_bucket = settings.S3_BUCKET_PROCESSED
-
     if not check_s3_file_exists(s3_bucket, processed_s3_key):
         print(f"S3 processed file s3://{s3_bucket}/{processed_s3_key} does not exist.")
         return False
-
     try:
         s3_processed_timestamp = get_s3_last_modified(s3_bucket, processed_s3_key)
     except Exception as e:
@@ -50,11 +47,9 @@ def try_download_processed_file(
             f"Error retrieving processed S3 metadata for instrument {instrument.symbol}"
         )
         raise RuntimeError(msg) from e
-
     if s3_processed_timestamp < threshold or reset:
         print(f"S3 processed file s3://{s3_bucket}/{processed_s3_key} is stale.")
         return False
-
     print(
         f"S3 processed file s3://{s3_bucket}/{processed_s3_key} is up-to-date. "
         "Downloading..."
@@ -74,7 +69,6 @@ def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> P
     except Exception as e:
         msg = f"Error generating raw file path for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
-
     # Check staleness if file exists and reset not requested
     if raw_path.exists() and not reset:
         try:
@@ -83,14 +77,12 @@ def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> P
         except Exception as e:
             msg = f"Error retrieving raw S3 metadata for instrument {instrument.symbol}"
             raise RuntimeError(msg) from e
-
         local_mtime = raw_path.stat().st_mtime
         if local_mtime < s3_timestamp:
             print(f"Local raw file {raw_path} is stale. Re-downloading raw data...")
             reset = True
         else:
             print(f"Local raw file {raw_path} is up-to-date.")
-
     if not raw_path.exists() or reset:
         print(
             f"Raw file {raw_path} missing or reset requested. Downloading raw data..."
@@ -105,7 +97,6 @@ def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> P
             raise RuntimeError(msg) from e
     else:
         print(f"Raw file {raw_path} is available.")
-
     return raw_path
 
 
@@ -124,12 +115,10 @@ def ensure_processed_data(
     except Exception as e:
         msg = f"Error retrieving raw S3 metadata for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
-
     # Ensure we have valid timestamps to compare
     threshold = raw_s3_timestamp
     if instrument.last_update is not None:
         threshold = max(raw_s3_timestamp, instrument.last_update)
-
     if local_path.exists():
         local_mtime = local_path.stat().st_mtime
         if local_mtime >= threshold and not reset:
@@ -138,29 +127,23 @@ def ensure_processed_data(
         print(f"Local processed file {local_path} is stale.")
     else:
         print(f"Local processed file {local_path} does not exist.")
-
     if try_download_processed_file(
         instrument, str(local_path), threshold, reset, zipfile
     ):
         return local_path
-
     print(f"Reprocessing raw data for instrument {instrument.symbol}.")
-
     # Check if raw file exists before processing
     raw_path = make_path(raw=True, instrument=instrument, zipfile=zipfile)
     raw_existed = raw_path.exists()
-
     try:
         raw_df = load_data(
             raw=True, instrument=instrument, dtype="float64", zipfile=zipfile
         )
         process_data(raw_df, instrument, zipfile)
-
         # Clean up raw file if it didn't exist before
         if not raw_existed and raw_path.exists():
             print(f"Cleaning up temporary raw file {raw_path}")
             raw_path.unlink()
-
     except Exception as e:
         # Clean up raw file even on error if it didn't exist before
         if not raw_existed and raw_path.exists():
@@ -168,31 +151,45 @@ def ensure_processed_data(
             raw_path.unlink()
         msg = f"Error processing data for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
-
     processed_s3_key = make_s3_key(instrument, zipfile)
     s3_bucket = settings.S3_BUCKET_PROCESSED
     print(f"Uploading processed file to S3: s3://{s3_bucket}/{processed_s3_key}")
-
     try:
         upload_s3_file(s3_bucket, processed_s3_key, str(local_path))
     except Exception as e:
         msg = f"Error uploading processed file to S3 for instrument {instrument.symbol}"
         raise RuntimeError(msg) from e
-
     return local_path
 
 
 def count_lines(file_path: str, is_zip: bool = False) -> int:
     """Count number of lines in a file, handling both regular and zip files."""
     if is_zip:
-        with zip_module.ZipFile(file_path, 'r') as z:
+        with zip_module.ZipFile(file_path, "r") as z:
             # Get the first file in the zip
             filename = z.namelist()[0]
             with z.open(filename) as f:
                 return sum(1 for _ in f)
     else:
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             return sum(1 for _ in f)
+
+
+def read_csv_with_progress(
+    file_path: str, read_csv_kwargs: dict, zipfile: bool
+) -> pd.DataFrame:
+    """Read a CSV file with progress tracking, handling both regular and zip files."""
+    total_lines = count_lines(file_path, zipfile)
+    chunksize = max(1000, min(100000, total_lines // 100))
+    read_csv_kwargs["chunksize"] = chunksize
+    chunks = []
+    desc = f"Loading data from {file_path}"
+    with tqdm(total=total_lines, unit="lines", desc=desc) as pbar:
+        for chunk in pd.read_csv(file_path, **read_csv_kwargs):
+            chunks.append(chunk)
+            pbar.update(len(chunk))
+    df = pd.concat(chunks, ignore_index=True)
+    return df
 
 
 def load_data(
@@ -213,68 +210,54 @@ def load_data(
         raise RuntimeError(msg) from e
 
     if raw:
-        columns = ["date", "time", "open", "high", "low", "close", "volume"]
-        dtypes = {
-            "open": dtype,
-            "high": dtype,
-            "low": dtype,
-            "close": dtype,
-            "volume": "int32",
+        read_csv_kwargs = {
+            "header": None,
+            "parse_dates": False,
+            "names": ["date", "time", "open", "high", "low", "close", "volume"],
+            "dtype": {
+                "open": dtype,
+                "high": dtype,
+                "low": dtype,
+                "close": dtype,
+                "volume": "int32",
+            },
         }
     else:
-        columns = [
-            "date",
-            "time",
-            "trade_date",
-            "offset_time",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-        dtypes = {
-            "open": dtype,
-            "high": dtype,
-            "low": dtype,
-            "close": dtype,
-            "volume": "int32",
-            "date": "int32",
-            "time": "int32",
-            "trade_date": "int32",
-            "offset_time": "int32",
+        # pylint: disable=duplicate-code
+        read_csv_kwargs = {
+            "header": None,
+            "parse_dates": False,
+            "names": [
+                "date",
+                "time",
+                "trade_date",
+                "offset_time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+            ],
+            "dtype": {
+                "open": dtype,
+                "high": dtype,
+                "low": dtype,
+                "close": dtype,
+                "volume": "int32",
+                "date": "int32",
+                "time": "int32",
+                "trade_date": "int32",
+                "offset_time": "int32",
+            },
         }
+        # pylint: enable=duplicate-code
 
-    read_csv_kwargs = {
-        "header": None,
-        "parse_dates": False,
-        "names": columns,
-        "dtype": dtypes,
-    }
     if zipfile:
         read_csv_kwargs["compression"] = "zip"
-
     try:
-        # Count total lines for progress tracking
-        total_lines = count_lines(str(file_path), zipfile)
-        
-        # Use a reasonable chunk size based on total lines
-        chunksize = max(1000, min(100000, total_lines // 100))
-        read_csv_kwargs["chunksize"] = chunksize
-        
-        # Initialize empty list for chunks and progress bar
-        chunks = []
-        desc = f"Loading data from {file_path}"
-        with tqdm(total=total_lines, unit='lines', desc=desc) as pbar:
-            for chunk in pd.read_csv(file_path, **read_csv_kwargs):
-                chunks.append(chunk)
-                pbar.update(len(chunk))
-
-        df = pd.concat(chunks, ignore_index=True)
-
+        df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile)
     except Exception as e:
         raise ValueError(f"Error reading CSV file at {file_path}: {e}") from e
-
     if raw:
         try:
             df["date_time"] = pd.to_datetime(df["date"] + " " + df["time"])
@@ -283,7 +266,6 @@ def load_data(
                 "Error converting 'date' and 'time' columns to datetime"
             ) from e
         df = df.drop(columns=["date", "time"]).set_index("date_time")
-
     return df
 
 
@@ -302,7 +284,6 @@ def load_data_tensor(
     """Load processed data as a PyTorch tensor."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     dtype_str = torch_dtype_to_numpy_dtype(dtype).name
     df: pd.DataFrame = load_data(
         raw=False, instrument=instrument, dtype=dtype_str, reset=reset, zipfile=zipfile

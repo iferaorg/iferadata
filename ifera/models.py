@@ -1,6 +1,7 @@
 """
 Data models for financial instruments.
 """
+
 import datetime
 import json
 from pathlib import Path
@@ -8,15 +9,18 @@ from typing import Optional, List, Dict
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+
 def to_camel(string: str) -> str:
     """Convert snake_case strings to camelCase."""
-    parts = string.split('_')
-    return parts[0] + ''.join(word.capitalize() for word in parts[1:])
+    parts = string.split("_")
+    return parts[0] + "".join(word.capitalize() for word in parts[1:])
+
 
 class BaseInstrumentData(BaseModel):
     """
     Pydantic v2 model for an instrument's base configuration.
     """
+
     # JSON -> Model Fields
     symbol: str
     description: str
@@ -35,11 +39,10 @@ class BaseInstrumentData(BaseModel):
         None, alias="removeDates", validate_default=True
     )
     last_update: Optional[float] = Field(default=None)
-
     # Derived Fields
-    time_step: Optional[pd.Timedelta] = None
-    end_time: Optional[pd.Timedelta] = None
-    total_steps: Optional[int] = None
+    time_step: pd.Timedelta = pd.Timedelta(0)
+    end_time: pd.Timedelta = pd.Timedelta(0)
+    total_steps: int = 0
 
     @field_validator(
         "trading_start",
@@ -48,7 +51,7 @@ class BaseInstrumentData(BaseModel):
         "liquid_end",
         "regular_start",
         "regular_end",
-        mode="before"
+        mode="before",
     )
     @classmethod
     def parse_timedelta(cls, value):
@@ -56,7 +59,9 @@ class BaseInstrumentData(BaseModel):
         try:
             return pd.to_timedelta(value)
         except Exception as exc:
-            raise ValueError(f"Error parsing timedelta from value {value}: {exc}") from exc
+            raise ValueError(
+                f"Error parsing timedelta from value {value}: {exc}"
+            ) from exc
 
     @field_validator("remove_dates", mode="before")
     @classmethod
@@ -92,14 +97,16 @@ class BaseInstrumentData(BaseModel):
 
     model_config = {
         "arbitrary_types_allowed": True,  # allow pandas.Timedelta
-        "alias_generator": to_camel,      # snake_case -> camelCase
-        "populate_by_name": True,         # allow field population by pythonic names
+        "alias_generator": to_camel,  # snake_case -> camelCase
+        "populate_by_name": True,  # allow field population by pythonic names
     }
+
 
 class BrokerInstrumentData(BaseModel):
     """
     Pydantic v2 model for broker-specific instrument configuration.
     """
+
     instrument_symbol: str = Field(..., alias="instrumentSymbol")
     broker_symbol: str = Field(..., alias="brokerSymbol")
     margin: float
@@ -115,16 +122,20 @@ class BrokerInstrumentData(BaseModel):
         "populate_by_name": True,
     }
 
+
 class InstrumentData(BaseInstrumentData, BrokerInstrumentData):
     """
     Combined instrument configuration with both base and broker-specific data.
     """
-    pass
+
+    # No additional attributes needed
+
 
 class BrokerData(BaseModel):
     """
     Pydantic v2 model for broker configuration.
     """
+
     name: str
     instruments: Dict[str, BrokerInstrumentData]
 
@@ -133,12 +144,14 @@ class BrokerData(BaseModel):
         "populate_by_name": True,
     }
 
+
 class InstrumentConfig:
     """Loads and manages instrument configurations from JSON."""
+
     def __init__(
         self,
         instruments_filename: str = "data/instruments.json",
-        brokers_filename: str = "data/brokers.json"
+        brokers_filename: str = "data/brokers.json",
     ):
         """Initialize with configuration filenames."""
         self.instruments_filename = instruments_filename
@@ -193,10 +206,12 @@ class InstrumentConfig:
         except Exception as e:
             raise OSError(f"Error accessing configuration files: {e}") from e
 
-        if (self.last_instruments_update is None 
+        if (
+            self.last_instruments_update is None
             or instruments_mtime > self.last_instruments_update
             or self.last_brokers_update is None
-            or brokers_mtime > self.last_brokers_update):
+            or brokers_mtime > self.last_brokers_update
+        ):
             self._load_data()
 
     def get_base_instrument_config(self, instrument_key: str) -> BaseInstrumentData:
@@ -206,10 +221,12 @@ class InstrumentConfig:
             instrument_dict = self.instruments_data[instrument_key]
         except KeyError as e:
             raise KeyError(
-                f"Instrument configuration '{instrument_key}' not found in '{self.instruments_filename}'."
+                f"Instrument key '{instrument_key}' not found in '{self.instruments_filename}'."
             ) from e
         try:
-            return BaseInstrumentData(**instrument_dict, last_update=self.last_instruments_update)
+            return BaseInstrumentData(
+                **instrument_dict, last_update=self.last_instruments_update
+            )
         except Exception as e:
             raise ValueError(
                 f"Error creating BaseInstrumentData for '{instrument_key}': {e}"
@@ -235,7 +252,7 @@ class InstrumentConfig:
         """Get combined configuration for a specific instrument and broker."""
         # Get base instrument configuration
         base_config = self.get_base_instrument_config(instrument_key)
-        
+
         # Get broker configuration and find matching instrument
         broker_config = self.get_broker_config(broker_name)
         try:
@@ -245,13 +262,14 @@ class InstrumentConfig:
                 f"No broker configuration found for instrument '{base_config.symbol}' "
                 f"with broker '{broker_name}'"
             ) from e
-
         # Combine the configurations
         combined_dict = {
             **base_config.model_dump(),
             **broker_instrument_config.model_dump(),
-            "last_update": max(self.last_instruments_update or float("-inf"),
-                             self.last_brokers_update or float("-inf"))
+            "last_update": max(
+                self.last_instruments_update or float("-inf"),
+                self.last_brokers_update or float("-inf"),
+            ),
         }
-        
+
         return InstrumentData(**combined_dict)

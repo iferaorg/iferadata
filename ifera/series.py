@@ -1,3 +1,9 @@
+"""
+Tensor operations for financial time series data.
+Provides utility functions for time series analysis such as moving averages 
+and relative true range calculations.
+"""
+
 import torch
 from einops import rearrange
 from typing import Optional
@@ -26,15 +32,17 @@ def sma(t: torch.Tensor, window: int) -> torch.Tensor:
     # Compute sma for the elements from the n-th to the last
     tail = t.unfold(dimension=-1, size=n, step=1).mean(dim=-1)
 
-    # Compute the average for the first n-1 elements    
-    head_nom = torch.cumsum(t[..., :n-1], dim=-1)
+    # Compute the average for the first n-1 elements
+    head_nom = torch.cumsum(t[..., : n - 1], dim=-1)
     head_denom = torch.arange(1, n, device=t.device, dtype=t.dtype)
     head = head_nom / head_denom
-    
+
     return torch.cat([head, tail], dim=-1)
 
 
-def ema(x: torch.Tensor, alpha: float, chunk_size: Optional[int] = None) -> torch.Tensor:
+def ema(
+    x: torch.Tensor, alpha: float, chunk_size: Optional[int] = None
+) -> torch.Tensor:
     """
     Calculate the exponential moving average of a tensor.
 
@@ -52,54 +60,68 @@ def ema(x: torch.Tensor, alpha: float, chunk_size: Optional[int] = None) -> torc
     y : torch.Tensor
         Output tensor with the same shape as x, containing the EMA along the last dimension.
     """
-    # Get tensor properties
-    shape = x.shape
-    n = shape[-1]
-    device = x.device
-    dtype = x.dtype
-
+    n = x.shape[-1]
     if chunk_size is None or chunk_size >= n:
-        # Use original method for small series or if chunk_size not specified
-        i = torch.arange(n, device=device).unsqueeze(0)  # Shape: (1, n)
-        j = torch.arange(n, device=device).unsqueeze(1)  # Shape: (n, 1)
-        diff = i - j  # Shape: (n, n)
-        W = torch.where(diff >= 0, (1 - alpha) ** diff, torch.zeros_like(diff, dtype=dtype))
-        W[1:, :] *= alpha  # First row unchanged (W[0, 0] = 1), others scaled
-        return x @ W
-    else:
-        # Process in chunks to save memory
-        chunks = torch.split(x, chunk_size, dim=-1)  # Split along last dimension
-        y_chunks = []
-        y_prev = torch.Tensor()
+        device = x.device
+        dtype = x.dtype
+        i = torch.arange(n, device=device).unsqueeze(0)
+        j = torch.arange(n, device=device).unsqueeze(1)
+        diff = i - j
+        weight = torch.where(
+            diff >= 0, (1 - alpha) ** diff, torch.zeros_like(diff, dtype=dtype)
+        )
+        weight[1:, :] *= alpha
+        return x @ weight
 
-        for idx, x_chunk in enumerate(chunks):
-            m = x_chunk.shape[-1]  # Size of current chunk
-            i = torch.arange(m, device=device).unsqueeze(0)
-            j = torch.arange(m, device=device).unsqueeze(1)
-            diff = i - j
-            W_local = torch.where(diff >= 0, (1 - alpha) ** diff, 
-                                 torch.zeros_like(diff, dtype=dtype))
+    return _ema_chunked(x, alpha, chunk_size)
 
-            if idx == 0:
-                # First chunk: mimic original EMA starting condition
-                W_local[1:, :] *= alpha  # W_local[0, 0] = 1, rest scaled
-            else:
-                # Subsequent chunks: compute local EMA, all rows scaled
-                W_local *= alpha
 
-            y_local = x_chunk @ W_local
+def _ema_chunked(x: torch.Tensor, alpha: float, chunk_size: int) -> torch.Tensor:
+    """
+    Helper function to compute EMA in chunks.
 
-            if idx > 0:
-                # Add decayed contribution from previous chunk
-                decay = (1 - alpha) ** torch.arange(1, m + 1).to(device)  # Shape: (m,)
-                y_chunk = y_local + decay * y_prev[..., None]  # Broadcasting: (..., m)
-            else:
-                y_chunk = y_local
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor.
+    alpha : float
+        Smoothing factor.
+    chunk_size : int
+        Size of each chunk.
 
-            y_chunks.append(y_chunk)
-            y_prev = y_chunk[..., -1]  # Shape: (...), last EMA value for next chunk
+    Returns
+    -------
+    y : torch.Tensor
+        Output tensor with EMA computed in chunks.
+    """
+    chunks = torch.split(x, chunk_size, dim=-1)
+    y_chunks = []
+    y_prev = torch.Tensor()  # Empty tensor to avoid type mismatch
 
-        return torch.cat(y_chunks, dim=-1)  # Concatenate along last dimension
+    for idx, x_chunk in enumerate(chunks):
+        i = torch.arange(x_chunk.shape[-1], device=x.device).unsqueeze(0)
+        j = torch.arange(x_chunk.shape[-1], device=x.device).unsqueeze(1)
+        diff = i - j
+        weight_local = torch.where(
+            diff >= 0, (1 - alpha) ** diff, torch.zeros_like(diff, dtype=x.dtype)
+        )
+
+        if idx == 0:
+            weight_local[1:, :] *= alpha
+        else:
+            weight_local *= alpha
+        y_local = x_chunk @ weight_local
+
+        if idx > 0:
+            decay = (1 - alpha) ** torch.arange(1, x_chunk.shape[-1] + 1, device=x.device)
+            y_chunk = y_local + decay * y_prev[..., None]
+        else:
+            y_chunk = y_local
+
+        y_chunks.append(y_chunk)
+        y_prev = y_chunk[..., -1]
+
+    return torch.cat(y_chunks, dim=-1)
 
 
 def ema_slow(x: torch.Tensor, alpha: float):
@@ -112,7 +134,7 @@ def ema_slow(x: torch.Tensor, alpha: float):
         Input tensor. The last dimension is the one to calculate the moving average over.
     alpha : float
         Smoothing factor between 0 and 1.
-    
+
     Returns
     -------
     y : torch.Tensor
@@ -123,7 +145,7 @@ def ema_slow(x: torch.Tensor, alpha: float):
     for i in range(1, x.size(-1)):
         y[..., i] = (1.0 - alpha) * y[..., i - 1] + alpha * x[..., i]
     return y
-        
+
 
 def ffill(t: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     """
@@ -134,7 +156,8 @@ def ffill(t: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     t : torch.Tensor
         Input tensor.
     mask : Optional[torch.Tensor]
-        Boolean mask tensor indicating valid (non-missing) values. If None, defaults to ~torch.isnan(t).
+        Boolean mask tensor indicating valid (non-missing) values.
+        If None, defaults to ~torch.isnan(t).
 
     Returns
     -------
@@ -145,30 +168,32 @@ def ffill(t: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     mask = mask if mask is not None else ~torch.isnan(t)
     valid_indices = indices.masked_fill(~mask, 0)
     cummax_indices, _ = valid_indices.cummax(dim=-1)
-    
+
     return torch.gather(t, dim=-1, index=cummax_indices)
 
 
 def rtr(t: torch.Tensor) -> torch.Tensor:
     """
     Calculate the relative true range of a tensor along the second to last dimension.
-    Definition: RTR = MAX(high, prev_close) / MIN(low, prev_close) - 1; high / low - 1 for the first element.
-    
+    Definition: RTR = MAX(high, prev_close) / MIN(low, prev_close) - 1
+        high / low - 1 for the first element.
+
     Parameters
     ----------
     t : torch.Tensor
         Input tensor.
         Last dimension is channels: [open, high, low, close, volume].
         Second to last dimension is the time dimension. Shape: (..., time, channels).
-    
+
     Returns
     -------
     rtr_t : torch.Tensor
-        Output tensor with shape (..., time). NaN values in input will result in NaN values in output.
+        Output tensor with shape (..., time). NaN values in input 
+        will result in NaN values in output.
     """
     # Extract channels
-    high = t[..., :, 1]   # Shape: (..., time)
-    low = t[..., :, 2]    # Shape: (..., time)
+    high = t[..., :, 1]  # Shape: (..., time)
+    low = t[..., :, 2]  # Shape: (..., time)
     close = t[..., :, 3]  # Shape: (..., time)
 
     # Create previous close by shifting close right, with NaN at t=0
@@ -177,19 +202,24 @@ def rtr(t: torch.Tensor) -> torch.Tensor:
     # First element: high / low - 1
     # Other elements: MAX(high, prev_close) / MIN(low, prev_close) - 1
     max_part = torch.max(high[..., 1:], prev_close)  # Shape: (..., time)
-    min_part = torch.min(low[..., 1:], prev_close)   # Shape: (..., time)
-    
+    min_part = torch.min(low[..., 1:], prev_close)  # Shape: (..., time)
+
     # Calculate RTR - NaN values will propagate naturally
     rtr_general = max_part / min_part - 1  # Shape: (..., time)
-    
+
     return torch.cat([high[..., 0:1] / low[..., 0:1] - 1, rtr_general], dim=-1)
 
 
-def artr(t: torch.Tensor, alpha: float, acrossday: bool = False, chunk_size: Optional[int] = None) -> torch.Tensor:
+def artr(
+    t: torch.Tensor,
+    alpha: float,
+    acrossday: bool = False,
+    chunk_size: Optional[int] = None,
+) -> torch.Tensor:
     """
     Calculate the average relative true range of a tensor along the second to last dimension.
     Definition: ARTR = EMA(RTR, alpha).
-    
+
     Parameters
     ----------
     t : torch.Tensor
@@ -198,7 +228,8 @@ def artr(t: torch.Tensor, alpha: float, acrossday: bool = False, chunk_size: Opt
     alpha : float
         Smoothing factor for the EMA.
     acrossday : bool, default=False
-        If True, calculate ARTR across days, i.e. calculate on a continuous date+time series without resetting at the start of each day.
+        If True, calculate ARTR across days, i.e. calculate on a continuous date+time series
+        without resetting at the start of each day.
         If False, calculate ARTR for each date separately.
     chunk_size : Optional[int], default=None
         If provided, calculate the EMA in chunks of this size to reduce memory usage.
@@ -206,23 +237,20 @@ def artr(t: torch.Tensor, alpha: float, acrossday: bool = False, chunk_size: Opt
     Returns
     -------
     artr_t : torch.Tensor
-        Output tensor with shape (..., date, time). Contains NaN for invalid
-        
+        Output tensor with shape (..., date, time). Contains NaN for invalid values.
     """
     # Calculate RTR
     rtr_t = rtr(t)  # Shape: (..., date, time)
-    
+
     if acrossday:
         # Flatten date and time dimensions
-        rtr_flat = rearrange(rtr_t, '... d t -> ... (d t)')
-        
+        rtr_flat = rearrange(rtr_t, "... d t -> ... (d t)")
+
         # Calculate ARTR
         artr_flat = ema(rtr_flat, alpha, chunk_size=chunk_size)
-        
+
         # Reshape to original shape
-        return rearrange(artr_flat, '... (d t) -> ... d t', t=rtr_t.size(-1))
-    else:
-        # Calculate ARTR for each date
-        artr_t = ema(rtr_t, alpha, chunk_size)  # Shape: (..., date, time)
-        return artr_t
-    
+        return rearrange(artr_flat, "... (d t) -> ... d t", t=rtr_t.size(-1))
+
+    # Calculate ARTR for each date
+    return ema(rtr_t, alpha, chunk_size)  # Shape: (..., date, time)
