@@ -8,6 +8,7 @@ import zipfile as zip_module  # Renamed to avoid parameter conflict
 import pandas as pd
 import numpy as np
 import torch
+from einops import rearrange
 from tqdm import tqdm
 from .models import InstrumentData
 from .settings import settings
@@ -295,4 +296,6 @@ def load_data_tensor(
     )
     np_array = df.to_numpy()
     tensor = torch.as_tensor(np_array, dtype=dtype, device=device)
-    return tensor
+    tensor = rearrange(tensor, '(d t) c -> d t c', t=instrument.total_steps)
+
+    return tensor[..., 4:].clone()  # Skip the first 4 columns (date, time, trade_date, offset_time)
