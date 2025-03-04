@@ -4,13 +4,13 @@ File system utilities for the ifera package.
 
 from pathlib import Path
 from typing import Optional
-from .models import InstrumentData
+from .config import InstrumentConfig
 from .settings import settings
 
 
 def make_path(
     raw: bool,
-    instrument: InstrumentData,
+    instrument: InstrumentConfig,
     remove_file: bool = False,
     special_interval: Optional[str] = None,
     zipfile: bool = True,

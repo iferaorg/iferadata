@@ -16,7 +16,7 @@ def to_camel(string: str) -> str:
     return parts[0] + "".join(word.capitalize() for word in parts[1:])
 
 
-class BaseInstrumentData(BaseModel):
+class BaseInstrumentConfig(BaseModel):
     """
     Pydantic v2 model for an instrument's base configuration.
     """
@@ -75,7 +75,7 @@ class BaseInstrumentData(BaseModel):
             raise ValueError(f"Error parsing remove_dates: {exc}") from exc
 
     @model_validator(mode="after")
-    def compute_derived_fields(self) -> "BaseInstrumentData":
+    def compute_derived_fields(self) -> "BaseInstrumentConfig":
         """Compute derived fields after validation."""
         try:
             if self.interval is None:
@@ -102,7 +102,7 @@ class BaseInstrumentData(BaseModel):
     }
 
 
-class BrokerInstrumentData(BaseModel):
+class BrokerInstrumentConfig(BaseModel):
     """
     Pydantic v2 model for broker-specific instrument configuration.
     """
@@ -123,7 +123,7 @@ class BrokerInstrumentData(BaseModel):
     }
 
 
-class InstrumentData(BaseInstrumentData, BrokerInstrumentData):
+class InstrumentConfig(BaseInstrumentConfig, BrokerInstrumentConfig):
     """
     Combined instrument configuration with both base and broker-specific data.
     """
@@ -131,13 +131,13 @@ class InstrumentData(BaseInstrumentData, BrokerInstrumentData):
     # No additional attributes needed
 
 
-class BrokerData(BaseModel):
+class BrokerConfig(BaseModel):
     """
     Pydantic v2 model for broker configuration.
     """
 
     name: str
-    instruments: Dict[str, BrokerInstrumentData]
+    instruments: Dict[str, BrokerInstrumentConfig]
 
     model_config = {
         "alias_generator": to_camel,
@@ -145,7 +145,7 @@ class BrokerData(BaseModel):
     }
 
 
-class InstrumentConfig:
+class ConfigManager:
     """Loads and manages instrument configurations from JSON."""
 
     def __init__(
@@ -214,7 +214,7 @@ class InstrumentConfig:
         ):
             self._load_data()
 
-    def get_base_instrument_config(self, instrument_key: str) -> BaseInstrumentData:
+    def get_base_instrument_config(self, instrument_key: str) -> BaseInstrumentConfig:
         """Get base configuration for a specific instrument."""
         self.reload_if_updated()
         try:
@@ -224,7 +224,7 @@ class InstrumentConfig:
                 f"Instrument key '{instrument_key}' not found in '{self.instruments_filename}'."
             ) from e
         try:
-            return BaseInstrumentData(
+            return BaseInstrumentConfig(
                 **instrument_dict, last_update=self.last_instruments_update
             )
         except Exception as e:
@@ -232,7 +232,7 @@ class InstrumentConfig:
                 f"Error creating BaseInstrumentData for '{instrument_key}': {e}"
             ) from e
 
-    def get_broker_config(self, broker_name: str) -> BrokerData:
+    def get_broker_config(self, broker_name: str) -> BrokerConfig:
         """Get configuration for a specific broker."""
         self.reload_if_updated()
         try:
@@ -242,13 +242,13 @@ class InstrumentConfig:
                 f"Broker configuration '{broker_name}' not found in '{self.brokers_filename}'."
             ) from e
         try:
-            return BrokerData(**broker_dict)
+            return BrokerConfig(**broker_dict)
         except Exception as e:
             raise ValueError(
                 f"Error creating BrokerData for '{broker_name}': {e}"
             ) from e
 
-    def get_config(self, broker_name: str, instrument_key: str) -> InstrumentData:
+    def get_config(self, broker_name: str, instrument_key: str) -> InstrumentConfig:
         """Get combined configuration for a specific instrument and broker."""
         # Get base instrument configuration
         base_config = self.get_base_instrument_config(instrument_key)
@@ -272,4 +272,4 @@ class InstrumentConfig:
             ),
         }
 
-        return InstrumentData(**combined_dict)
+        return InstrumentConfig(**combined_dict)

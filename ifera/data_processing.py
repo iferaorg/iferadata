@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from typing import Optional, Tuple
-from .models import InstrumentData
+from .config import InstrumentConfig
 from .file_utils import make_path
 
 SECONDS_IN_DAY = 86400
@@ -259,7 +259,7 @@ def aggregate_large_quote_file(
 
 
 def calculate_time_columns(
-    df: pd.DataFrame, instrument: InstrumentData
+    df: pd.DataFrame, instrument: InstrumentConfig
 ) -> pd.DataFrame:
     """Calculate and assign datetime-related columns to the DataFrame."""
     dt_index = pd.to_datetime(df.index)
@@ -281,7 +281,7 @@ def calculate_time_columns(
     return df
 
 
-def process_group(group: pd.DataFrame, instrument: InstrumentData) -> pd.DataFrame:
+def process_group(group: pd.DataFrame, instrument: InstrumentConfig) -> pd.DataFrame:
     """Process a group by adding missing rows based on instrument settings."""
     return add_missing_rows(
         group,
@@ -292,7 +292,7 @@ def process_group(group: pd.DataFrame, instrument: InstrumentData) -> pd.DataFra
 
 
 def perform_final_calculations(
-    df: pd.DataFrame, instrument: InstrumentData
+    df: pd.DataFrame, instrument: InstrumentConfig
 ) -> pd.DataFrame:
     """Perform final calculations for ordinal dates and time seconds."""
     offset_seconds = instrument.trading_start.total_seconds()
@@ -312,7 +312,7 @@ def perform_final_calculations(
     return df
 
 
-def process_data(df: pd.DataFrame, instrument: InstrumentData, zipfile: bool) -> None:
+def process_data(df: pd.DataFrame, instrument: InstrumentConfig, zipfile: bool) -> None:
     """
     Process raw data into a standardized format.
 

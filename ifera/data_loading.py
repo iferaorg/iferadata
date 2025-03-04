@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from einops import rearrange
 from tqdm import tqdm
-from .models import InstrumentData
+from .config import InstrumentConfig
 from .settings import settings
 from .s3_utils import (
     download_s3_file,
@@ -22,14 +22,14 @@ from .data_processing import process_data
 from .file_utils import make_path
 
 
-def make_s3_key(instrument: InstrumentData, zipfile: bool) -> str:
+def make_s3_key(instrument: InstrumentConfig, zipfile: bool) -> str:
     """Build an S3 key for the instrument data file."""
     extension = ".zip" if zipfile else ".csv"
     return f"{instrument.type}/{instrument.interval}/{instrument.symbol}{extension}"
 
 
 def try_download_processed_file(
-    instrument: InstrumentData,
+    instrument: InstrumentConfig,
     target_path: str,
     threshold: float,
     reset: bool,
@@ -63,7 +63,7 @@ def try_download_processed_file(
     return True
 
 
-def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> Path:
+def ensure_raw_data(instrument: InstrumentConfig, zipfile: bool, reset: bool) -> Path:
     """Ensure raw data file is available locally and up-to-date."""
     try:
         raw_path = make_path(raw=True, instrument=instrument, zipfile=zipfile)
@@ -102,7 +102,7 @@ def ensure_raw_data(instrument: InstrumentData, zipfile: bool, reset: bool) -> P
 
 
 def ensure_processed_data(
-    instrument: InstrumentData, zipfile: bool, reset: bool
+    instrument: InstrumentConfig, zipfile: bool, reset: bool
 ) -> Path:
     """Ensure processed data file is available locally and up-to-date."""
     try:
@@ -195,7 +195,7 @@ def read_csv_with_progress(
 
 def load_data(
     raw: bool,
-    instrument: InstrumentData,
+    instrument: InstrumentConfig,
     dtype: str = "float32",
     reset: bool = False,
     zipfile: bool = True,
@@ -281,7 +281,7 @@ def torch_dtype_to_numpy_dtype(dtype: torch.dtype) -> np.dtype:
 
 
 def load_data_tensor(
-    instrument: InstrumentData,
+    instrument: InstrumentConfig,
     reset: bool = False,
     zipfile: bool = True,
     dtype: torch.dtype = torch.float32,
