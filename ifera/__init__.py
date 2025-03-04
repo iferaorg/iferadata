@@ -8,6 +8,7 @@ from .data_processing import process_data, aggregate_large_quote_file
 from .settings import settings
 from .series import sma, ema, ffill, ema_slow, rtr, artr
 from .masked_series import ohlcv_to_masked, masked_sma, masked_ema, masked_rtr, masked_artr
+from .data_models import InstrumentData
 
 __all__ = [
     'InstrumentConfig',
@@ -29,4 +30,5 @@ __all__ = [
     'masked_ema',
     'masked_rtr',
     'masked_artr',
+    'InstrumentData'
 ]
