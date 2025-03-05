@@ -2,10 +2,12 @@
 Data processing functionality for financial data.
 """
 
+from typing import Optional, Tuple
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from typing import Optional, Tuple
+
 from .config import InstrumentConfig
 from .file_utils import make_path
 

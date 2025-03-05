@@ -3,6 +3,7 @@ Utilities for interacting with AWS S3.
 """
 
 import os
+
 import boto3  # type: ignore
 from tqdm import tqdm
 

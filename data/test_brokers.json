@@ -1,18 +1,18 @@
 {
-    "IBKR": {
-        "name": "Interactive Brokers",
-        "instruments": {
-            "CL": {
-                "instrumentSymbol": "CL",
-                "brokerSymbol": "CL",
-                "margin": 17550,
-                "commission": 0.0,
-                "minCommission": 0.0,
-                "maxCommissionPct": 0.0,
-                "slippage": 0.0,
-                "minSlippage": 0.0,
-                "referencePrice": 20.0
-            }
-        }
+  "IBKR": {
+    "name": "Interactive Brokers",
+    "instruments": {
+      "CL": {
+        "instrumentSymbol": "CL",
+        "brokerSymbol": "CL",
+        "margin": 17550,
+        "commission": 0.0,
+        "minCommission": 0.0,
+        "maxCommissionPct": 0.0,
+        "slippage": 0.0,
+        "minSlippage": 0.0,
+        "referencePrice": 20.0
+      }
     }
+  }
 }
