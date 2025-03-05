@@ -81,12 +81,14 @@ def ohlcv_single_date_masked(ohlcv_single_date):
 
 
 def test_compress_decompress():
-    # Test that decompressing a compressed tensor recovers the original valid data in the right positions.
+    # Test that decompressing a compressed tensor recovers the original 
+    # valid data in the right positions.
     data = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
     mask = torch.tensor([True, False, True, False, True])
     compressed = compress_tensor(data, mask)
     decompressed = decompress_tensor(compressed, mask)
-    # In positions where mask is True, we expect original values; other positions are filled with NaN.
+    # In positions where mask is True, we expect original values; 
+    # other positions are filled with NaN.
     expected = torch.tensor([1.0, float("nan"), 3.0, float("nan"), 5.0])
     torch.testing.assert_close(
         decompressed, expected, rtol=1e-4, atol=1e-4, equal_nan=True

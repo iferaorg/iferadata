@@ -1,3 +1,15 @@
+"""
+Financial instrument data handling and processing module.
+
+This module provides classes and utilities for loading, managing, and processing
+financial instrument data. It supports operations on time-series financial data,
+including handling missing values and calculating technical indicators such as
+Average Relative True Range (ARTR).
+
+The module leverages PyTorch tensors and masked operations for efficient
+computation on both CPU and GPU devices.
+"""
+
 from typing import Optional
 import math
 
@@ -11,6 +23,28 @@ from .masked_series import masked_artr
 
 
 class InstrumentData:
+    """
+    Class for loading and processing financial instrument data.
+
+    This class handles the loading, storage, and computation on financial instrument
+    data. It provides lazy loading of data, masking of invalid values, and methods
+    for calculating technical indicators such as Average Relative True Range (ARTR).
+    The class automatically optimizes memory usage and computation based on the
+    available device (CPU/GPU).
+
+    Attributes:
+        instrument (InstrumentConfig): Configuration for the financial instrument
+        zipfile (bool): Whether the data is stored in a zip file
+        dtype (torch.dtype): Data type for the tensor
+        device (torch.device): Device to store and process the data on
+
+    Examples:
+        >>> from ifera.config import InstrumentConfig
+        >>> config = InstrumentConfig(symbol="AAPL")
+        >>> data = InstrumentData(config)
+        >>> atr = data.artr(alpha=0.1)
+    """
+
     def __init__(
         self,
         instrument: InstrumentConfig,
@@ -31,7 +65,7 @@ class InstrumentData:
             )
         )
         self._data = None
-        self._chunk_size = None
+        self._chunk_size = 0
 
     @property
     def data(self) -> torch.Tensor:
@@ -63,7 +97,7 @@ class InstrumentData:
         Returns the largest power of 2 that is less than
         sqrt(device_memory / (10 * dtype_size))
         """
-        if self._chunk_size is None:
+        if self._chunk_size == 0:
             # Get total memory of the device in bytes
             if self.device.type == "cuda":
                 device_memory_bytes = torch.cuda.get_device_properties(
@@ -81,7 +115,7 @@ class InstrumentData:
             sqrt_value = math.sqrt(value)
 
             # Find the largest power of 2 less than the calculated value
-            self._chunk_size = int(2 ** int(math.log2(sqrt_value)))
+            self._chunk_size = 2 ** int(math.log2(sqrt_value))
 
         return self._chunk_size
 
