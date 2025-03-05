@@ -15,6 +15,7 @@ from .masked_series import (
 )
 from .series import artr, ema, ema_slow, ffill, rtr, sma
 from .settings import settings
+from .market_simulator import MarketSimulatorIntraday
 
 __all__ = [
     "InstrumentConfig",
@@ -37,4 +38,5 @@ __all__ = [
     "masked_rtr",
     "masked_artr",
     "InstrumentData",
+    "MarketSimulatorIntraday",
 ]

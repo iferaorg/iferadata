@@ -71,9 +71,10 @@ class MarketSimulatorIntraday:
             -float("inf"), device=self.data.device, dtype=self.data.dtype
         )
 
+    # pylint: disable=too-many-locals
     @torch.compile()
     def calculate_step(
-        self, position_action: torch.IntTensor, stop_loss: torch.Tensor
+        self, position_action: torch.Tensor, stop_loss: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Calculate the result of a trading step given the current state and an action.
@@ -83,14 +84,14 @@ class MarketSimulatorIntraday:
         position_action : torch.IntTensor
             Tensor containing the position and action information for each batch.
             Has shape of (batch_size, 4) where the columns are:
-            position_action[:, 0]:
+            position_action[..., 0]:
                 Indices of the dates in the data tensor.
-            position_action[:, 1]:
+            position_action[..., 1]:
                 Indices of the time steps in the data tensor.
-            position_action[:, 2]:
+            position_action[..., 2]:
                 Current position. Positive for long positions, negative for short positions,
                 and zero for no position.
-            position_action[:, 3]:
+            position_action[..., 3]:
                 Action to take. 0 = do nothing, positive = buy, negative = sell.
                 The absolute value is the number of contracts to buy or sell.
         stop_loss : torch.Tensor, optional
@@ -123,34 +124,21 @@ class MarketSimulatorIntraday:
         the execution price. If a stop loss level is provided, the function will also calculate
         the effect of the stop loss order.
         """
-        date_idx = position_action[:, 0]
-        time_idx = position_action[:, 1]
-        position = position_action[:, 2]
-        action = position_action[:, 3]
+        date_idx = position_action[..., 0]
+        time_idx = position_action[..., 1]
+        position = position_action[..., 2]
+        action = position_action[..., 3]
 
-        action_sign = torch.sign(action)
-        action_abs = torch.abs(action)
-        position_sign = torch.sign(position)
-        position_abs = torch.abs(position)
-        nz_action = action != 0
-        nz_position = position != 0
+        (
+            action_sign,
+            action_abs,
+            new_position,
+            close_position,
+            open_position,
+            kept_position,
+        ) = _calculate_positions(position, action)
 
-        extend_pos = (action_sign == 1) & (position_sign >= 0)
-        extend_neg = (action_sign == -1) & (position_sign <= 0)
-        extend_mask = extend_pos | extend_neg
-        close_mask = (action_sign != position_sign) & nz_action & nz_position
-        switch_mask = close_mask & (action_abs > position_abs)
-        not_switch_mask = ~switch_mask
-        open_mask = extend_mask | switch_mask
-
-        new_position = position + action
         new_position_sign = torch.sign(new_position)
-        new_position_abs = torch.abs(new_position)
-        close_position = (position - new_position * not_switch_mask) * close_mask
-        open_position = (new_position - position * not_switch_mask) * open_mask
-        kept_position = not_switch_mask * (
-            torch.min(position_abs, new_position_abs) * position_sign
-        )
 
         current_price = self.data[date_idx, time_idx, self.CHANNELS["open"]]
         slippage = (current_price * self._slippage_pct).clamp(
@@ -161,7 +149,7 @@ class MarketSimulatorIntraday:
 
         # Create default stop loss if none provided
         inf_value = torch.where(
-            new_position_sign == 1, self._inf_tensor, self._neg_inf_tensor
+            new_position_sign == 1, self._neg_inf_tensor, self._inf_tensor
         )
         stop_loss = torch.where(stop_loss.isnan(), inf_value, stop_loss)
 
@@ -173,39 +161,32 @@ class MarketSimulatorIntraday:
         stop_mask = (new_position_sign * (stop_loss - stop_check_price)) > 0
         stop_position = new_position * stop_mask
         new_position = new_position - stop_position
-        stop_action = -stop_position
-        stop_action_sign = torch.sign(stop_action)
-        stop_action_abs = torch.abs(stop_action)
-
-        # Calculate stop price
-        min_or_max = torch.min if new_position_sign >= 0 else torch.max
-        base_stop_price = min_or_max(stop_loss, current_price)
-        stop_price = base_stop_price + slippage * stop_action_sign
-        stop_commision = self.calculate_commission(stop_action_abs, stop_price)
+        stop_price = torch.where(
+            new_position_sign >= 0,
+            torch.min(stop_loss, current_price),
+            torch.max(stop_loss, current_price),
+        ) - slippage * torch.sign(stop_position)
+        stop_commision = self.calculate_commission(torch.abs(stop_position), stop_price)
 
         close_price = self.data[date_idx, time_idx, self.CHANNELS["close"]]
         close_price = torch.where(stop_mask, stop_price, close_price)
 
         prev_close_price = self.data[date_idx, time_idx - 1, self.CHANNELS["close"]]
 
-        # Calculate position value delta components
-        close_pos_delta = (execution_price - prev_close_price) * close_position
-        open_pos_delta = (close_price - execution_price) * open_position
-        kept_pos_delta = (close_price - prev_close_price) * kept_position
-
         position_value_delta = (
-            close_pos_delta + open_pos_delta + kept_pos_delta
+            (execution_price - prev_close_price) * close_position
+            + (close_price - execution_price) * open_position
+            + (close_price - prev_close_price) * kept_position
         ) * self.instrument.contract_multiplier
 
         profit = position_value_delta - commission - stop_commision
 
-        # Calculate cashflow
-        price_action_component = (
-            execution_price * (close_position - open_position)
-            + stop_price * stop_position
-        )
         cashflow = (
-            price_action_component * self.instrument.contract_multiplier
+            (
+                execution_price * (close_position - open_position)
+                + stop_price * stop_position
+            )
+            * self.instrument.contract_multiplier
             - commission
             - stop_commision
         )
@@ -241,3 +222,35 @@ class MarketSimulatorIntraday:
         )
 
         return commission
+
+
+def _calculate_positions(position: torch.Tensor, action: torch.Tensor) -> tuple:
+    action_sign = torch.sign(action)
+    action_abs = torch.abs(action)
+    position_sign = torch.sign(position)
+    position_abs = torch.abs(position)
+
+    close_mask = (action_sign != position_sign) & (action != 0) & (position != 0)
+    switch_mask = close_mask & (action_abs > position_abs)
+    not_switch_mask = ~switch_mask
+    open_mask = (
+        (action_sign == 1) & (position_sign >= 0)
+        | (action_sign == -1) & (position_sign <= 0)
+        | switch_mask
+    )
+
+    new_position = position + action
+    close_position = (position - new_position * not_switch_mask) * close_mask
+    open_position = (new_position - position * not_switch_mask) * open_mask
+    kept_position = not_switch_mask * (
+        torch.min(position_abs, torch.abs(new_position)) * position_sign
+    )
+
+    return (
+        action_sign,
+        action_abs,
+        new_position,
+        close_position,
+        open_position,
+        kept_position,
+    )
