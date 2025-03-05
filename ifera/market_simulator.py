@@ -9,6 +9,7 @@ import torch
 from .data_models import InstrumentData
 
 
+# pylint: disable=too-many-instance-attributes
 class MarketSimulatorIntraday:
     """
     Class representing a market simulator for intraday trading.
@@ -54,6 +55,7 @@ class MarketSimulatorIntraday:
     def __init__(self, instrument_data: InstrumentData):
         self.instrument: Final = instrument_data.instrument
         self.data: Final = instrument_data.data
+        self.mask: Final = instrument_data.valid_mask.any(dim=-1)  # Shape: [date, time]
 
         self._use_max_commission_mask: Final = torch.tensor(
             self.instrument.max_commission_pct > 0.0,
@@ -71,7 +73,12 @@ class MarketSimulatorIntraday:
         self._neg_inf_tensor = torch.tensor(
             -float("inf"), device=self.data.device, dtype=self.data.dtype
         )
+        self._zero_tensor = torch.tensor(0, device=self.data.device, dtype=torch.int64)
+        self._nan_tensor = torch.tensor(
+            float("nan"), device=self.data.device, dtype=self.data.dtype
+        )
 
+    # TODO: Handle 0 time_idx (prev_close price)
     # pylint: disable=too-many-locals
     @torch.compile()
     def calculate_step(
@@ -130,6 +137,11 @@ class MarketSimulatorIntraday:
         position = position_action[..., 2]
         action = position_action[..., 3]
 
+        action = torch.where(self.mask[date_idx, time_idx], action, self._zero_tensor)
+        stop_loss = torch.where(
+            self.mask[date_idx, time_idx], stop_loss, self._nan_tensor
+        )
+
         (
             action_sign,
             action_abs,
@@ -185,7 +197,7 @@ class MarketSimulatorIntraday:
         cashflow = (
             (
                 execution_price * (close_position - open_position)
-                + stop_price * stop_position
+                + stop_price.nan_to_num(posinf=0.0, neginf=0.0) * stop_position
             )
             * self.instrument.contract_multiplier
             - commission
