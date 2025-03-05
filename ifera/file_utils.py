@@ -4,6 +4,7 @@ File system utilities for the ifera package.
 
 from pathlib import Path
 from typing import Optional
+
 from .config import InstrumentConfig
 from .settings import settings
 

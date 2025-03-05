@@ -1,17 +1,18 @@
-import torch
+from typing import cast
+
 import pytest
+import torch
 from ifera.masked_series import (
-    ohlcv_to_masked,
     compress_tensor,
     decompress_tensor,
-    masked_sma,
+    masked_artr,
     masked_ema,
     masked_rtr,
-    masked_artr,
+    masked_sma,
+    ohlcv_to_masked,
 )
-from ifera.series import sma, ema, rtr, artr  # used for expected values
+from ifera.series import artr, ema, rtr, sma  # used for expected values
 from torch.masked import masked_tensor
-from typing import cast
 
 # Fixtures
 
@@ -81,13 +82,13 @@ def ohlcv_single_date_masked(ohlcv_single_date):
 
 
 def test_compress_decompress():
-    # Test that decompressing a compressed tensor recovers the original 
+    # Test that decompressing a compressed tensor recovers the original
     # valid data in the right positions.
     data = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
     mask = torch.tensor([True, False, True, False, True])
     compressed = compress_tensor(data, mask)
     decompressed = decompress_tensor(compressed, mask)
-    # In positions where mask is True, we expect original values; 
+    # In positions where mask is True, we expect original values;
     # other positions are filled with NaN.
     expected = torch.tensor([1.0, float("nan"), 3.0, float("nan"), 5.0])
     torch.testing.assert_close(

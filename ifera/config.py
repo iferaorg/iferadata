@@ -5,7 +5,8 @@ Data models for financial instruments.
 import datetime
 import json
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 

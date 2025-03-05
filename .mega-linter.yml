@@ -19,7 +19,7 @@ DISABLE:
   - SPELL # Comment to enable checks of spelling mistakes
 
 DISABLE_LINTERS:
-  - PYTHON_PYRIGHT 
+  - PYTHON_PYRIGHT
 
 SHOW_ELAPSED_TIME: true
 

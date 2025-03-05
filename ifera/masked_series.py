@@ -3,11 +3,13 @@ Masked tensor operations for financial time series data.
 Provides utility functions for handling missing data in time series using PyTorch's MaskedTensor.
 """
 
-import torch
-from .series import sma, ema, rtr
-from torch.masked import masked_tensor, MaskedTensor
-from einops import rearrange, repeat
 from typing import Optional, cast
+
+import torch
+from einops import rearrange, repeat
+from torch.masked import MaskedTensor, masked_tensor
+
+from .series import ema, rtr, sma
 
 
 def ohlcv_to_masked(ohlcv_data: torch.Tensor) -> MaskedTensor:
@@ -105,7 +107,7 @@ def masked_sma(t: MaskedTensor, window: int) -> MaskedTensor:
         window (int): Window size for the simple moving average calculation.
 
     Returns:
-        MaskedTensor: Masked tensor containing the SMA values with the same 
+        MaskedTensor: Masked tensor containing the SMA values with the same
         shape and mask as the input.
     """
     data = t.get_data()
@@ -136,7 +138,7 @@ def masked_ema(
                                                   in chunks of this size to reduce memory usage.
 
     Returns:
-        MaskedTensor: Masked tensor containing the EMA values with the 
+        MaskedTensor: Masked tensor containing the EMA values with the
         same shape and mask as the input.
     """
     data = t.get_data()

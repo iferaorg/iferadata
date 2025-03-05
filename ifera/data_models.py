@@ -10,12 +10,12 @@ The module leverages PyTorch tensors and masked operations for efficient
 computation on both CPU and GPU devices.
 """
 
-from typing import Optional
 import math
+from typing import Optional
 
 import torch
-from torch.masked import MaskedTensor, masked_tensor
 from einops import repeat
+from torch.masked import MaskedTensor, masked_tensor
 
 from .config import InstrumentConfig
 from .data_loading import load_data_tensor

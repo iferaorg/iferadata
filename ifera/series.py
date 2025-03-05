@@ -1,12 +1,13 @@
 """
 Tensor operations for financial time series data.
-Provides utility functions for time series analysis such as moving averages 
+Provides utility functions for time series analysis such as moving averages
 and relative true range calculations.
 """
 
+from typing import Optional
+
 import torch
 from einops import rearrange
-from typing import Optional
 
 
 def sma(t: torch.Tensor, window: int) -> torch.Tensor:
@@ -113,7 +114,9 @@ def _ema_chunked(x: torch.Tensor, alpha: float, chunk_size: int) -> torch.Tensor
         y_local = x_chunk @ weight_local
 
         if idx > 0:
-            decay = (1 - alpha) ** torch.arange(1, x_chunk.shape[-1] + 1, device=x.device)
+            decay = (1 - alpha) ** torch.arange(
+                1, x_chunk.shape[-1] + 1, device=x.device
+            )
             y_chunk = y_local + decay * y_prev[..., None]
         else:
             y_chunk = y_local
@@ -188,7 +191,7 @@ def rtr(t: torch.Tensor) -> torch.Tensor:
     Returns
     -------
     rtr_t : torch.Tensor
-        Output tensor with shape (..., time). NaN values in input 
+        Output tensor with shape (..., time). NaN values in input
         will result in NaN values in output.
     """
     # Extract channels

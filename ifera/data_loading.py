@@ -2,24 +2,26 @@
 Functions for loading and processing financial data.
 """
 
-from pathlib import Path
-from typing import Optional, Dict, Any
 import zipfile as zip_module  # Renamed to avoid parameter conflict
-import pandas as pd
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 import numpy as np
+import pandas as pd
 import torch
 from einops import rearrange
 from tqdm import tqdm
+
 from .config import InstrumentConfig
-from .settings import settings
-from .s3_utils import (
-    download_s3_file,
-    upload_s3_file,
-    check_s3_file_exists,
-    get_s3_last_modified,
-)
 from .data_processing import process_data
 from .file_utils import make_path
+from .s3_utils import (
+    check_s3_file_exists,
+    download_s3_file,
+    get_s3_last_modified,
+    upload_s3_file,
+)
+from .settings import settings
 
 
 def make_s3_key(instrument: InstrumentConfig, zipfile: bool) -> str:
@@ -296,6 +298,8 @@ def load_data_tensor(
     )
     np_array = df.to_numpy()
     tensor = torch.as_tensor(np_array, dtype=dtype, device=device)
-    tensor = rearrange(tensor, '(d t) c -> d t c', t=instrument.total_steps)
+    tensor = rearrange(tensor, "(d t) c -> d t c", t=instrument.total_steps)
 
-    return tensor[..., 4:].clone()  # Skip the first 4 columns (date, time, trade_date, offset_time)
+    return tensor[
+        ..., 4:
+    ].clone()  # Skip the first 4 columns (date, time, trade_date, offset_time)
