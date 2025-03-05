@@ -32,7 +32,6 @@ class InstrumentData:
         )
         self._data = None
         self._chunk_size = None
-        self._masked_artr = None
 
     @property
     def data(self) -> torch.Tensor:
@@ -56,25 +55,6 @@ class InstrumentData:
     def maked_data(self) -> MaskedTensor:
         """Masked data tensor."""
         return masked_tensor(self.data, self.valid_mask)
-
-    @property
-    def artr(self, alpha: float = 1.0 / 14.0, acrossday: bool = False) -> torch.Tensor:
-        """Average Relative True Range (ATR) data."""
-        if self._masked_artr is None:
-            self._masked_artr = masked_artr(
-                self.maked_data,
-                alpha=alpha,
-                acrossday=acrossday,
-                chunk_size=self.chunk_size,
-            )
-
-        artr = self._masked_artr.get_data()
-
-        if type(artr) == torch.Tensor:
-            return artr
-
-        # If the data is not a tensor, raise an error
-        raise ValueError("The data is not a tensor")
 
     @property
     def chunk_size(self) -> int:
@@ -101,6 +81,23 @@ class InstrumentData:
             sqrt_value = math.sqrt(value)
 
             # Find the largest power of 2 less than the calculated value
-            self._chunk_size = 2 ** int(math.log2(sqrt_value))
+            self._chunk_size = int(2 ** int(math.log2(sqrt_value)))
 
         return self._chunk_size
+
+    def artr(self, alpha: float = 1.0 / 14.0, acrossday: bool = False) -> torch.Tensor:
+        """Average Relative True Range (ATR) data."""
+        ma = masked_artr(
+            self.maked_data,
+            alpha=alpha,
+            acrossday=acrossday,
+            chunk_size=self.chunk_size,
+        )
+
+        artr = ma.get_data()
+
+        if isinstance(artr, torch.Tensor):
+            return artr
+
+        # If the data is not a tensor, raise an error
+        raise ValueError("The data is not a tensor")
