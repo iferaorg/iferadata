@@ -3,6 +3,7 @@ Module containing market simulator implementations for backtesting trading strat
 """
 
 from typing import Final
+
 import torch
 
 from .data_models import InstrumentData

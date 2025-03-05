@@ -6,6 +6,7 @@ from .config import BrokerConfig, ConfigManager, InstrumentConfig
 from .data_loading import load_data, load_data_tensor
 from .data_models import InstrumentData
 from .data_processing import aggregate_large_quote_file, process_data
+from .market_simulator import MarketSimulatorIntraday
 from .masked_series import (
     masked_artr,
     masked_ema,
@@ -15,7 +16,6 @@ from .masked_series import (
 )
 from .series import artr, ema, ema_slow, ffill, rtr, sma
 from .settings import settings
-from .market_simulator import MarketSimulatorIntraday
 
 __all__ = [
     "InstrumentConfig",
