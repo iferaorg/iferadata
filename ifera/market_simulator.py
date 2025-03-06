@@ -5,6 +5,7 @@ Module containing market simulator implementations for backtesting trading strat
 from typing import Final
 
 import torch
+from einops import rearrange
 
 from .data_models import InstrumentData
 
@@ -57,16 +58,16 @@ class MarketSimulatorIntraday:
         self.data: Final = instrument_data.data
         self.mask: Final = instrument_data.valid_mask.any(dim=-1)  # Shape: [date, time]
 
+        self.data_flat = rearrange(self.data, "d t c -> (d t) c")
+
         self._use_max_commission_mask: Final = torch.tensor(
             self.instrument.max_commission_pct > 0.0,
             dtype=torch.bool,
             device=instrument_data.device,
         )
-
         self._slippage_pct: Final = (
             self.instrument.slippage / self.instrument.reference_price
         )
-
         self._inf_tensor = torch.tensor(
             float("inf"), device=self.data.device, dtype=self.data.dtype
         )
@@ -78,7 +79,6 @@ class MarketSimulatorIntraday:
             float("nan"), device=self.data.device, dtype=self.data.dtype
         )
 
-    # TODO: Handle 0 time_idx (prev_close price)
     # pylint: disable=too-many-locals
     @torch.compile()
     def calculate_step(
@@ -184,7 +184,7 @@ class MarketSimulatorIntraday:
         close_price = self.data[date_idx, time_idx, self.CHANNELS["close"]]
         close_price = torch.where(stop_mask, stop_price, close_price)
 
-        prev_close_price = self.data[date_idx, time_idx - 1, self.CHANNELS["close"]]
+        prev_close_price = self._get_prev_close_price(date_idx, time_idx)
 
         position_value_delta = (
             (execution_price - prev_close_price) * close_position
@@ -235,6 +235,16 @@ class MarketSimulatorIntraday:
         )
 
         return commission
+
+    def _get_prev_close_price(
+        self, date_idx: torch.Tensor, time_idx: torch.Tensor
+    ) -> torch.Tensor:
+        flat_idx = date_idx * self.data.shape[1] + time_idx
+        return torch.where(
+            flat_idx > 0,
+            self.data_flat[flat_idx - 1, self.CHANNELS["close"]],
+            self.data_flat[flat_idx, self.CHANNELS["open"]],
+        )
 
 
 def _calculate_positions(position: torch.Tensor, action: torch.Tensor) -> tuple:
