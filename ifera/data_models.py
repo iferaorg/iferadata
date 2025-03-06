@@ -66,6 +66,9 @@ class InstrumentData:
         )
         self._data = None
         self._chunk_size = 0
+        self._artr = None
+        self._alpha = 1.0 / 14
+        self._acrossday = True
 
     @property
     def data(self) -> torch.Tensor:
@@ -78,6 +81,17 @@ class InstrumentData:
                 device=self.device,
             )
         return self._data
+
+    @property
+    def artr_alpha(self) -> float:
+        """Alpha parameter for ARTR calculation."""
+        return self._alpha
+
+    @artr_alpha.setter
+    def artr_alpha(self, value: float) -> None:
+        """Set alpha parameter and clear cached ARTR values."""
+        self._alpha = value
+        self._artr = None
 
     @property
     def valid_mask(self) -> torch.Tensor:
@@ -119,16 +133,18 @@ class InstrumentData:
 
         return self._chunk_size
 
-    def artr(self, alpha: float = 1.0 / 14.0, acrossday: bool = False) -> torch.Tensor:
+    @property
+    def artr(self) -> torch.Tensor:
         """Average Relative True Range (ATR) data."""
-        ma = masked_artr(
-            self.maked_data,
-            alpha=alpha,
-            acrossday=acrossday,
-            chunk_size=self.chunk_size,
-        )
+        if self._artr is None:
+            self._artr = masked_artr(
+                self.maked_data,
+                alpha=self._alpha,
+                acrossday=self._acrossday,
+                chunk_size=self.chunk_size,
+            )
 
-        artr = ma.get_data()
+        artr = self._artr.get_data()
 
         if isinstance(artr, torch.Tensor):
             return artr
