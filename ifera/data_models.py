@@ -64,9 +64,9 @@ class InstrumentData:
                 else torch.device("cpu")
             )
         )
-        self._data = None
+        self._data: None | torch.Tensor = None
         self._chunk_size = 0
-        self._artr = None
+        self._artr: None | MaskedTensor = None
         self._alpha = 1.0 / 14
         self._acrossday = True
 

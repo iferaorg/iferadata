@@ -10,7 +10,6 @@ from einops import rearrange
 from .data_models import InstrumentData
 
 
-# pylint: disable=too-many-instance-attributes
 class MarketSimulatorIntraday:
     """
     Class representing a market simulator for intraday trading.
@@ -58,7 +57,7 @@ class MarketSimulatorIntraday:
         self.data: Final = instrument_data.data
         self.mask: Final = instrument_data.valid_mask.any(dim=-1)  # Shape: [date, time]
 
-        self.data_flat = rearrange(self.data, "d t c -> (d t) c")
+        self.data_flat: Final = rearrange(self.data, "d t c -> (d t) c")
 
         self._use_max_commission_mask: Final = torch.tensor(
             self.instrument.max_commission_pct > 0.0,
@@ -68,16 +67,16 @@ class MarketSimulatorIntraday:
         self._slippage_pct: Final = (
             self.instrument.slippage / self.instrument.reference_price
         )
-        self._inf_tensor = torch.tensor(
+        self._inf_tensor: Final = torch.tensor(
             float("inf"), device=self.data.device, dtype=self.data.dtype
         )
-        self._neg_inf_tensor = torch.tensor(
+        self._neg_inf_tensor: Final = torch.tensor(
             -float("inf"), device=self.data.device, dtype=self.data.dtype
         )
-        self._zero_tensor = torch.tensor(0, device=self.data.device, dtype=torch.int64)
-        self._nan_tensor = torch.tensor(
+        self._nan_tensor: Final = torch.tensor(
             float("nan"), device=self.data.device, dtype=self.data.dtype
         )
+        self._zero_tensor: Final = torch.tensor(0, device=self.data.device, dtype=torch.int64)
 
     # pylint: disable=too-many-locals
     @torch.compile()

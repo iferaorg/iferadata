@@ -1,6 +1,7 @@
 [MESSAGES CONTROL]
 disable=imports,
-        too-few-public-methods
+        too-few-public-methods,
+        too-many-instance-attributes
 
 [MASTER]
 ignore=tests
