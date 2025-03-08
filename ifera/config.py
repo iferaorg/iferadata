@@ -86,7 +86,12 @@ class BaseInstrumentConfig(BaseModel):
             self.time_step = pd.to_timedelta(self.interval)
             if self.trading_start is None or self.trading_end is None:
                 raise ValueError("Both trading_start and trading_end are required.")
-            self.end_time = self.trading_end - self.trading_start - self.time_step
+            all_steps = pd.timedelta_range(
+                start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=self.time_step
+            )
+            self.end_time = all_steps[
+                all_steps < self.trading_end - self.trading_start
+            ][-1]
             total_seconds = self.end_time.total_seconds()
             step_seconds = self.time_step.total_seconds()
             if step_seconds <= 0:
