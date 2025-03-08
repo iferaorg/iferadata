@@ -14,7 +14,7 @@ import math
 from typing import Dict, Optional, Tuple
 
 import torch
-from einops import repeat, rearrange
+from einops import rearrange, repeat
 from torch.masked import MaskedTensor, masked_tensor
 
 from .config import InstrumentConfig
