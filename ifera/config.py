@@ -5,7 +5,7 @@ Data models for financial instruments.
 import datetime
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -175,6 +175,10 @@ class ConfigManager:
         self.last_brokers_update: Optional[float] = None
         self.instruments_data: Dict[str, Dict[str, Any]] = {}
         self.brokers_data: Dict[str, Dict[str, Any]] = {}
+        # Cache for InstrumentConfig instances
+        self._config_cache: Dict[Tuple[str, str], InstrumentConfig] = {}
+        # Cache for derived configs with different intervals
+        self._derived_cache: Dict[Tuple[str, str, str], InstrumentConfig] = {}
         self._load_data()
 
     def _load_data(self):
@@ -212,6 +216,10 @@ class ConfigManager:
             self.last_brokers_update = path.stat().st_mtime
         except Exception as e:
             raise OSError(f"Error accessing configuration files: {e}") from e
+
+        # Clear caches when data is reloaded
+        self._config_cache.clear()
+        self._derived_cache.clear()
 
     def reload_if_updated(self):
         """Reload configs if files have been modified."""
@@ -265,6 +273,13 @@ class ConfigManager:
 
     def get_config(self, broker_name: str, instrument_key: str) -> InstrumentConfig:
         """Get combined configuration for a specific instrument and broker."""
+        self.reload_if_updated()
+
+        # Check if we have a cached config for this combination
+        cache_key = (broker_name, instrument_key)
+        if cache_key in self._config_cache:
+            return self._config_cache[cache_key]
+
         # Get base instrument configuration
         base_config = self.get_base_instrument_config(instrument_key)
 
@@ -277,6 +292,7 @@ class ConfigManager:
                 f"No broker configuration found for instrument '{base_config.symbol}' "
                 f"with broker '{broker_name}'"
             ) from e
+
         # Combine the configurations
         combined_dict = {
             **base_config.model_dump(),
@@ -288,7 +304,11 @@ class ConfigManager:
             "broker_name": broker_name,
         }
 
-        return InstrumentConfig(**combined_dict)
+        # Create and cache the config
+        config = InstrumentConfig(**combined_dict)
+        self._config_cache[cache_key] = config
+
+        return config
 
     def create_derived_config(
         self, parent_config: InstrumentConfig, new_interval: str
@@ -306,6 +326,11 @@ class ConfigManager:
         Raises:
             ValueError: If the new interval doesn't meet requirements
         """
+        # Check if we already have this derived config in the cache
+        cache_key = (parent_config.broker_name, parent_config.symbol, new_interval)
+        if cache_key in self._derived_cache:
+            return self._derived_cache[cache_key]
+
         # Convert intervals to seconds for validation
         parent_step_seconds = parent_config.time_step.total_seconds()
         new_time_step = pd.to_timedelta(new_interval)
@@ -348,4 +373,12 @@ class ConfigManager:
         # Set parent reference (excluded from serialization)
         child_config.parent_config = parent_config
 
+        # Cache the derived config
+        self._derived_cache[cache_key] = child_config
+
         return child_config
+
+    def clear_cache(self):
+        """Clear all configuration caches."""
+        self._config_cache.clear()
+        self._derived_cache.clear()
