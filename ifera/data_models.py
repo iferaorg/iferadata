@@ -144,6 +144,17 @@ class InstrumentData:
         self._artr = None
 
     @property
+    def artr_acrossday(self) -> bool:
+        """Flag indicating whether to calculate ARTR across days."""
+        return self._acrossday
+
+    @artr_acrossday.setter
+    def artr_acrossday(self, value: bool) -> None:
+        """Set acrossday flag and clear cached ARTR values."""
+        self._acrossday = value
+        self._artr = None
+
+    @property
     def valid_mask(self) -> torch.Tensor:
         """Mask indicating valid data points."""
         vol_mask = self.data[..., -1].to(torch.int) != 0
