@@ -76,7 +76,9 @@ class MarketSimulatorIntraday:
         self._nan_tensor: Final = torch.tensor(
             float("nan"), device=self.data.device, dtype=self.data.dtype
         )
-        self._zero_tensor: Final = torch.tensor(0, device=self.data.device, dtype=torch.int64)
+        self._zero_tensor: Final = torch.tensor(
+            0, device=self.data.device, dtype=torch.int64
+        )
 
     # pylint: disable=too-many-locals
     @torch.compile()
