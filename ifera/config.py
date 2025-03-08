@@ -161,14 +161,33 @@ class BrokerConfig(BaseModel):
 
 
 class ConfigManager:
-    """Loads and manages instrument configurations from JSON."""
+    """
+    Loads and manages instrument configurations from JSON.
+    Implemented as a singleton to ensure only one instance exists.
+    """
+
+    _instance = None  # Singleton instance
+
+    def __new__(
+        cls,
+        instruments_filename: str = "data/instruments.json",
+        brokers_filename: str = "data/brokers.json",
+    ):
+        """Singleton pattern implementation."""
+        if cls._instance is None:
+            cls._instance = super(ConfigManager, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     def __init__(
         self,
         instruments_filename: str = "data/instruments.json",
         brokers_filename: str = "data/brokers.json",
     ):
-        """Initialize with configuration filenames."""
+        """Initialize with configuration filenames (once)."""
+        if getattr(self, "_initialized", False):
+            return
+
         self.instruments_filename = instruments_filename
         self.brokers_filename = brokers_filename
         self.last_instruments_update: Optional[float] = None
@@ -180,6 +199,7 @@ class ConfigManager:
         # Cache for derived configs with different intervals
         self._derived_cache: Dict[Tuple[str, str, str], InstrumentConfig] = {}
         self._load_data()
+        self._initialized = True
 
     def _load_data(self):
         """Load data from the JSON files."""
