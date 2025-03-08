@@ -14,7 +14,7 @@ import math
 from typing import Dict, Optional, Tuple
 
 import torch
-from einops import repeat
+from einops import repeat, rearrange
 from torch.masked import MaskedTensor, masked_tensor
 
 from .config import InstrumentConfig
@@ -74,13 +74,63 @@ class InstrumentData:
     def data(self) -> torch.Tensor:
         """Read-only property that lazily loads data on first access."""
         if self._data is None:
-            self._data = load_data_tensor(
-                self.instrument,
-                zipfile=self.zipfile,
-                dtype=self.dtype,
-                device=self.device,
-            )
+            if self.instrument.parent_config is not None:
+                self._data = self._aggregate_from_parent(self.instrument.parent_config)
+            else:
+                self._data = load_data_tensor(
+                    self.instrument,
+                    zipfile=self.zipfile,
+                    dtype=self.dtype,
+                    device=self.device,
+                )
         return self._data
+
+    def _aggregate_from_parent(self, parent_config: InstrumentConfig) -> torch.Tensor:
+        """Aggregate data from parent data."""
+        multiplier = (
+            self.instrument.time_step.total_seconds()
+            // parent_config.time_step.total_seconds()
+        )
+        if multiplier <= 0:
+            raise ValueError(
+                "The parent time step must be a multiple of the child time step."
+            )
+        manager = DataManager()
+        parent_data = manager.get_instrument_data(
+            parent_config,
+            self.zipfile,
+            self.dtype,
+            self.device,
+        ).data
+
+        parent_steps = parent_data.shape[1]
+
+        if parent_steps % multiplier != 0:
+            padding = parent_steps - parent_steps // multiplier * multiplier
+            padding_data = torch.zeros(
+                (parent_data.shape[0], parent_data.shape[2]),
+                dtype=parent_data.dtype,
+                device=parent_data.device,
+            )
+            padding_data[:, 0:4] = parent_data[
+                :, -1, 3, None
+            ]  # Open, High, Low, Close <- Last Close
+            padding_data = repeat(padding_data, "d c -> d g c", g=padding)
+            parent_data = torch.cat([parent_data, padding_data], dim=1)
+
+        parent_data = rearrange(parent_data, "d (g n) c -> d g c n", n=multiplier)
+        result = torch.zeros(
+            (parent_data.shape[0], self.instrument.total_steps, parent_data.shape[2]),
+            dtype=parent_data.dtype,
+            device=parent_data.device,
+        )
+        result[:, :, 0] = parent_data[:, :, 0, 0]  # Open
+        result[:, :, 1] = parent_data[:, :, 1].max(dim=-1).values  # High
+        result[:, :, 2] = parent_data[:, :, 2].min(dim=-1).values  # Low
+        result[:, :, 3] = parent_data[:, :, 3, -1]  # Close
+        result[:, :, 4] = parent_data[:, :, 4].sum(dim=-1)  # Volume
+
+        return result
 
     @property
     def artr_alpha(self) -> float:
