@@ -136,6 +136,7 @@ class InstrumentConfig(BaseInstrumentConfig, BrokerInstrumentConfig):
     Combined instrument configuration with both base and broker-specific data.
     """
 
+    broker_name: str = Field("", description="Name of the broker")
     parent_config: Optional["InstrumentConfig"] = Field(None, exclude=True)
 
     model_config = {
@@ -284,6 +285,7 @@ class ConfigManager:
                 self.last_instruments_update or float("-inf"),
                 self.last_brokers_update or float("-inf"),
             ),
+            "broker_name": broker_name,
         }
 
         return InstrumentConfig(**combined_dict)
