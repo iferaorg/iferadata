@@ -10,6 +10,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+SECONDS_IN_DAY = 86400
+
 
 def to_camel(string: str) -> str:
     """Convert snake_case strings to camelCase."""
@@ -129,7 +131,13 @@ class InstrumentConfig(BaseInstrumentConfig, BrokerInstrumentConfig):
     Combined instrument configuration with both base and broker-specific data.
     """
 
-    # No additional attributes needed
+    parent_config: Optional["InstrumentConfig"] = Field(None, exclude=True)
+
+    model_config = {
+        "arbitrary_types_allowed": True,
+        "alias_generator": to_camel,
+        "populate_by_name": True,
+    }
 
 
 class BrokerConfig(BaseModel):
@@ -274,3 +282,63 @@ class ConfigManager:
         }
 
         return InstrumentConfig(**combined_dict)
+
+    def create_derived_config(
+        self, parent_config: InstrumentConfig, new_interval: str
+    ) -> InstrumentConfig:
+        """
+        Create a derived InstrumentConfig with a different interval.
+
+        Args:
+            parent_config: The parent InstrumentConfig
+            new_interval: The new interval string (e.g., '5m', '1h', '1d')
+
+        Returns:
+            A new InstrumentConfig with updated interval and derived fields
+
+        Raises:
+            ValueError: If the new interval doesn't meet requirements
+        """
+        # Convert intervals to seconds for validation
+        parent_step_seconds = parent_config.time_step.total_seconds()
+        new_time_step = pd.to_timedelta(new_interval)
+        new_step_seconds = new_time_step.total_seconds()
+
+        # Validate interval relationships
+        if new_step_seconds < parent_step_seconds:
+            raise ValueError(
+                f"Child interval ({new_interval}) must be greater than or equal to "
+                f"parent interval ({parent_config.interval})"
+            )
+
+        if new_step_seconds % parent_step_seconds != 0:
+            raise ValueError(
+                f"Child step seconds ({new_step_seconds}) must be an integer multiple of "
+                f"parent step seconds ({parent_step_seconds})"
+            )
+
+        # For intervals less than a day, ensure they divide evenly into a day
+        if new_step_seconds < SECONDS_IN_DAY:
+            if SECONDS_IN_DAY % new_step_seconds != 0:
+                raise ValueError(
+                    f"For intervals less than a day, the interval ({new_interval}) "
+                    f"must divide evenly into {SECONDS_IN_DAY} seconds"
+                )
+        # For intervals greater than a day, ensure they're multiples of a day
+        elif new_step_seconds % SECONDS_IN_DAY != 0:
+            raise ValueError(
+                f"For intervals greater than a day, the interval ({new_interval}) "
+                f"must be an integer multiple of a day ({SECONDS_IN_DAY} seconds)"
+            )
+
+        # Create a copy of the parent config dictionary and update with new values
+        config_dict = parent_config.model_dump()
+        config_dict["interval"] = new_interval
+
+        # Create new config with updated interval
+        child_config = InstrumentConfig(**config_dict)
+
+        # Set parent reference (excluded from serialization)
+        child_config.parent_config = parent_config
+
+        return child_config
