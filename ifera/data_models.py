@@ -85,9 +85,10 @@ class InstrumentData:
                 )
         return self._data
 
+    # TODO: Handle time steps larger than 1 day
     def _aggregate_from_parent(self, parent_config: InstrumentConfig) -> torch.Tensor:
         """Aggregate data from parent data."""
-        multiplier = (
+        multiplier = int(
             self.instrument.time_step.total_seconds()
             // parent_config.time_step.total_seconds()
         )
@@ -106,7 +107,7 @@ class InstrumentData:
         parent_steps = parent_data.shape[1]
 
         if parent_steps % multiplier != 0:
-            padding = parent_steps - parent_steps // multiplier * multiplier
+            padding = (parent_steps // multiplier + 1) * multiplier - parent_steps
             padding_data = torch.zeros(
                 (parent_data.shape[0], parent_data.shape[2]),
                 dtype=parent_data.dtype,

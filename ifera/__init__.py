@@ -4,7 +4,7 @@ ifera
 
 from .config import BrokerConfig, ConfigManager, InstrumentConfig
 from .data_loading import load_data, load_data_tensor
-from .data_models import InstrumentData
+from .data_models import InstrumentData, DataManager
 from .data_processing import aggregate_large_quote_file, process_data
 from .market_simulator import MarketSimulatorIntraday
 from .masked_series import (
@@ -38,5 +38,6 @@ __all__ = [
     "masked_rtr",
     "masked_artr",
     "InstrumentData",
+    "DataManager",
     "MarketSimulatorIntraday",
 ]
