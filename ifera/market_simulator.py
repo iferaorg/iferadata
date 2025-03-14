@@ -80,10 +80,14 @@ class MarketSimulatorIntraday:
             0, device=self.data.device, dtype=torch.int64
         )
 
-    # pylint: disable=too-many-locals
-    @torch.compile()
+    @torch.compile(mode="max-autotune")
     def calculate_step(
-        self, position_action: torch.Tensor, stop_loss: torch.Tensor
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        action: torch.Tensor,
+        stop_loss: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Calculate the result of a trading step given the current state and an action.
@@ -93,14 +97,12 @@ class MarketSimulatorIntraday:
         position_action : torch.IntTensor
             Tensor containing the position and action information for each batch.
             Has shape of (batch_size, 4) where the columns are:
-            position_action[..., 0]:
-                Indices of the dates in the data tensor.
-            position_action[..., 1]:
-                Indices of the time steps in the data tensor.
-            position_action[..., 2]:
+            date_idx: Indices of the dates in the data tensor.
+            time_idx: Indices of the time steps in the data tensor.
+            position:
                 Current position. Positive for long positions, negative for short positions,
                 and zero for no position.
-            position_action[..., 3]:
+            action:
                 Action to take. 0 = do nothing, positive = buy, negative = sell.
                 The absolute value is the number of contracts to buy or sell.
         stop_loss : torch.Tensor, optional
@@ -133,11 +135,7 @@ class MarketSimulatorIntraday:
         the execution price. If a stop loss level is provided, the function will also calculate
         the effect of the stop loss order.
         """
-        date_idx = position_action[..., 0]
-        time_idx = position_action[..., 1]
-        position = position_action[..., 2]
-        action = position_action[..., 3]
-
+        # No trades on masked out dates and times
         action = torch.where(self.mask[date_idx, time_idx], action, self._zero_tensor)
         stop_loss = torch.where(
             self.mask[date_idx, time_idx], stop_loss, self._nan_tensor

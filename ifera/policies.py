@@ -1,0 +1,536 @@
+"""
+Module containing trading policy implementations for making trading decisions.
+
+Trading policies are responsible for determining actions based on market data
+and current trading state. The module provides a composite policy structure
+that delegates decisions to specialized sub-policies depending on the current
+trading context.
+"""
+
+import torch
+from torch import nn
+from typing import List, Tuple, Union, Dict
+from .data_models import InstrumentData, DataManager
+from .config import ConfigManager
+
+
+class TradingPolicy(nn.Module):
+    """
+    A composite trading policy that delegates to specialized sub-policies.
+
+    This policy orchestrates multiple sub-policies that handle different aspects
+    of trading decision making:
+    - Opening new positions
+    - Setting initial stop loss levels
+    - Managing existing positions
+    - Determining when episodes should terminate (for backtesting/RL)
+
+    All methods operate on batched inputs and outputs, supporting vectorized
+    operations for efficiency.
+
+    Parameters
+    ----------
+    instrument_data : InstrumentData
+        Data for the financial instrument being traded
+    open_position_policy : object
+        Policy for determining actions when current position is 0
+    initial_stop_loss_policy : object
+        Policy for setting stop loss levels when opening new positions
+    position_maintenance_policy : object
+        Policy for managing existing positions (actions and stop loss updates)
+
+    Notes
+    -----
+    All sub-policies must implement a forward method with compatible signatures.
+    """
+
+    def __init__(
+        self,
+        instrument_data: InstrumentData,
+        open_position_policy: torch.nn.Module,
+        initial_stop_loss_policy: torch.nn.Module,
+        position_maintenance_policy: torch.nn.Module,
+    ) -> None:
+        self.instrument_data = instrument_data
+        self.open_position_policy = open_position_policy
+        self.initial_stop_loss_policy = initial_stop_loss_policy
+        self.position_maintenance_policy = position_maintenance_policy
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Determine trading actions and stop loss levels based on current state.
+
+        This method delegates to the appropriate sub-policies based on the current
+        position state and already-done episodes.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+        position : torch.Tensor
+            Current positions for each batch element (0 = no position)
+        prev_stop : torch.Tensor
+            Previous stop loss levels
+        entry_price : torch.Tensor, optional
+            Entry price for current positions
+
+        Returns
+        -------
+        action : torch.Tensor
+            Actions to take (0 = no action, positive = buy, negative = sell)
+        stop_loss : torch.Tensor
+            Stop loss price levels
+        """
+        # Initialize result tensors
+        action = torch.zeros_like(position)
+        stop_loss = torch.full_like(prev_stop, float("nan"))
+
+        # Create masks for different position states
+        no_position_mask = position == 0
+        has_position_mask = position != 0
+
+        # Handle batches with no position (position == 0)
+        if no_position_mask.any():
+            # Get actions for opening positions
+            open_actions = self.open_position_policy(
+                date_idx[no_position_mask],
+                time_idx[no_position_mask],
+                position[no_position_mask],
+            )
+            action[no_position_mask] = open_actions
+
+            # For batches where we're opening a position, get initial stop loss
+            opening_position_mask = no_position_mask & (open_actions != 0)
+            if opening_position_mask.any():
+                initial_stops = self.initial_stop_loss_policy(
+                    date_idx[opening_position_mask],
+                    time_idx[opening_position_mask],
+                    open_actions[
+                        opening_position_mask != no_position_mask
+                    ],  # Extract only relevant actions
+                )
+                stop_loss[opening_position_mask] = initial_stops
+
+        # Handle batches with existing positions
+        if has_position_mask.any():
+            maintenance_actions, maintenance_stops = self.position_maintenance_policy(
+                date_idx[has_position_mask],
+                time_idx[has_position_mask],
+                position[has_position_mask],
+                prev_stop[has_position_mask],
+                entry_price[has_position_mask] if entry_price is not None else None,
+            )
+            action[has_position_mask] = maintenance_actions
+            stop_loss[has_position_mask] = maintenance_stops
+
+        return action, stop_loss
+
+
+class AlwaysOpenPolicy(nn.Module):
+    """
+    Policy that always opens a position.
+
+    This policy is used to test the trading policy structure with a simple
+    sub-policy that always opens a position.
+
+    Parameters
+    ----------
+    direction : int
+        Direction of the position (1 = long, -1 = short
+    """
+
+    def __init__(self, direction) -> None:
+        self.direction = direction
+
+    def forward(
+        self, date_idx: torch.Tensor, time_idx: torch.Tensor, position: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Determine actions for opening new positions.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+        position : torch.Tensor
+            Current positions for each batch element (0 = no position)
+
+        Returns
+        -------
+        action : torch.Tensor
+            Actions to take (0 = no action, positive = buy, negative = sell)
+        """
+        _, _ = date_idx, time_idx
+        return torch.ones_like(position) * self.direction
+
+
+class ArtrStopLossPolicy(nn.Module):
+    """
+    Policy for setting stop loss levels based on ATR multiples.
+
+    This policy sets stop loss levels based on the average true range (ATR)
+    of the instrument data. The stop loss is set at a multiple of the ATR
+    from the current price.
+
+    Parameters
+    ----------
+    instrument_data : InstrumentData
+        Data for the financial instrument being traded
+    atr_multiple : float
+        Multiple of the ATR to use for setting stop loss levels
+    """
+
+    def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
+        self.idata = instrument_data
+        self.atr_multiple = atr_multiple
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        action: torch.Tensor,
+        prev_stop: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Determine stop loss levels for opening new positions.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+        position : torch.Tensor
+            Current positions for each batch element (0 = no
+            position, positive = long, negative = short)
+        action : torch.Tensor
+            Actions to take (0 = no action, positive = buy, negative = sell)
+        prev_stop : torch.Tensor
+            Previous stop loss levels
+
+        Returns
+        -------
+        stop_loss : torch.Tensor
+            Stop loss price levels
+        """
+        direction = (position + action).sign()
+
+        # Replace NaN values in prev_stop with infinity (negative for long positions,
+        # positive for short positions) to ensure proper stop loss initialization
+        prev_stop = torch.where(
+            torch.isnan(prev_stop), torch.inf * direction * -1, prev_stop
+        )
+
+        # Relative ATR multiplier for stop loss levels
+        artr = self.idata.artr[date_idx, time_idx] * self.atr_multiple + 1.0
+
+        # For new positions use the close, for trailing stops use the high/low
+        reference_channel = torch.where(
+            position == 0, 3, torch.where(direction > 0, 1, 2)
+        )
+        reference_price = self.idata.data[date_idx, time_idx, reference_channel]
+
+        stop_price = torch.where(
+            direction > 0,
+            torch.maximum(prev_stop, reference_price / artr),
+            torch.minimum(prev_stop, reference_price * artr),
+        )
+        stop_price = torch.where(torch.isnan(stop_price), prev_stop, stop_price)
+
+        return stop_price
+
+
+class InitialArtrStopLossPolicy(nn.Module):
+    """
+    Policy for setting initial stop loss levels based on ATR multiples.
+
+    This policy sets stop loss levels based on the average true range (ATR)
+    of the instrument data. The stop loss is set at a multiple of the ATR
+    from the current price.
+
+    Parameters
+    ----------
+    instrument_data : InstrumentData
+        Data for the financial instrument being traded
+    atr_multiple : float
+        Multiple of the ATR to use for setting stop loss levels
+    """
+
+    def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
+        self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
+        self.dtype = instrument_data.data.dtype
+
+    def forward(
+        self, date_idx: torch.Tensor, time_idx: torch.Tensor, action: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Determine stop loss levels for opening new positions.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+        action : torch.Tensor
+            Actions to take (0 = no action, positive = buy, negative = sell)
+
+        Returns
+        -------
+        stop_loss : torch.Tensor
+            Stop loss price levels
+        """
+        return self.artr_policy(
+            date_idx,
+            time_idx,
+            torch.zeros_like(action),
+            action,
+            torch.full_like(action, float("nan"), dtype=self.dtype),
+        )
+
+
+class ScaledARTRMaintenancePolicy(nn.Module):
+    """
+    A position maintenance policy that adjusts stop loss levels using scaled ARTR.
+
+    This policy uses multiple stages with increasing time intervals to calculate
+    stop loss levels based on ARTR. It progresses through stages when certain
+    conditions are met, such as achieving breakeven or sufficient improvement
+    in the stop loss level.
+
+    Attributes:
+        instrument_data (InstrumentData): Data for the financial instrument.
+        stages (List[str]): List of time intervals (e.g., ["1m", "5m", "1h"]).
+        atr_multiple (float): Multiplier for ARTR in stop loss calculations.
+        wait_for_breakeven (bool): Whether to wait for breakeven before advancing stages.
+        minimum_improvement (float): Minimum improvement ratio for stage progression.
+        stage (torch.Tensor): Current stage for each batch element.
+        base_price (torch.Tensor): Base price for improvement calculations.
+    """
+
+    def __init__(
+        self,
+        instrument_data: InstrumentData,
+        stages: Union[List[str], Dict[str, str]],
+        atr_multiple: float,
+        wait_for_breakeven: bool,
+        minimum_improvement: float,
+        batch_size: int,
+    ) -> None:
+        super().__init__()
+        self.instrument_data = instrument_data
+        self.atr_multiple = atr_multiple
+        self.wait_for_breakeven = wait_for_breakeven
+        self.minimum_improvement = minimum_improvement
+
+        config_manager = ConfigManager()
+
+        # Handle stages input: list or dict
+        if isinstance(stages, list):
+            # For a list, assume each stage is derived from the previous one
+            base_stage = stages[0]
+            parent_dict = {stages[0]: ""}
+            for i in range(1, len(stages)):
+                parent_dict[stages[i]] = stages[i - 1]
+            stage_list = stages
+        elif isinstance(stages, dict):
+            # For a dict, use key-value pairs where value is the parent interval
+            base_stages = [k for k, v in stages.items() if v == "" or v is None]
+            if len(base_stages) != 1:
+                raise ValueError("Exactly one stage must have an empty or None parent.")
+            base_stage = base_stages[0]
+            parent_dict = stages
+            stage_list = list(
+                stages.keys()
+            )  # Order of stages follows dict insertion order
+        else:
+            raise TypeError(
+                "stages must be a list of strings or a dict of stage:parent."
+            )
+
+        # Validate that the base stage matches the instrument's interval
+        if base_stage != instrument_data.instrument.interval:
+            raise ValueError("The base stage must match the instrument's interval.")
+
+        # Build configurations for each stage
+        config_dict = {base_stage: instrument_data.instrument}
+        processed = {base_stage}
+
+        while len(processed) < len(stage_list):
+            added = False
+            for stage in stage_list:
+                if stage not in processed and parent_dict[stage] in processed:
+                    parent_config = config_dict[parent_dict[stage]]
+                    derived_config = config_manager.create_derived_config(
+                        parent_config, stage
+                    )
+                    config_dict[stage] = derived_config
+                    processed.add(stage)
+                    added = True
+            if not added:
+                raise ValueError(
+                    "Cannot derive all stages: missing parent or cycle detected."
+                )
+
+        # Create derived data and policies in the order of stage_list
+        self.derived_configs = [config_dict[stage] for stage in stage_list]
+        self.derived_data = [
+            InstrumentData(
+                config,
+                zipfile=True,
+                dtype=instrument_data.dtype,
+                device=instrument_data.device,
+            )
+            for config in self.derived_configs
+        ]
+        self.artr_policies = [
+            ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data
+        ]
+        self.stage_count = len(stage_list)
+
+        # Initialize state tensors (to be set in reset)
+        self.stage = torch.tensor(0)
+        self.base_price = torch.tensor(float("nan"))
+        
+        self.reset(batch_size)
+
+    def reset(self, batch_size: int) -> None:
+        """
+        Reset the policy's state tensors for a given batch size.
+
+        Args:
+            batch_size (int): Number of batch elements to initialize state for.
+        """
+        device = self.instrument_data.device
+        dtype = self.instrument_data.dtype
+        self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
+        self.base_price = torch.full(
+            (batch_size,), float("nan"), dtype=dtype, device=device
+        )
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute actions and stop loss levels for the current state.
+
+        This method always returns an action of 0 (no new trades) and updates
+        stop loss levels based on ARTR calculations across different stages.
+
+        Args:
+            date_idx (torch.Tensor): Batch of date indices.
+            time_idx (torch.Tensor): Batch of time indices.
+            position (torch.Tensor): Current positions (non-zero for existing positions).
+            prev_stop (torch.Tensor): Previous stop loss levels.
+            entry_price (torch.Tensor): Entry prices for the positions.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
+                - action: Always zero tensor.
+                - stop_loss: Updated stop loss levels.
+
+        Raises:
+            ValueError: If the policy state is not initialized or batch size mismatches.
+        """
+        # Check if state is initialized
+        if self.stage is None or self.stage.shape[0] != position.shape[0]:
+            raise ValueError(
+                "Policy state not initialized or batch size mismatch. Call reset(batch_size) first."
+            )
+
+        # Initialize outputs
+        action = torch.zeros_like(position)
+        stop_loss = prev_stop.clone()
+
+        # Set base_price
+        nan_base_mask = torch.isnan(self.base_price)
+        if self.wait_for_breakeven:
+            self.base_price[nan_base_mask] = entry_price[nan_base_mask]
+        else:
+            finite_prev_stop = ~torch.isnan(prev_stop) & ~torch.isinf(prev_stop)
+            set_mask = nan_base_mask & finite_prev_stop
+            self.base_price[set_mask] = prev_stop[set_mask]
+
+        # Handle stage 0
+        stage0_mask = self.stage == 0
+        if stage0_mask.any():
+            if self.wait_for_breakeven:
+                subset_date_idx = date_idx[stage0_mask]
+                subset_time_idx = time_idx[stage0_mask]
+                subset_position = position[stage0_mask]
+                subset_stop_loss = stop_loss[stage0_mask]
+                subset_entry_price = entry_price[stage0_mask]
+                potential_stop = self.artr_policies[0](
+                    subset_date_idx,
+                    subset_time_idx,
+                    subset_position,
+                    torch.zeros_like(subset_position),
+                    subset_stop_loss,
+                )
+                improve_mask_subset = (subset_position > 0) & (
+                    potential_stop > subset_entry_price
+                ) | (subset_position < 0) & (potential_stop < subset_entry_price)
+                stop_loss[stage0_mask] = torch.where(
+                    improve_mask_subset, potential_stop, subset_stop_loss
+                )
+                self.stage[stage0_mask] = torch.where(
+                    improve_mask_subset,
+                    torch.tensor(1, dtype=torch.long, device=self.stage.device),
+                    self.stage[stage0_mask],
+                )
+            else:
+                self.stage[stage0_mask] = 1
+
+        # Handle stages > 0
+        for s in range(1, self.stage_count):
+            stage_mask = self.stage == s
+            if stage_mask.any():
+                subset_date_idx = date_idx[stage_mask]
+                subset_time_idx = time_idx[stage_mask]
+                subset_position = position[stage_mask]
+                subset_stop_loss = stop_loss[stage_mask]
+                subset_base_price = self.base_price[stage_mask]
+                potential_stop = self.artr_policies[s](
+                    subset_date_idx,
+                    subset_time_idx,
+                    subset_position,
+                    torch.zeros_like(subset_position),
+                    subset_stop_loss,
+                )
+                improvement = torch.where(
+                    subset_position > 0,
+                    potential_stop - subset_stop_loss,
+                    subset_stop_loss - potential_stop,
+                )
+                min_improvement = self.minimum_improvement * torch.abs(
+                    subset_base_price - subset_stop_loss
+                )
+                improve_mask_subset = improvement > min_improvement
+                stop_loss[stage_mask] = torch.where(
+                    improve_mask_subset, potential_stop, subset_stop_loss
+                )
+                if s < self.stage_count - 1:
+                    self.stage[stage_mask] = torch.where(
+                        improve_mask_subset,
+                        torch.tensor(s + 1, dtype=torch.long, device=self.stage.device),
+                        self.stage[stage_mask],
+                    )
+
+        return action, stop_loss

@@ -214,6 +214,30 @@ class InstrumentData:
         # If the data is not a tensor, raise an error
         raise ValueError("The data is not a tensor")
 
+    def get_prev_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get the indices of the previous time step for the given indices.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+
+        Returns
+        -------
+        prev_date_idx : torch.Tensor
+            Batch of previous date indices
+        prev_time_idx : torch.Tensor
+            Batch of previous time indices
+        """
+        prev_date_idx = date_idx.clone()
+        prev_time_idx = time_idx - 1
+        prev_date_idx[prev_time_idx < 0] -= 1
+        prev_time_idx[prev_time_idx < 0] += self.instrument.total_steps
+        return prev_date_idx, prev_time_idx
+
 
 class DataManager:
     """
