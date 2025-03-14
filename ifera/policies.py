@@ -10,8 +10,57 @@ trading context.
 import torch
 from torch import nn
 from typing import List, Tuple, Union, Dict
+from abc import ABC, abstractmethod
 from .data_models import InstrumentData, DataManager
 from .config import ConfigManager
+
+
+class PositionMaintenancePolicy(nn.Module, ABC):
+    """
+    Abstract base class for position maintenance policies.
+    
+    Position maintenance policies are responsible for managing existing positions,
+    including updating stop loss levels and determining when to close positions.
+    
+    All implementations must provide reset and forward methods with the specified
+    signatures.
+    """
+    
+    @abstractmethod
+    def reset(self, mask: torch.Tensor) -> None:
+        """
+        Reset the policy's state for the specified batch elements.
+        
+        Args:
+            mask (torch.Tensor): A boolean tensor where True indicates batches to reset.
+        """
+        pass
+    
+    @abstractmethod
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute actions and stop loss levels for the current state.
+        
+        Args:
+            date_idx (torch.Tensor): Batch of date indices.
+            time_idx (torch.Tensor): Batch of time indices.
+            position (torch.Tensor): Current positions (non-zero for existing positions).
+            prev_stop (torch.Tensor): Previous stop loss levels.
+            entry_price (torch.Tensor): Entry prices for the positions.
+            
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
+                - action: Actions to take (0 = no action, positive = buy, negative = sell)
+                - stop_loss: Updated stop loss levels.
+        """
+        pass
 
 
 class TradingPolicy(nn.Module):
@@ -36,7 +85,7 @@ class TradingPolicy(nn.Module):
         Policy for determining actions when current position is 0
     initial_stop_loss_policy : object
         Policy for setting stop loss levels when opening new positions
-    position_maintenance_policy : object
+    position_maintenance_policy : PositionMaintenancePolicy
         Policy for managing existing positions (actions and stop loss updates)
 
     Notes
@@ -49,8 +98,9 @@ class TradingPolicy(nn.Module):
         instrument_data: InstrumentData,
         open_position_policy: torch.nn.Module,
         initial_stop_loss_policy: torch.nn.Module,
-        position_maintenance_policy: torch.nn.Module,
+        position_maintenance_policy: PositionMaintenancePolicy,
     ) -> None:
+        super().__init__()
         self.instrument_data = instrument_data
         self.open_position_policy = open_position_policy
         self.initial_stop_loss_policy = initial_stop_loss_policy
@@ -80,7 +130,7 @@ class TradingPolicy(nn.Module):
             Current positions for each batch element (0 = no position)
         prev_stop : torch.Tensor
             Previous stop loss levels
-        entry_price : torch.Tensor, optional
+        entry_price : torch.Tensor
             Entry price for current positions
 
         Returns
@@ -109,16 +159,15 @@ class TradingPolicy(nn.Module):
             action[no_position_mask] = open_actions
 
             # For batches where we're opening a position, get initial stop loss
-            opening_position_mask = no_position_mask & (open_actions != 0)
+            opening_position_mask = no_position_mask & (action != 0)
             if opening_position_mask.any():
                 initial_stops = self.initial_stop_loss_policy(
                     date_idx[opening_position_mask],
                     time_idx[opening_position_mask],
-                    open_actions[
-                        opening_position_mask != no_position_mask
-                    ],  # Extract only relevant actions
+                    action[opening_position_mask],
                 )
                 stop_loss[opening_position_mask] = initial_stops
+                self.position_maintenance_policy.reset(opening_position_mask)
 
         # Handle batches with existing positions
         if has_position_mask.any():
@@ -127,7 +176,7 @@ class TradingPolicy(nn.Module):
                 time_idx[has_position_mask],
                 position[has_position_mask],
                 prev_stop[has_position_mask],
-                entry_price[has_position_mask] if entry_price is not None else None,
+                entry_price[has_position_mask],
             )
             action[has_position_mask] = maintenance_actions
             stop_loss[has_position_mask] = maintenance_stops
@@ -149,6 +198,7 @@ class AlwaysOpenPolicy(nn.Module):
     """
 
     def __init__(self, direction) -> None:
+        super().__init__()
         self.direction = direction
 
     def forward(
@@ -192,6 +242,7 @@ class ArtrStopLossPolicy(nn.Module):
     """
 
     def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
+        super().__init__()
         self.idata = instrument_data
         self.atr_multiple = atr_multiple
 
@@ -269,6 +320,7 @@ class InitialArtrStopLossPolicy(nn.Module):
     """
 
     def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
+        super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
         self.dtype = instrument_data.data.dtype
 
@@ -301,7 +353,7 @@ class InitialArtrStopLossPolicy(nn.Module):
         )
 
 
-class ScaledARTRMaintenancePolicy(nn.Module):
+class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
     """
     A position maintenance policy that adjusts stop loss levels using scaled ARTR.
 
@@ -327,7 +379,6 @@ class ScaledARTRMaintenancePolicy(nn.Module):
         atr_multiple: float,
         wait_for_breakeven: bool,
         minimum_improvement: float,
-        batch_size: int,
     ) -> None:
         super().__init__()
         self.instrument_data = instrument_data
@@ -336,6 +387,7 @@ class ScaledARTRMaintenancePolicy(nn.Module):
         self.minimum_improvement = minimum_improvement
 
         config_manager = ConfigManager()
+        data_manager = DataManager()
 
         # Handle stages input: list or dict
         if isinstance(stages, list):
@@ -387,7 +439,7 @@ class ScaledARTRMaintenancePolicy(nn.Module):
         # Create derived data and policies in the order of stage_list
         self.derived_configs = [config_dict[stage] for stage in stage_list]
         self.derived_data = [
-            InstrumentData(
+            data_manager.get_instrument_data(
                 config,
                 zipfile=True,
                 dtype=instrument_data.dtype,
@@ -401,25 +453,26 @@ class ScaledARTRMaintenancePolicy(nn.Module):
         self.stage_count = len(stage_list)
 
         # Initialize state tensors (to be set in reset)
-        self.stage = torch.tensor(0)
-        self.base_price = torch.tensor(float("nan"))
-        
-        self.reset(batch_size)
+        self.stage = torch.tensor(())
+        self.base_price = torch.tensor(())
 
-    def reset(self, batch_size: int) -> None:
+    def reset(self, mask: torch.Tensor) -> None:
         """
         Reset the policy's state tensors for a given batch size.
 
         Args:
-            batch_size (int): Number of batch elements to initialize state for.
+            mask (torch.Tensor): A boolean tensor where True indicates batches to reset.
         """
-        device = self.instrument_data.device
-        dtype = self.instrument_data.dtype
-        self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
-        self.base_price = torch.full(
-            (batch_size,), float("nan"), dtype=dtype, device=device
-        )
-
+        if self.stage.shape[0] == 0:
+            device = self.instrument_data.device
+            dtype = self.instrument_data.dtype
+            batch_size = mask.shape[0]
+            self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
+            self.base_price = torch.full((batch_size,), float('nan'), dtype=dtype, device=device)
+        else:
+            self.stage[mask] = 0
+            self.base_price[mask] = float('nan')
+    
     def forward(
         self,
         date_idx: torch.Tensor,
@@ -502,6 +555,7 @@ class ScaledARTRMaintenancePolicy(nn.Module):
         for s in range(1, self.stage_count):
             stage_mask = self.stage == s
             if stage_mask.any():
+                #TODO: Convert date and time to the derived data
                 subset_date_idx = date_idx[stage_mask]
                 subset_time_idx = time_idx[stage_mask]
                 subset_position = position[stage_mask]

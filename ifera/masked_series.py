@@ -3,6 +3,12 @@ Masked tensor operations for financial time series data.
 Provides utility functions for handling missing data in time series using PyTorch's MaskedTensor.
 """
 
+import warnings
+
+warnings.filterwarnings(
+    "ignore", category=UserWarning, module="torch.masked", message=".*prototype.*"
+)
+
 from typing import Optional, cast
 
 import torch

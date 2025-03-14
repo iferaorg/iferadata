@@ -14,6 +14,7 @@ from .masked_series import (
     masked_sma,
     ohlcv_to_masked,
 )
+from .policies import *
 from .series import artr, ema, ema_slow, ffill, rtr, sma
 from .settings import settings
 
@@ -40,4 +41,9 @@ __all__ = [
     "InstrumentData",
     "DataManager",
     "MarketSimulatorIntraday",
+    "TradingPolicy",
+    "AlwaysOpenPolicy",
+    "ArtrStopLossPolicy",
+    "InitialArtrStopLossPolicy",
+    "ScaledArtrMaintenancePolicy",
 ]

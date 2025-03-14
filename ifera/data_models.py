@@ -51,7 +51,13 @@ class InstrumentData:
         zipfile: bool = True,
         dtype: torch.dtype = torch.float32,
         device: Optional[torch.device] = None,
+        sentinel: Optional[object] = None,
     ) -> None:
+        if sentinel is not DataManager()._sentinel:
+            raise PermissionError(
+                "InstrumentData must be created via DataManager.get_instrument_data"
+            )
+
         self.instrument = instrument
         self.dtype = dtype
         self.zipfile = zipfile
@@ -264,6 +270,7 @@ class DataManager:
         self._data_cache: Dict[
             Tuple[str, str, str, bool, torch.dtype, str], InstrumentData
         ] = {}
+        self._sentinel = object()
         self._initialized = True
 
     def get_instrument_data(
@@ -314,6 +321,7 @@ class DataManager:
             zipfile=zipfile,
             dtype=dtype,
             device=device,
+            sentinel=self._sentinel,
         )
         self._data_cache[cache_key] = data
         return data
