@@ -1,39 +1,14 @@
 """
 Masked tensor operations for financial time series data.
-Provides utility functions for handling missing data in time series using PyTorch's MaskedTensor.
+Provides utility functions for handling missing data in time series using regular tensors with separate masks.
 """
 
-import warnings
-
-warnings.filterwarnings(
-    "ignore", category=UserWarning, module="torch.masked", message=".*prototype.*"
-)
-
-from typing import Optional, cast
+from typing import Optional, Tuple
 
 import torch
 from einops import rearrange, repeat
-from torch.masked import MaskedTensor, masked_tensor
 
 from .series import ema, rtr, sma
-
-
-def ohlcv_to_masked(ohlcv_data: torch.Tensor) -> MaskedTensor:
-    """
-    Converts OHLCV (Open, High, Low, Close, Volume) data to a MaskedTensor.
-    The function creates a mask based on the volume data, where zero volume
-    indicates missing data.
-
-    Args:
-        ohlcv_data (torch.Tensor): Input OHLCV tensor of shape [..., date, time, 5].
-
-    Returns:
-        MaskedTensor: Masked tensor containing the OHLCV data with the same shape.
-    """
-    volume = ohlcv_data[..., -1]
-    mask = volume.to(torch.int) != 0
-    mask = repeat(mask, "... -> ... c", c=ohlcv_data.shape[-1])
-    return masked_tensor(ohlcv_data, mask)
 
 
 def compress_tensor(t, mask):
@@ -103,22 +78,19 @@ def decompress_tensor(compressed, mask):
     return flat_decompressed.view(*original_batch_shape, n)
 
 
-def masked_sma(t: MaskedTensor, window: int) -> MaskedTensor:
+def masked_sma(data: torch.Tensor, mask: torch.Tensor, window: int) -> torch.Tensor:
     """
-    Calculates a simple moving average (SMA) on a MaskedTensor, respecting the mask.
+    Calculates a simple moving average (SMA) on masked data, respecting the mask.
     The function compresses the tensor according to the mask, performs the SMA calculation,
     and then decompresses the result back to the original shape.
     Args:
-        t (MaskedTensor): Input masked tensor of shape [..., n].
+        data (torch.Tensor): Input data tensor of shape [..., n].
+        mask (torch.Tensor): Boolean mask of shape [..., n] (True for valid values).
         window (int): Window size for the simple moving average calculation.
 
     Returns:
-        MaskedTensor: Masked tensor containing the SMA values with the same
-        shape and mask as the input.
+        - torch.Tensor: Tensor containing the SMA values with same shape as input.
     """
-    data = t.get_data()
-    mask = t.get_mask()
-
     # Compress the tensor along the last dimension according to the mask.
     cdata = compress_tensor(data, mask).nan_to_num(nan=0.0)
 
@@ -127,29 +99,29 @@ def masked_sma(t: MaskedTensor, window: int) -> MaskedTensor:
     # Decompress the result tensor to restore the original shape.
     rdata = decompress_tensor(cresult, mask)
 
-    return masked_tensor(rdata, mask)
+    return rdata
 
 
 def masked_ema(
-    t: MaskedTensor, alpha: float, chunk_size: Optional[int] = None
-) -> MaskedTensor:
+    data: torch.Tensor,
+    mask: torch.Tensor,
+    alpha: float,
+    chunk_size: Optional[int] = None,
+) -> torch.Tensor:
     """
-    Calculates an exponential moving average (EMA) on a MaskedTensor, respecting the mask.
+    Calculates an exponential moving average (EMA) on masked data, respecting the mask.
     The function compresses the tensor according to the mask, performs the EMA calculation,
     and then decompresses the result back to the original shape.
     Args:
-        t (MaskedTensor): Input masked tensor of shape [..., n].
+        data (torch.Tensor): Input data tensor of shape [..., n].
+        mask (torch.Tensor): Boolean mask of shape [..., n] (True for valid values).
         alpha (float): Smoothing factor between 0 and 1.
         chunk_size (Optional[int], default=None): If provided, process the series
                                                   in chunks of this size to reduce memory usage.
 
     Returns:
-        MaskedTensor: Masked tensor containing the EMA values with the
-        same shape and mask as the input.
+        - torch.Tensor: Tensor containing the EMA values with same shape as input.
     """
-    data = t.get_data()
-    mask = t.get_mask()
-
     # Compress the tensor along the last dimension according to the mask.
     cdata = compress_tensor(data, mask).nan_to_num(nan=0.0)
 
@@ -158,29 +130,27 @@ def masked_ema(
     # Decompress the result tensor to restore the original shape.
     rdata = decompress_tensor(cresult, mask)
 
-    return masked_tensor(rdata, mask)
+    return rdata
 
 
-def masked_rtr(t: MaskedTensor) -> MaskedTensor:
+def masked_rtr(data: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     """
-    Calculates the relative true range (RTR) on a MaskedTensor, respecting the mask.
+    Calculates the relative true range (RTR) on masked data, respecting the mask.
     The function compresses the tensor according to the mask, performs the RTR calculation,
     and then decompresses the result back to the original shape.
 
     Args:
-        t (MaskedTensor): Input masked tensor of shape [..., n, channels] where channels
+        data (torch.Tensor): Input data tensor of shape [..., n, channels] where channels
                           contains [open, high, low, close, volume].
+        mask (torch.Tensor): Boolean mask of shape [..., n] (True for valid values).
 
     Returns:
-        MaskedTensor: Masked tensor containing the RTR values with the same shape (except for
-                      the removed channels dimension) and mask as the input.
+        - torch.Tensor: Tensor containing the RTR values with the same shape
+                        (except for the removed channels dimension).
     """
-    data = t.get_data()
-    mask = t.get_mask()
-
     # Make time the last dimension for compress_tensor
     data_cn = rearrange(data, "... n c -> ... c n")
-    mask_cn = rearrange(mask, "... n c -> ... c n")
+    mask_cn = repeat(mask, "... n -> ... c n", c=data_cn.shape[-2])
 
     # Compress the tensor along the time dimension according to the mask
     cdata = compress_tensor(data_cn, mask_cn).nan_to_num(
@@ -191,47 +161,50 @@ def masked_rtr(t: MaskedTensor) -> MaskedTensor:
     # Calculate the RTR of the compressed tensor
     cresult = rtr(cdata)
 
-    # The result mask should match the shape of cresult, which has one less dimension
-    # than the input (channels dimension is removed)
-    result_mask = mask.any(dim=-1)
-
     # Decompress the result tensor to restore the original shape
-    rdata = decompress_tensor(cresult, result_mask)
+    rdata = decompress_tensor(cresult, mask)
 
-    return masked_tensor(rdata, result_mask)
+    return rdata
 
 
 def masked_artr(
-    t: MaskedTensor,
+    data: torch.Tensor,
+    mask: torch.Tensor,
     alpha: float,
     acrossday: bool = False,
     chunk_size: Optional[int] = None,
-) -> MaskedTensor:
+) -> torch.Tensor:
     """
-    Calculates the average relative true range (ARTR) on a MaskedTensor, respecting the mask.
+    Calculates the average relative true range (ARTR) on masked data, respecting the mask.
     The function compresses the tensor according to the mask, performs the ARTR calculation,
     and then decompresses the result back to the original shape.
 
     Args:
-        t (MaskedTensor): Input masked tensor of shape [..., date, time, channels].
+        data (torch.Tensor): Input data tensor of shape [..., date, time, channels].
+        mask (torch.Tensor): Boolean mask of shape [..., date, time] (True for valid values).
         alpha (float): Smoothing factor for the EMA.
         acrossday (bool, optional): If True, calculate ARTR across days. Defaults to False.
         chunk_size (Optional[int], optional): If provided, calculate the EMA in chunks of this size.
-                                              Defaults to None.
+                                             Defaults to None.
 
     Returns:
-        MaskedTensor: Masked tensor containing the ARTR values with the same shape (except for
-                      the removed channels dimension) and mask as the input.
+        - torch.Tensor: Tensor containing the ARTR values with same shape as RTR result.
     """
-    rtr_t = masked_rtr(t)
+    rtr_data = masked_rtr(data, mask)
+
     if acrossday:
-        # Flatten the date and time dimensions into one. Use cast for Pylance.
-        rtr_flat = cast(MaskedTensor, rtr_t.view(*rtr_t.shape[:-2], -1))
+        # Flatten the date and time dimensions into one
+        original_shape = rtr_data.shape
+        rtr_flat = rtr_data.view(*rtr_data.shape[:-2], -1)
+        rtr_mask_flat = mask.view(*mask.shape[:-2], -1)
 
         # Calculate the ARTR
-        artr_flat = masked_ema(rtr_flat, alpha, chunk_size)
+        artr_flat = masked_ema(rtr_flat, rtr_mask_flat, alpha, chunk_size)
 
-        return cast(MaskedTensor, artr_flat.view_as(rtr_t))
+        # Reshape back to original dimensions
+        artr_data = artr_flat.view(*original_shape)
+
+        return artr_data
 
     # Calculate the ARTR for each date separately
-    return masked_ema(rtr_t, alpha, chunk_size)
+    return masked_ema(rtr_data, mask, alpha, chunk_size)

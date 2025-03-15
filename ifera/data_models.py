@@ -6,7 +6,7 @@ financial instrument data. It supports operations on time-series financial data,
 including handling missing values and calculating technical indicators such as
 Average Relative True Range (ARTR).
 
-The module leverages PyTorch tensors and masked operations for efficient
+The module leverages PyTorch tensors and mask operations for efficient
 computation on both CPU and GPU devices.
 """
 
@@ -15,7 +15,6 @@ from typing import Dict, Optional, Tuple
 
 import torch
 from einops import repeat, rearrange
-from torch.masked import MaskedTensor, masked_tensor
 
 from .config import InstrumentConfig
 from .data_loading import load_data_tensor
@@ -72,7 +71,9 @@ class InstrumentData:
         )
         self._data: None | torch.Tensor = None
         self._chunk_size = 0
-        self._artr: None | MaskedTensor = None
+        # Store ARTR data and mask separately
+        self._artr_data: None | torch.Tensor = None
+        self._artr_mask: None | torch.Tensor = None
         self._alpha = 1.0 / 14
         self._acrossday = True
 
@@ -148,7 +149,8 @@ class InstrumentData:
     def artr_alpha(self, value: float) -> None:
         """Set alpha parameter and clear cached ARTR values."""
         self._alpha = value
-        self._artr = None
+        self._artr_data = None
+        self._artr_mask = None
 
     @property
     def artr_acrossday(self) -> bool:
@@ -159,18 +161,13 @@ class InstrumentData:
     def artr_acrossday(self, value: bool) -> None:
         """Set acrossday flag and clear cached ARTR values."""
         self._acrossday = value
-        self._artr = None
+        self._artr_data = None
+        self._artr_mask = None
 
     @property
     def valid_mask(self) -> torch.Tensor:
         """Mask indicating valid data points."""
-        vol_mask = self.data[..., -1].to(torch.int) != 0
-        return repeat(vol_mask, "... -> ... n", n=self.data.shape[-1])
-
-    @property
-    def maked_data(self) -> MaskedTensor:
-        """Masked data tensor."""
-        return masked_tensor(self.data, self.valid_mask)
+        return self.data[..., -1].to(torch.int) != 0
 
     @property
     def chunk_size(self) -> int:
@@ -204,21 +201,17 @@ class InstrumentData:
     @property
     def artr(self) -> torch.Tensor:
         """Average Relative True Range (ATR) data."""
-        if self._artr is None:
-            self._artr = masked_artr(
-                self.maked_data,
+        if self._artr_data is None:
+            mask = self.valid_mask
+            self._artr_data, self._artr_mask = masked_artr(
+                self.data,
+                mask,
                 alpha=self._alpha,
                 acrossday=self._acrossday,
                 chunk_size=self.chunk_size,
             )
 
-        artr = self._artr.get_data()
-
-        if isinstance(artr, torch.Tensor):
-            return artr
-
-        # If the data is not a tensor, raise an error
-        raise ValueError("The data is not a tensor")
+        return self._artr_data
 
     def get_prev_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
         """
