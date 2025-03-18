@@ -55,7 +55,7 @@ class MarketSimulatorIntraday:
     def __init__(self, instrument_data: InstrumentData):
         self.instrument: Final = instrument_data.instrument
         self.data: Final = instrument_data.data
-        self.mask: Final = instrument_data.valid_mask.any(dim=-1)  # Shape: [date, time]
+        self.mask: Final = instrument_data.valid_mask  # Shape: [date, time]
 
         self.data_flat: Final = rearrange(self.data, "d t c -> (d t) c")
 

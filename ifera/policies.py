@@ -18,24 +18,24 @@ from .config import ConfigManager
 class PositionMaintenancePolicy(nn.Module, ABC):
     """
     Abstract base class for position maintenance policies.
-    
+
     Position maintenance policies are responsible for managing existing positions,
     including updating stop loss levels and determining when to close positions.
-    
+
     All implementations must provide reset and forward methods with the specified
     signatures.
     """
-    
+
     @abstractmethod
     def reset(self, mask: torch.Tensor) -> None:
         """
         Reset the policy's state for the specified batch elements.
-        
+
         Args:
             mask (torch.Tensor): A boolean tensor where True indicates batches to reset.
         """
         pass
-    
+
     @abstractmethod
     def forward(
         self,
@@ -44,17 +44,19 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
+        batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute actions and stop loss levels for the current state.
-        
+
         Args:
             date_idx (torch.Tensor): Batch of date indices.
             time_idx (torch.Tensor): Batch of time indices.
             position (torch.Tensor): Current positions (non-zero for existing positions).
             prev_stop (torch.Tensor): Previous stop loss levels.
             entry_price (torch.Tensor): Entry prices for the positions.
-            
+            batch_indices (torch.Tensor): Indices of the batch elements.
+
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
                 - action: Actions to take (0 = no action, positive = buy, negative = sell)
@@ -177,6 +179,7 @@ class TradingPolicy(nn.Module):
                 position[has_position_mask],
                 prev_stop[has_position_mask],
                 entry_price[has_position_mask],
+                torch.where(has_position_mask)[0],
             )
             action[has_position_mask] = maintenance_actions
             stop_loss[has_position_mask] = maintenance_stops
@@ -468,11 +471,13 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             dtype = self.instrument_data.dtype
             batch_size = mask.shape[0]
             self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
-            self.base_price = torch.full((batch_size,), float('nan'), dtype=dtype, device=device)
+            self.base_price = torch.full(
+                (batch_size,), float("nan"), dtype=dtype, device=device
+            )
         else:
             self.stage[mask] = 0
-            self.base_price[mask] = float('nan')
-    
+            self.base_price[mask] = float("nan")
+
     def forward(
         self,
         date_idx: torch.Tensor,
@@ -480,6 +485,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
+        batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute actions and stop loss levels for the current state.
@@ -493,6 +499,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             position (torch.Tensor): Current positions (non-zero for existing positions).
             prev_stop (torch.Tensor): Previous stop loss levels.
             entry_price (torch.Tensor): Entry prices for the positions.
+            batch_indices (torch.Tensor): Indices of the batch elements.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
@@ -503,26 +510,32 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             ValueError: If the policy state is not initialized or batch size mismatches.
         """
         # Check if state is initialized
-        if self.stage is None or self.stage.shape[0] != position.shape[0]:
+        if self.stage.shape[0] == 0 or batch_indices.max() >= self.stage.shape[0]:
             raise ValueError(
-                "Policy state not initialized or batch size mismatch. Call reset(batch_size) first."
+                "Policy state not initialized or batch indices out of range. Call reset with appropriate batch size first."
             )
 
         # Initialize outputs
         action = torch.zeros_like(position)
         stop_loss = prev_stop.clone()
 
+        # Extract current state for the subset
+        current_stage = self.stage[batch_indices]
+        current_base_price = self.base_price[batch_indices]
+
         # Set base_price
-        nan_base_mask = torch.isnan(self.base_price)
+        nan_base_mask = torch.isnan(current_base_price)
         if self.wait_for_breakeven:
-            self.base_price[nan_base_mask] = entry_price[nan_base_mask]
+            self.base_price[batch_indices[nan_base_mask]] = entry_price[nan_base_mask]
+            current_base_price[nan_base_mask] = entry_price[nan_base_mask]
         else:
             finite_prev_stop = ~torch.isnan(prev_stop) & ~torch.isinf(prev_stop)
             set_mask = nan_base_mask & finite_prev_stop
-            self.base_price[set_mask] = prev_stop[set_mask]
+            self.base_price[batch_indices[set_mask]] = prev_stop[set_mask]
+            current_base_price[set_mask] = prev_stop[set_mask]
 
         # Handle stage 0
-        stage0_mask = self.stage == 0
+        stage0_mask = current_stage == 0
         if stage0_mask.any():
             if self.wait_for_breakeven:
                 subset_date_idx = date_idx[stage0_mask]
@@ -543,24 +556,26 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 stop_loss[stage0_mask] = torch.where(
                     improve_mask_subset, potential_stop, subset_stop_loss
                 )
-                self.stage[stage0_mask] = torch.where(
+                current_stage[stage0_mask] = torch.where(
                     improve_mask_subset,
                     torch.tensor(1, dtype=torch.long, device=self.stage.device),
-                    self.stage[stage0_mask],
+                    current_stage[stage0_mask],
                 )
             else:
-                self.stage[stage0_mask] = 1
+                current_stage[stage0_mask] = 1
 
         # Handle stages > 0
         for s in range(1, self.stage_count):
-            stage_mask = self.stage == s
+            stage_mask = current_stage == s
             if stage_mask.any():
-                #TODO: Convert date and time to the derived data
                 subset_date_idx = date_idx[stage_mask]
                 subset_time_idx = time_idx[stage_mask]
+                subset_date_idx, subset_time_idx = self.derived_data[s].convert_indices(
+                    self.derived_data[0], subset_date_idx, subset_time_idx
+                )
                 subset_position = position[stage_mask]
                 subset_stop_loss = stop_loss[stage_mask]
-                subset_base_price = self.base_price[stage_mask]
+                subset_base_price = current_base_price[stage_mask]
                 potential_stop = self.artr_policies[s](
                     subset_date_idx,
                     subset_time_idx,
@@ -581,10 +596,14 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                     improve_mask_subset, potential_stop, subset_stop_loss
                 )
                 if s < self.stage_count - 1:
-                    self.stage[stage_mask] = torch.where(
+                    current_stage[stage_mask] = torch.where(
                         improve_mask_subset,
                         torch.tensor(s + 1, dtype=torch.long, device=self.stage.device),
-                        self.stage[stage_mask],
+                        current_stage[stage_mask],
                     )
+
+        # Update the full state with the modified subset
+        self.stage[batch_indices] = current_stage
+        self.base_price[batch_indices] = current_base_price
 
         return action, stop_loss

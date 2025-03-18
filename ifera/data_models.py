@@ -203,7 +203,7 @@ class InstrumentData:
         """Average Relative True Range (ATR) data."""
         if self._artr_data is None:
             mask = self.valid_mask
-            self._artr_data, self._artr_mask = masked_artr(
+            self._artr_data = masked_artr(
                 self.data,
                 mask,
                 alpha=self._alpha,
@@ -236,6 +236,74 @@ class InstrumentData:
         prev_date_idx[prev_time_idx < 0] -= 1
         prev_time_idx[prev_time_idx < 0] += self.instrument.total_steps
         return prev_date_idx, prev_time_idx
+
+    def get_next_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get the indices of the next time step for the given indices.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+
+        Returns
+        -------
+        next_date_idx : torch.Tensor
+            Batch of next date indices
+        next_time_idx : torch.Tensor
+            Batch of next time indices
+        """
+        next_date_idx = date_idx.clone()
+        next_time_idx = time_idx + 1
+        next_date_idx[next_time_idx >= self.instrument.total_steps] += 1
+        next_time_idx[next_time_idx >= self.instrument.total_steps] = 0
+        return next_date_idx, next_time_idx
+
+    def convert_indices(
+        self, source: "InstrumentData", date_idx, time_idx
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Convert indices from another InstrumentData instance to the current instance.
+
+        Parameters
+        ----------
+        source : InstrumentData
+            Source InstrumentData instance
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+
+        Returns
+        -------
+        converted_date_idx : torch.Tensor
+            Batch of converted date indices
+        converted_time_idx : torch.Tensor
+            Batch of converted time indices
+        """
+        if source.instrument.symbol != self.instrument.symbol:
+            raise ValueError("Cannot convert indices between different symbols.")
+        if source.instrument.trading_start != self.instrument.trading_start:
+            raise ValueError(
+                "Cannot convert indices between different trading start times."
+            )
+
+        time_ratio = self.instrument.time_step / source.instrument.time_step
+
+        # Make sure the time ratio is an integer
+        if not time_ratio.is_integer():
+            raise ValueError("Time step ratio must be an integer.")
+
+        tr = int(time_ratio)
+
+        # Get the next indices from the source, then convert them to the current instance
+        # Then get the previous indices from the current instance
+        # This is to ensure that the last full bar is used for the conversion
+        next_date_idx, next_time_idx = source.get_next_indices(date_idx, time_idx)
+
+        return self.get_prev_indices(next_date_idx, next_time_idx // tr)
 
 
 class DataManager:
