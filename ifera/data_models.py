@@ -82,7 +82,18 @@ class InstrumentData:
         """Read-only property that lazily loads data on first access."""
         if self._data is None:
             if self.instrument.parent_config is not None:
-                self._data = self._aggregate_from_parent(self.instrument.parent_config)
+                multiplier = int(
+                    self.instrument.time_step // self.instrument.parent_config.time_step
+                )
+
+                manager = DataManager()
+                parent_data = manager.get_instrument_data(
+                    self.instrument.parent_config,
+                    self.zipfile,
+                    self.dtype,
+                    self.device,
+                ).data
+                self._data = self._aggregate_from_parent(parent_data, multiplier)
             else:
                 self._data = load_data_tensor(
                     self.instrument,
@@ -93,24 +104,10 @@ class InstrumentData:
         return self._data
 
     # TODO: Handle time steps larger than 1 day
-    def _aggregate_from_parent(self, parent_config: InstrumentConfig) -> torch.Tensor:
+    def _aggregate_from_parent(
+        self, parent_data: torch.Tensor, multiplier: int
+    ) -> torch.Tensor:
         """Aggregate data from parent data."""
-        multiplier = int(
-            self.instrument.time_step.total_seconds()
-            // parent_config.time_step.total_seconds()
-        )
-        if multiplier <= 0:
-            raise ValueError(
-                "The parent time step must be a multiple of the child time step."
-            )
-        manager = DataManager()
-        parent_data = manager.get_instrument_data(
-            parent_config,
-            self.zipfile,
-            self.dtype,
-            self.device,
-        ).data
-
         parent_steps = parent_data.shape[1]
 
         if parent_steps % multiplier != 0:
