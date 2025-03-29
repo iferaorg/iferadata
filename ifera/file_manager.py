@@ -1,7 +1,7 @@
 import os
 import re
 import datetime
-from typing import Dict, List, Optional, Set, Tuple, Callable, Any
+from typing import Dict, List, Optional, Set, Tuple, Callable
 import yaml
 import networkx as nx
 import boto3
@@ -10,7 +10,9 @@ import importlib
 from functools import lru_cache
 from github import Github
 from github.GithubException import GithubException
-import requests
+from .config import BaseInstrumentConfig
+from .url_utils import make_instrument_url
+from .settings import settings
 
 # Initialize S3 client
 s3_client = boto3.client("s3")
@@ -62,7 +64,7 @@ def match_pattern(pattern: str, file: str) -> Optional[Dict[str, str]]:
         return None
 
     # For local paths, ensure netloc is empty
-    if pattern_parts.scheme == "local" and pattern_parts.netloc != "":
+    if pattern_parts.scheme == "file" and pattern_parts.netloc != "":
         return None
 
     # For GitHub paths, check repository match
@@ -99,7 +101,7 @@ def parse_github_url(url: str) -> Tuple[str, str, str]:
         raise ValueError(f"Not a GitHub URL: {url}")
 
     # Split the path, removing leading slash
-    path_parts = parts.path.lstrip("/").split("/", 2)
+    path_parts = parts.path.split("/", 2)
     if len(path_parts) < 3:
         raise ValueError(
             f"Invalid GitHub URL format: {url}. Expected github://owner/repo/path/to/file"
@@ -117,13 +119,14 @@ class FileOperations:
 
     @staticmethod
     def exists(file: str) -> bool:
-        """Check if a file (local, S3, or GitHub) exists."""
+        """Check if a file (file, S3, or GitHub) exists."""
         parts = urlparse(file)
-        if parts.scheme == "local":
-            return os.path.exists(parts.path.lstrip("/"))
+        if parts.scheme == "file":
+            return os.path.exists(parts.path)
         elif parts.scheme == "s3":
             try:
-                s3_client.head_object(Bucket=parts.netloc, Key=parts.path.lstrip("/"))
+                bucket = settings.S3_BUCKET
+                s3_client.head_object(Bucket=bucket, Key=parts.path)
                 return True
             except s3_client.exceptions.ClientError as e:
                 if e.response["Error"]["Code"] == "404":
@@ -150,10 +153,10 @@ class FileOperations:
 
     @staticmethod
     def get_mtime(file: str) -> datetime.datetime:
-        """Get the modification time of a file (local, S3, or GitHub) in UTC."""
+        """Get the modification time of a file (file, S3, or GitHub) in UTC."""
         parts = urlparse(file)
-        if parts.scheme == "local":
-            path = parts.path.lstrip("/")
+        if parts.scheme == "file":
+            path = parts.path
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Local file not found: {path}")
             return datetime.datetime.fromtimestamp(
@@ -161,9 +164,8 @@ class FileOperations:
             )
         elif parts.scheme == "s3":
             try:
-                response = s3_client.head_object(
-                    Bucket=parts.netloc, Key=parts.path.lstrip("/")
-                )
+                bucket = settings.S3_BUCKET
+                response = s3_client.head_object(Bucket=bucket, Key=parts.path)
                 return response["LastModified"]
             except s3_client.exceptions.ClientError as e:
                 if e.response["Error"]["Code"] == "404":
@@ -212,17 +214,37 @@ def import_function(func_str: str) -> Callable:
 
 
 class FileManager:
-    def __init__(self, config_file: str = "dependencies.yaml"):
+
+    _instance = None  # Singleton instance
+
+    def __new__(cls, config_file: str = "dependencies.yml"):
+        """Create or return the singleton instance."""
+        _ = config_file  # Ignore for singleton
+        if cls._instance is None:
+            cls._instance = super(FileManager, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self, config_file: str = "dependencies.yml"):
         """Initialize with a list of dependency rules."""
+
+        if getattr(self, "_initialized", False):
+            return
+
         self.graph = nx.DiGraph()
         try:
-            with open(config_file, "r") as f:
+            # Load the configuration file from the package directory
+            package_dir = os.path.dirname(os.path.abspath(__file__))
+            file_path = os.path.join(package_dir, config_file)
+            with open(file_path, "r") as f:
                 config = yaml.safe_load(f)
                 if not isinstance(config, dict) or "rules" not in config:
                     raise ValueError(f"Invalid config format in {config_file}")
                 self.rules = config["rules"]
         except (yaml.YAMLError, IOError) as e:
             raise ValueError(f"Error loading config from {config_file}: {e}")
+
+        self._initialized = True
 
     def build_subgraph(self, file: str) -> None:
         """Build the dependency subgraph starting from a file."""
@@ -294,20 +316,20 @@ class FileManager:
             cache[file] = False
             return False
 
-    def refresh_file(self, file: str) -> None:
+    def refresh_file(self, file: str, reset: bool = False) -> None:
         """Refresh a file if stale or missing, building its subgraph if needed."""
         if file not in self.graph:
             self.build_subgraph(file)
-        self._refresh_file(file)
+        self._refresh_file(file, reset)
 
-    def _refresh_file(self, file: str) -> None:
+    def _refresh_file(self, file: str, reset: bool) -> None:
         """Recursively refresh dependencies, then the file if needed."""
         # First refresh all dependencies
         for dep in self.graph.successors(file):
-            self._refresh_file(dep)
+            self._refresh_file(dep, reset)
 
         # Then check if this file needs refreshing
-        if not self.is_up_to_date(file):
+        if reset or not self.is_up_to_date(file):
             try:
                 node_data = self.graph.nodes[file]
                 refresh_func_str = node_data.get("refresh_function")
@@ -322,3 +344,31 @@ class FileManager:
 
             except Exception as e:
                 raise RuntimeError(f"Failed to refresh file {file}: {e}")
+
+    def get_dependencies(self, file: str) -> List[str]:
+        """Get all dependencies for a file."""
+        if file not in self.graph:
+            self.build_subgraph(file)
+        return list(self.graph.successors(file))
+
+
+def refresh_file(
+    scheme: str,
+    source: str,
+    instrument: BaseInstrumentConfig,
+    zipfile: bool = True,
+    reset: bool = False,
+) -> None:
+    """
+    Refresh a file from S3 if it is not up to date.
+    The file is expected to be in a specific directory structure.
+    The S3 file is expected to exist and up-to-date.
+    """
+    fm = FileManager()
+    url = make_instrument_url(
+        scheme,
+        source,
+        instrument,
+        zipfile=zipfile,
+    )
+    fm.refresh_file(url, reset=reset)

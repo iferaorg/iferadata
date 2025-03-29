@@ -1,0 +1,11 @@
+rules:
+  - dependent: "file:data/{source}/{type}/{interval}/{symbol}.zip"
+    depends_on:
+      - "s3:{source}/{type}/{interval}/{symbol}.zip"
+    refresh_function: "ifera.file_refresh.download_file"
+
+  - dependent: "s3:processed/{type}/{interval}/{symbol}.zip"
+    depends_on:
+      - "s3:raw/{type}/{interval}/{symbol}.zip"
+      - "github:iferaorg/iferadata/data/instruments.json"
+    refresh_function: "ifera.file_refresh.process_raw_file"

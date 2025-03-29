@@ -173,6 +173,7 @@ class ConfigManager:
         instruments_filename: str = "data/instruments.json",
         brokers_filename: str = "data/brokers.json",
     ):
+        _, _ = instruments_filename, brokers_filename
         """Singleton pattern implementation."""
         if cls._instance is None:
             cls._instance = super(ConfigManager, cls).__new__(cls)

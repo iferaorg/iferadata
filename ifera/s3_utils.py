@@ -6,6 +6,13 @@ import os
 
 import boto3  # type: ignore
 from tqdm import tqdm
+from .config import BaseInstrumentConfig
+
+
+def make_s3_key(source: str, instrument: BaseInstrumentConfig, zipfile: bool) -> str:
+    """Build an S3 key for the instrument data file."""
+    extension = ".zip" if zipfile else ".csv"
+    return f"{source}/{instrument.type}/{instrument.interval}/{instrument.symbol}{extension}"
 
 
 def download_s3_file(bucket: str, key: str, target_path: str) -> None:

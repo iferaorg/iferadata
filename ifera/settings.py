@@ -14,8 +14,7 @@ class Settings(BaseSettings):
     """
 
     DATA_FOLDER: str = "data"
-    S3_BUCKET: str = "rawdata"
-    S3_BUCKET_PROCESSED: str = "processeddata"
+    S3_BUCKET: str = "s3bucket"
 
     class Config:
         """Configuration class for pydantic settings"""

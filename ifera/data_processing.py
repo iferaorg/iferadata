@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from .config import InstrumentConfig
-from .file_utils import make_path
+from .config import BaseInstrumentConfig
+from .file_utils import make_instrument_path
 
 SECONDS_IN_DAY = 86400
 
@@ -261,7 +261,7 @@ def aggregate_large_quote_file(
 
 
 def calculate_time_columns(
-    df: pd.DataFrame, instrument: InstrumentConfig
+    df: pd.DataFrame, instrument: BaseInstrumentConfig
 ) -> pd.DataFrame:
     """Calculate and assign datetime-related columns to the DataFrame."""
     dt_index = pd.to_datetime(df.index)
@@ -283,7 +283,9 @@ def calculate_time_columns(
     return df
 
 
-def process_group(group: pd.DataFrame, instrument: InstrumentConfig) -> pd.DataFrame:
+def process_group(
+    group: pd.DataFrame, instrument: BaseInstrumentConfig
+) -> pd.DataFrame:
     """Process a group by adding missing rows based on instrument settings."""
     return add_missing_rows(
         group,
@@ -294,7 +296,7 @@ def process_group(group: pd.DataFrame, instrument: InstrumentConfig) -> pd.DataF
 
 
 def perform_final_calculations(
-    df: pd.DataFrame, instrument: InstrumentConfig
+    df: pd.DataFrame, instrument: BaseInstrumentConfig
 ) -> pd.DataFrame:
     """Perform final calculations for ordinal dates and time seconds."""
     offset_seconds = instrument.trading_start.total_seconds()
@@ -314,7 +316,9 @@ def perform_final_calculations(
     return df
 
 
-def process_data(df: pd.DataFrame, instrument: InstrumentConfig, zipfile: bool) -> None:
+def process_data(
+    df: pd.DataFrame, instrument: BaseInstrumentConfig, zipfile: bool
+) -> None:
     """
     Process raw data into a standardized format.
 
@@ -372,8 +376,8 @@ def process_data(df: pd.DataFrame, instrument: InstrumentConfig, zipfile: bool) 
         df = df.reset_index(drop=True, inplace=False)  # type: ignore
 
         print("Saving processed data...")
-        output_path = make_path(
-            raw=False, instrument=instrument, remove_file=True, zipfile=zipfile
+        output_path = make_instrument_path(
+            source="raw", instrument=instrument, remove_file=True, zipfile=zipfile
         )
         if zipfile:
             df.to_csv(str(output_path), header=False, index=False, compression="zip")
