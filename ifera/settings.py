@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     DATA_FOLDER: str = "data"
     S3_BUCKET: str = "s3bucket"
+    GITHUB_TOKEN: str = ""
 
     class Config:
         """Configuration class for pydantic settings"""

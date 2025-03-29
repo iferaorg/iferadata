@@ -9,6 +9,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from .config import BaseInstrumentConfig
+from .enums import Source
 from .file_utils import make_instrument_path
 
 SECONDS_IN_DAY = 86400
@@ -377,7 +378,7 @@ def process_data(
 
         print("Saving processed data...")
         output_path = make_instrument_path(
-            source="raw", instrument=instrument, remove_file=True, zipfile=zipfile
+            source=Source.RAW, instrument=instrument, remove_file=True, zipfile=zipfile
         )
         if zipfile:
             df.to_csv(str(output_path), header=False, index=False, compression="zip")

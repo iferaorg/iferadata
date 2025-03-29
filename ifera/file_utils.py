@@ -3,14 +3,14 @@ File system utilities for the ifera package.
 """
 
 from pathlib import Path
-from typing import Optional
 
 from .config import BaseInstrumentConfig
+from .enums import Source
 from .settings import settings
 
 
 def make_path(
-    source: str,
+    source: Source,
     type: str,
     interval: str,
     symbol: str,
@@ -18,7 +18,7 @@ def make_path(
     remove_file: bool = False,
 ) -> Path:
     """Generate a path to a data file."""
-    path = Path(settings.DATA_FOLDER, source, type, interval, symbol)
+    path = Path(settings.DATA_FOLDER, source.value, type, interval, symbol)
     path = path.with_suffix(".zip" if zipfile else ".csv")
 
     try:
@@ -36,7 +36,7 @@ def make_path(
 
 
 def make_instrument_path(
-    source: str,
+    source: Source,
     instrument: BaseInstrumentConfig,
     remove_file: bool = False,
     zipfile: bool = True,

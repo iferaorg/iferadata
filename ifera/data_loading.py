@@ -12,6 +12,7 @@ from einops import rearrange
 from tqdm import tqdm
 
 from .config import InstrumentConfig, BaseInstrumentConfig
+from .enums import Scheme, Source
 from .file_utils import make_instrument_path
 from .file_manager import refresh_file
 
@@ -54,9 +55,9 @@ def load_data(
     zipfile: bool = True,
 ) -> pd.DataFrame:
     """Load data from CSV files."""
-    source = "raw" if raw else "processed"
+    source = Source.RAW if raw else Source.PROCESSED
     refresh_file(
-        scheme="file",
+        scheme=Scheme.FILE,
         source=source,
         instrument=instrument,
         zipfile=zipfile,

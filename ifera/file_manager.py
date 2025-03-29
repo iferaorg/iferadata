@@ -11,6 +11,7 @@ from functools import lru_cache
 from github import Github
 from github.GithubException import GithubException
 from .config import BaseInstrumentConfig
+from .enums import Scheme, Source
 from .url_utils import make_instrument_url
 from .settings import settings
 
@@ -25,8 +26,8 @@ def get_github_client() -> Github:
     """Get or create a GitHub client instance."""
     global _github_client
     if _github_client is None:
-        # Use environment variable for token if available, otherwise unauthenticated
-        token = os.environ.get("GITHUB_TOKEN")
+        # Use token from settings if available, otherwise unauthenticated
+        token = settings.GITHUB_TOKEN
         if token:
             _github_client = Github(token)
         else:
@@ -121,9 +122,14 @@ class FileOperations:
     def exists(file: str) -> bool:
         """Check if a file (file, S3, or GitHub) exists."""
         parts = urlparse(file)
-        if parts.scheme == "file":
+        try:
+            scheme = Scheme(parts.scheme)
+        except ValueError:
+            raise ValueError(f"Unsupported scheme: {parts.scheme}")
+
+        if scheme == Scheme.FILE:
             return os.path.exists(parts.path)
-        elif parts.scheme == "s3":
+        elif scheme == Scheme.S3:
             try:
                 bucket = settings.S3_BUCKET
                 s3_client.head_object(Bucket=bucket, Key=parts.path)
@@ -132,7 +138,7 @@ class FileOperations:
                 if e.response["Error"]["Code"] == "404":
                     return False
                 raise
-        elif parts.scheme == "github":
+        elif scheme == Scheme.GITHUB:
             try:
                 owner, repo_name, path = parse_github_url(file)
                 g = get_github_client()
@@ -155,14 +161,19 @@ class FileOperations:
     def get_mtime(file: str) -> datetime.datetime:
         """Get the modification time of a file (file, S3, or GitHub) in UTC."""
         parts = urlparse(file)
-        if parts.scheme == "file":
+        try:
+            scheme = Scheme(parts.scheme)
+        except ValueError:
+            raise ValueError(f"Unsupported scheme: {parts.scheme}")
+
+        if scheme == Scheme.FILE:
             path = parts.path
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Local file not found: {path}")
             return datetime.datetime.fromtimestamp(
                 os.path.getmtime(path), tz=datetime.timezone.utc
             )
-        elif parts.scheme == "s3":
+        elif scheme == Scheme.S3:
             try:
                 bucket = settings.S3_BUCKET
                 response = s3_client.head_object(Bucket=bucket, Key=parts.path)
@@ -173,7 +184,7 @@ class FileOperations:
                         f"S3 object not found: {parts.netloc}/{parts.path}"
                     )
                 raise
-        elif parts.scheme == "github":
+        elif scheme == Scheme.GITHUB:
             owner, repo_name, path = parse_github_url(file)
 
             try:
@@ -329,7 +340,8 @@ class FileManager:
             self._refresh_file(dep, reset)
 
         # Then check if this file needs refreshing
-        if reset or not self.is_up_to_date(file):
+        has_successors = any(True for _ in self.graph.successors(file))
+        if has_successors and (reset or not self.is_up_to_date(file)):
             try:
                 node_data = self.graph.nodes[file]
                 refresh_func_str = node_data.get("refresh_function")
@@ -340,7 +352,7 @@ class FileManager:
                 wildcards = node_data.get("wildcards", {})
 
                 # Execute the refresh function with the extracted wildcards
-                refresh_func(**wildcards)
+                refresh_func(**wildcards, reset=reset)
 
             except Exception as e:
                 raise RuntimeError(f"Failed to refresh file {file}: {e}")
@@ -353,8 +365,8 @@ class FileManager:
 
 
 def refresh_file(
-    scheme: str,
-    source: str,
+    scheme: Scheme,
+    source: Source,
     instrument: BaseInstrumentConfig,
     zipfile: bool = True,
     reset: bool = False,

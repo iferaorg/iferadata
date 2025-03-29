@@ -3,6 +3,7 @@ ifera
 """
 
 from .config import BrokerConfig, ConfigManager, InstrumentConfig
+from .enums import Scheme, Source
 from .data_loading import load_data, load_data_tensor
 from .data_models import InstrumentData, DataManager
 from .data_processing import aggregate_large_quote_file, process_data
@@ -43,4 +44,6 @@ __all__ = [
     "FileManager",
     "FileOperations",
     "make_instrument_url",
+    "Scheme",
+    "Source",
 ]
