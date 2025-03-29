@@ -6,3 +6,6 @@ pydantic==2.10.6
 pydantic-settings==2.8.1 
 torch==2.6.0
 einops==0.8.1
+PyGithub>=2.6.1
+PyYAML>=6.0.2
+networkx>=3.4.2
