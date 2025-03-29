@@ -1,4 +1,4 @@
-numpy==2.2.3
+numpy==2.2.4
 pandas==2.2.3
 tqdm==4.67.1
 boto3==1.37.22 
