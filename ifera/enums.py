@@ -14,3 +14,4 @@ class Source(Enum):
 
     RAW = "raw"
     PROCESSED = "processed"
+    TENSOR = "tensor"

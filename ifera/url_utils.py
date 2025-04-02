@@ -16,7 +16,11 @@ def make_url(
         path = make_path(source, instrument_type, interval, symbol, zipfile=zipfile)
         return f"{scheme.value}:{path}"
 
-    file_name = f"{symbol}.zip" if zipfile else f"{symbol}.csv"
+    if source == Source.TENSOR:
+        file_name = f"{symbol}.pt"
+    else:
+        file_name = f"{symbol}.zip" if zipfile else f"{symbol}.csv"
+
     url = f"{scheme.value}:{source.value}/{instrument_type}/{interval}/{file_name}"
     return url
 

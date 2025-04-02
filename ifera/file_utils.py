@@ -14,12 +14,16 @@ def make_path(
     type: str,
     interval: str,
     symbol: str,
-    zipfile: bool,
+    zipfile: bool = True,
     remove_file: bool = False,
 ) -> Path:
     """Generate a path to a data file."""
     path = Path(settings.DATA_FOLDER, source.value, type, interval, symbol)
-    path = path.with_suffix(".zip" if zipfile else ".csv")
+
+    if source == Source.TENSOR:
+        path = path.with_suffix(".pt")
+    else:
+        path = path.with_suffix(".zip" if zipfile else ".csv")
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
