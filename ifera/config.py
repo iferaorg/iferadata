@@ -48,6 +48,9 @@ class BaseInstrumentConfig(BaseModel):
     end_time: pd.Timedelta = pd.Timedelta(0)
     total_steps: int = 0
 
+    parent_config: Optional["BaseInstrumentConfig"] = Field(None, exclude=True)
+    instrument_key: str = ""
+
     @field_validator(
         "trading_start",
         "trading_end",
@@ -138,7 +141,6 @@ class InstrumentConfig(BaseInstrumentConfig, BrokerInstrumentConfig):
     """
 
     broker_name: str = Field("", description="Name of the broker")
-    parent_config: Optional["InstrumentConfig"] = Field(None, exclude=True)
 
     model_config = {
         "arbitrary_types_allowed": True,
@@ -180,8 +182,10 @@ class ConfigManager:
         self.instruments_data: Dict[str, Dict[str, Any]] = {}
         self.brokers_data: Dict[str, Dict[str, Any]] = {}
         # Cache for InstrumentConfig instances
+        self._base_config_cache: Dict[str, BaseInstrumentConfig] = {}
         self._config_cache: Dict[Tuple[str, str], InstrumentConfig] = {}
         # Cache for derived configs with different intervals
+        self._base_derived_cache: Dict[Tuple[str, str], BaseInstrumentConfig] = {}
         self._derived_cache: Dict[Tuple[str, str, str], InstrumentConfig] = {}
         self._load_data()
 
@@ -222,6 +226,8 @@ class ConfigManager:
             raise OSError(f"Error accessing configuration files: {e}") from e
 
         # Clear caches when data is reloaded
+        self._base_config_cache.clear()
+        self._base_derived_cache.clear()
         self._config_cache.clear()
         self._derived_cache.clear()
 
@@ -244,6 +250,11 @@ class ConfigManager:
     def get_base_instrument_config(self, instrument_key: str) -> BaseInstrumentConfig:
         """Get base configuration for a specific instrument."""
         self.reload_if_updated()
+
+        # Check if we have a cached config for this instrument
+        if instrument_key in self._base_config_cache:
+            return self._base_config_cache[instrument_key]
+
         try:
             instrument_dict = self.instruments_data[instrument_key]
         except KeyError as e:
@@ -251,13 +262,19 @@ class ConfigManager:
                 f"Instrument key '{instrument_key}' not found in '{self.instruments_filename}'."
             ) from e
         try:
-            return BaseInstrumentConfig(
+            config = BaseInstrumentConfig(
                 **instrument_dict, last_update=self.last_instruments_update
             )
         except Exception as e:
             raise ValueError(
                 f"Error creating BaseInstrumentData for '{instrument_key}': {e}"
             ) from e
+
+        config.instrument_key = instrument_key
+
+        # Cache the base config
+        self._base_config_cache[instrument_key] = config
+        return config
 
     def get_broker_config(self, broker_name: str) -> BrokerConfig:
         """Get configuration for a specific broker."""
@@ -275,20 +292,14 @@ class ConfigManager:
                 f"Error creating BrokerData for '{broker_name}': {e}"
             ) from e
 
-    def get_config(self, broker_name: str, instrument_key: str) -> InstrumentConfig:
-        """Get combined configuration for a specific instrument and broker."""
-        self.reload_if_updated()
-
-        # Check if we have a cached config for this combination
-        cache_key = (broker_name, instrument_key)
-        if cache_key in self._config_cache:
-            return self._config_cache[cache_key]
-
-        # Get base instrument configuration
-        base_config = self.get_base_instrument_config(instrument_key)
+    def _get_config_from_base(
+        self, base_config: BaseInstrumentConfig, broker_name: str
+    ) -> InstrumentConfig:
+        """Get configuration for a specific instrument and broker."""
 
         # Get broker configuration and find matching instrument
         broker_config = self.get_broker_config(broker_name)
+
         try:
             broker_instrument_config = broker_config.instruments[base_config.symbol]
         except KeyError as e:
@@ -310,13 +321,33 @@ class ConfigManager:
 
         # Create and cache the config
         config = InstrumentConfig(**combined_dict)
+
+        return config
+
+    def get_config(self, broker_name: str, instrument_key: str) -> InstrumentConfig:
+        """Get combined configuration for a specific instrument and broker."""
+        self.reload_if_updated()
+
+        # Check if we have a cached config for this combination
+        cache_key = (broker_name, instrument_key)
+        if cache_key in self._config_cache:
+            return self._config_cache[cache_key]
+
+        # Get base instrument configuration
+        base_config = self.get_base_instrument_config(instrument_key)
+
+        # Create and cache the config
+        config = self._get_config_from_base(
+            base_config=base_config, broker_name=broker_name
+        )
+
         self._config_cache[cache_key] = config
 
         return config
 
-    def create_derived_config(
-        self, parent_config: InstrumentConfig, new_interval: str
-    ) -> InstrumentConfig:
+    def create_derived_base_config(
+        self, parent_config: BaseInstrumentConfig, new_interval: str
+    ) -> BaseInstrumentConfig:
         """
         Create a derived InstrumentConfig with a different interval.
 
@@ -331,9 +362,9 @@ class ConfigManager:
             ValueError: If the new interval doesn't meet requirements
         """
         # Check if we already have this derived config in the cache
-        cache_key = (parent_config.broker_name, parent_config.symbol, new_interval)
+        cache_key = (parent_config.symbol, new_interval)
         if cache_key in self._derived_cache:
-            return self._derived_cache[cache_key]
+            return self._base_derived_cache[cache_key]
 
         # Convert intervals to seconds for validation
         parent_step_seconds = parent_config.time_step.total_seconds()
@@ -372,17 +403,53 @@ class ConfigManager:
         config_dict["interval"] = new_interval
 
         # Create new config with updated interval
-        child_config = InstrumentConfig(**config_dict)
+        child_config = BaseInstrumentConfig(**config_dict)
 
         # Set parent reference (excluded from serialization)
         child_config.parent_config = parent_config
 
         # Cache the derived config
-        self._derived_cache[cache_key] = child_config
+        self._base_derived_cache[cache_key] = child_config
 
         return child_config
 
+    def create_derived_config(
+        self, parent_config: InstrumentConfig, new_interval: str
+    ) -> InstrumentConfig:
+        """
+        Create a derived InstrumentConfig with a different interval.
+
+        Args:
+            parent_config: The parent InstrumentConfig
+            new_interval: The new interval string (e.g., '5m', '1h', '1d')
+
+        Returns:
+            A new InstrumentConfig with updated interval and derived fields
+
+        Raises:
+            ValueError: If the new interval doesn't meet requirements
+        """
+        # Check if we already have this derived config in the cache
+        cache_key = (parent_config.broker_name, parent_config.symbol, new_interval)
+
+        if cache_key in self._derived_cache:
+            return self._derived_cache[cache_key]
+
+        base_config = self.create_derived_base_config(
+            parent_config=parent_config, new_interval=new_interval
+        )
+
+        config = self._get_config_from_base(
+            base_config=base_config, broker_name=parent_config.broker_name
+        )
+
+        self._derived_cache[cache_key] = config
+
+        return config
+
     def clear_cache(self):
         """Clear all configuration caches."""
+        self._base_config_cache.clear()
+        self._base_derived_cache.clear()
         self._config_cache.clear()
         self._derived_cache.clear()

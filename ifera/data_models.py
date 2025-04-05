@@ -16,9 +16,10 @@ from typing import Dict, Optional, Tuple
 import torch
 from einops import repeat, rearrange
 
-from .config import InstrumentConfig
+from .config import BaseInstrumentConfig
 from .data_loading import load_data_tensor
 from .masked_series import masked_artr
+from .decorators import singleton
 
 
 class InstrumentData:
@@ -32,22 +33,21 @@ class InstrumentData:
     available device (CPU/GPU).
 
     Attributes:
-        instrument (InstrumentConfig): Configuration for the financial instrument
+        instrument (BaseInstrumentConfig): Configuration for the financial instrument
         zipfile (bool): Whether the data is stored in a zip file
         dtype (torch.dtype): Data type for the tensor
         device (torch.device): Device to store and process the data on
 
     Examples:
-        >>> from ifera.config import InstrumentConfig
-        >>> config = InstrumentConfig(symbol="AAPL")
+        >>> from ifera.config import BaseInstrumentConfig
+        >>> config = BaseInstrumentConfig(symbol="AAPL")
         >>> data = InstrumentData(config)
         >>> atr = data.artr(alpha=0.1)
     """
 
     def __init__(
         self,
-        instrument: InstrumentConfig,
-        zipfile: bool = True,
+        instrument: BaseInstrumentConfig,
         dtype: torch.dtype = torch.float32,
         device: Optional[torch.device] = None,
         sentinel: Optional[object] = None,
@@ -59,7 +59,6 @@ class InstrumentData:
 
         self.instrument = instrument
         self.dtype = dtype
-        self.zipfile = zipfile
         self.device = (
             device
             if device is not None
@@ -89,7 +88,6 @@ class InstrumentData:
                 manager = DataManager()
                 parent_data = manager.get_instrument_data(
                     self.instrument.parent_config,
-                    self.zipfile,
                     self.dtype,
                     self.device,
                 ).data
@@ -97,7 +95,6 @@ class InstrumentData:
             else:
                 self._data = load_data_tensor(
                     self.instrument,
-                    zipfile=self.zipfile,
                     dtype=self.dtype,
                     device=self.device,
                 )
@@ -228,10 +225,12 @@ class InstrumentData:
         prev_time_idx : torch.Tensor
             Batch of previous time indices
         """
-        prev_date_idx = date_idx.clone()
         prev_time_idx = time_idx - 1
-        prev_date_idx[prev_time_idx < 0] -= 1
-        prev_time_idx[prev_time_idx < 0] += self.instrument.total_steps
+        mask = prev_time_idx < 0
+        prev_date_idx = date_idx - mask.long()
+        prev_time_idx = torch.where(
+            mask, self.instrument.total_steps - 1, prev_time_idx
+        )
         return prev_date_idx, prev_time_idx
 
     def get_next_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -252,10 +251,10 @@ class InstrumentData:
         next_time_idx : torch.Tensor
             Batch of next time indices
         """
-        next_date_idx = date_idx.clone()
         next_time_idx = time_idx + 1
-        next_date_idx[next_time_idx >= self.instrument.total_steps] += 1
-        next_time_idx[next_time_idx >= self.instrument.total_steps] = 0
+        mask = next_time_idx >= self.instrument.total_steps
+        next_date_idx = date_idx + mask.long()
+        next_time_idx = torch.where(mask, 0, next_time_idx)
         return next_date_idx, next_time_idx
 
     def convert_indices(
@@ -303,38 +302,22 @@ class InstrumentData:
         return self.get_prev_indices(next_date_idx, next_time_idx // tr)
 
 
+@singleton
 class DataManager:
     """
     Manages and caches instrument data instances.
     Implemented as a singleton to ensure only one instance exists.
     """
 
-    _instance = None  # Singleton instance
-
-    def __new__(cls):
-        """Singleton pattern implementation."""
-        if cls._instance is None:
-            cls._instance = super(DataManager, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
     def __init__(self):
-        """Initialize the data manager (once)."""
-        if getattr(self, "_initialized", False):
-            return
-
         # Cache for InstrumentData instances
         # Key: (broker_name, instrument_symbol, interval, zipfile, dtype, device_type)
-        self._data_cache: Dict[
-            Tuple[str, str, str, bool, torch.dtype, str], InstrumentData
-        ] = {}
+        self._data_cache: Dict[Tuple[str, str, torch.dtype, str], InstrumentData] = {}
         self._sentinel = object()
-        self._initialized = True
 
     def get_instrument_data(
         self,
-        instrument_config: InstrumentConfig,
-        zipfile: bool = True,
+        instrument_config: BaseInstrumentConfig,
         dtype: torch.dtype = torch.float32,
         device: Optional[torch.device] = None,
     ) -> InstrumentData:
@@ -361,10 +344,8 @@ class DataManager:
 
         # Create cache key
         cache_key = (
-            instrument_config.broker_name,
             instrument_config.symbol,
             instrument_config.interval,
-            zipfile,
             dtype,
             device.type,
         )
@@ -376,7 +357,6 @@ class DataManager:
         # Create a new instance and cache it
         data = InstrumentData(
             instrument=instrument_config,
-            zipfile=zipfile,
             dtype=dtype,
             device=device,
             sentinel=self._sentinel,

@@ -277,6 +277,7 @@ class FileManager:
 
         for rule in self.rules:
             wildcards = match_pattern(rule["dependent"], file)
+            
             if wildcards:
                 self.graph.add_node(
                     file, refresh_function=rule["refresh_function"], wildcards=wildcards
@@ -291,6 +292,9 @@ class FileManager:
                         print(
                             f"Warning: {e} when processing dependency {dep_pattern} for {file}"
                         )
+                
+                # Only match the first rule that applies
+                break
 
     def is_up_to_date(self, file: str) -> bool:
         """Check if a file is up-to-date, building its subgraph if needed."""

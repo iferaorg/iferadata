@@ -8,6 +8,7 @@ import torch
 from einops import rearrange
 
 from .data_models import InstrumentData
+from .config import ConfigManager
 
 
 class MarketSimulatorIntraday:
@@ -52,8 +53,13 @@ class MarketSimulatorIntraday:
         "volume": 4,
     }
 
-    def __init__(self, instrument_data: InstrumentData):
-        self.instrument: Final = instrument_data.instrument
+    def __init__(self, instrument_data: InstrumentData, broker_name: str):
+        cm = ConfigManager()
+        self.instrument: Final = cm.get_config(
+            broker_name=broker_name,
+            instrument_key=instrument_data.instrument.instrument_key,
+        )
+
         self.data: Final = instrument_data.data
         self.mask: Final = instrument_data.valid_mask  # Shape: [date, time]
 

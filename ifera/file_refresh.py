@@ -1,4 +1,5 @@
 import torch
+import time
 from einops import rearrange
 from .file_manager import FileManager
 from .s3_utils import download_s3_file, upload_s3_file, make_s3_key
@@ -79,7 +80,8 @@ def process_tensor_file(type: str, interval: str, symbol: str, reset: bool) -> N
     if reset or not fm.is_up_to_date(tensor_file_url):
         cm = ConfigManager()
         instrument = cm.get_base_instrument_config(f"{symbol}:{interval}")
-        # Ensure local processed file is up-to-date
+        processed_file_path = make_path(Source.PROCESSED, type, interval, symbol)
+        processed_file_exists = processed_file_path.exists()
         # Load processed DataFrame
         df = load_data(raw=False, instrument=instrument, zipfile=True)
         # Convert to tensor
@@ -95,3 +97,7 @@ def process_tensor_file(type: str, interval: str, symbol: str, reset: bool) -> N
         upload_s3_file(bucket, s3_key, str(tensor_file_path))
         # Touch the local file to update its timestamp
         tensor_file_path.touch()
+        
+        # Remove the processed file if it was not already present
+        if not processed_file_exists:
+            processed_file_path.unlink(missing_ok=True)
