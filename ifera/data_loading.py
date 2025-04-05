@@ -138,7 +138,7 @@ def torch_dtype_to_numpy_dtype(dtype: torch.dtype) -> np.dtype:
 
 
 def load_data_tensor(
-    instrument: InstrumentConfig,
+    instrument: BaseInstrumentConfig,
     reset: bool = False,
     dtype: torch.dtype = torch.float32,
     device: Optional[torch.device] = None,

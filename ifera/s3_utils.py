@@ -77,7 +77,13 @@ def upload_s3_file(bucket: str, key: str, local_path: str) -> str:
             progress.update(bytes_transferred)
 
         # Upload with progress tracking
-        s3.upload_file(local_path, bucket, key, Callback=callback)
+        s3.upload_file(
+            local_path,
+            bucket,
+            key,
+            Callback=callback,
+            ExtraArgs={"StorageClass": "INTELLIGENT_TIERING"},
+        )
         progress.close()
 
     except Exception as e:

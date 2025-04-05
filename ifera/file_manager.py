@@ -14,6 +14,7 @@ from .config import BaseInstrumentConfig
 from .enums import Scheme, Source
 from .url_utils import make_instrument_url
 from .settings import settings
+from .decorators import singleton
 
 # Initialize S3 client
 s3_client = boto3.client("s3")
@@ -224,23 +225,10 @@ def import_function(func_str: str) -> Callable:
         raise ImportError(f"Failed to import function '{func_str}': {e}")
 
 
+@singleton
 class FileManager:
-
-    _instance = None  # Singleton instance
-
-    def __new__(cls, config_file: str = "dependencies.yml"):
-        """Create or return the singleton instance."""
-        _ = config_file  # Ignore for singleton
-        if cls._instance is None:
-            cls._instance = super(FileManager, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-
     def __init__(self, config_file: str = "dependencies.yml"):
         """Initialize with a list of dependency rules."""
-
-        if getattr(self, "_initialized", False):
-            return
 
         self.graph = nx.DiGraph()
         try:
@@ -254,8 +242,6 @@ class FileManager:
                 self.rules = config["rules"]
         except (yaml.YAMLError, IOError) as e:
             raise ValueError(f"Error loading config from {config_file}: {e}")
-
-        self._initialized = True
 
     def build_subgraph(self, file: str) -> None:
         """Build the dependency subgraph starting from a file."""

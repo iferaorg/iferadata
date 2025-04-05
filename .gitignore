@@ -2,4 +2,5 @@ __pycache__/
 megalinter-reports/
 data/raw/
 data/processed/
+data/tensor/
 .env
