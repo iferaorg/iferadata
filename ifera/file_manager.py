@@ -15,9 +15,7 @@ from .enums import Scheme, Source
 from .url_utils import make_instrument_url
 from .settings import settings
 from .decorators import singleton
-
-# Initialize S3 client
-s3_client = boto3.client("s3")
+from .s3_utils import check_s3_file_exists, get_s3_last_modified
 
 # Initialize GitHub client (using singleton pattern to avoid multiple instances)
 _github_client = None
@@ -41,15 +39,36 @@ def get_github_client() -> Github:
 
 
 def pattern_to_regex(pattern_path: str) -> Tuple[str, List[str]]:
-    """Convert a pattern path to a regex and extract wildcard names."""
+    """
+    Convert a pattern path to a regex and extract wildcard names.
+
+    Args:
+        pattern_path (str): A pattern string with {wildcard} placeholders, e.g.,
+                           "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
+
+    Returns:
+        Tuple[str, List[str]]: A tuple containing the regex pattern and a list of wildcard names.
+    """
+    # Split the pattern_path into literal parts and {wildcard} parts
+    split_list = re.split(r"(\{\w+\})", pattern_path)
+    regex_parts = []
     wildcard_names = []
 
-    def replacer(match):
-        wildcard_names.append(match.group(1))
-        return "(.+?)"
+    # Process each part from the split
+    for part in split_list:
+        if re.match(r"\{\w+\}", part):
+            # This is a {wildcard} part, e.g., "{source}"
+            name = part[1:-1]  # Extract the name inside braces, e.g., "source"
+            wildcard_names.append(name)
+            regex_parts.append("(.+?)")  # Non-greedy capturing group
+        else:
+            # This is a literal part, escape any special regex characters
+            regex_parts.append(re.escape(part))
 
-    regex_path = re.sub(r"\{(\w+)\}", replacer, pattern_path)
-    return "^" + regex_path + "$", wildcard_names
+    # Combine all parts into a single regex string
+    regex_string = "".join(regex_parts)
+    # Add ^ and $ to match the entire string
+    return "^" + regex_string + "$", wildcard_names
 
 
 def match_pattern(pattern: str, file: str) -> Optional[Dict[str, str]]:
@@ -131,14 +150,7 @@ class FileOperations:
         if scheme == Scheme.FILE:
             return os.path.exists(parts.path)
         elif scheme == Scheme.S3:
-            try:
-                bucket = settings.S3_BUCKET
-                s3_client.head_object(Bucket=bucket, Key=parts.path)
-                return True
-            except s3_client.exceptions.ClientError as e:
-                if e.response["Error"]["Code"] == "404":
-                    return False
-                raise
+            return check_s3_file_exists(settings.S3_BUCKET, parts.path)
         elif scheme == Scheme.GITHUB:
             try:
                 owner, repo_name, path = parse_github_url(file)
@@ -175,16 +187,7 @@ class FileOperations:
                 os.path.getmtime(path), tz=datetime.timezone.utc
             )
         elif scheme == Scheme.S3:
-            try:
-                bucket = settings.S3_BUCKET
-                response = s3_client.head_object(Bucket=bucket, Key=parts.path)
-                return response["LastModified"]
-            except s3_client.exceptions.ClientError as e:
-                if e.response["Error"]["Code"] == "404":
-                    raise FileNotFoundError(
-                        f"S3 object not found: {parts.netloc}/{parts.path}"
-                    )
-                raise
+            return get_s3_last_modified(settings.S3_BUCKET, parts.path)
         elif scheme == Scheme.GITHUB:
             owner, repo_name, path = parse_github_url(file)
 
@@ -354,7 +357,6 @@ def refresh_file(
     scheme: Scheme,
     source: Source,
     instrument: BaseInstrumentConfig,
-    zipfile: bool = True,
     reset: bool = False,
 ) -> None:
     """
@@ -367,6 +369,5 @@ def refresh_file(
         scheme,
         source,
         instrument,
-        zipfile=zipfile,
     )
     fm.refresh_file(url, reset=reset)

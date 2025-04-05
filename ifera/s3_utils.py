@@ -3,11 +3,19 @@ Utilities for interacting with AWS S3.
 """
 
 import os
+import datetime
 
 import boto3  # type: ignore
 from tqdm import tqdm
 from .config import BaseInstrumentConfig
 from .enums import Source
+from .decorators import singleton
+
+
+@singleton
+class S3ClientSingleton:
+    def __init__(self):
+        self.client = boto3.client("s3")
 
 
 def make_s3_key(source: Source, instrument: BaseInstrumentConfig, zipfile: bool) -> str:
@@ -20,10 +28,7 @@ def download_s3_file(bucket: str, key: str, target_path: str) -> None:
     """
     Download a file from S3 to the specified local target path with a progress bar.
     """
-    try:
-        s3 = boto3.client("s3")
-    except Exception as e:
-        raise RuntimeError("Error initializing S3 client") from e
+    s3_client = S3ClientSingleton().client
 
     try:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -34,7 +39,7 @@ def download_s3_file(bucket: str, key: str, target_path: str) -> None:
 
     try:
         # Get file size for progress bar
-        response = s3.head_object(Bucket=bucket, Key=key)
+        response = s3_client.head_object(Bucket=bucket, Key=key)
         file_size = response["ContentLength"]
 
         # Set up progress bar
@@ -46,7 +51,7 @@ def download_s3_file(bucket: str, key: str, target_path: str) -> None:
             progress.update(bytes_transferred)
 
         # Download with progress tracking
-        s3.download_file(bucket, key, target_path, Callback=callback)
+        s3_client.download_file(bucket, key, target_path, Callback=callback)
         progress.close()
 
     except Exception as e:
@@ -59,10 +64,7 @@ def upload_s3_file(bucket: str, key: str, local_path: str) -> str:
     """
     Upload a file from the local directory to S3 with a progress bar.
     """
-    try:
-        s3 = boto3.client("s3")
-    except Exception as e:
-        raise RuntimeError("Error initializing S3 client") from e
+    s3_client = S3ClientSingleton().client
 
     try:
         # Get local file size for progress bar
@@ -77,7 +79,7 @@ def upload_s3_file(bucket: str, key: str, local_path: str) -> str:
             progress.update(bytes_transferred)
 
         # Upload with progress tracking
-        s3.upload_file(
+        s3_client.upload_file(
             local_path,
             bucket,
             key,
@@ -99,10 +101,7 @@ def check_s3_file_exists(bucket_name: str, key: str) -> bool:
     """
     Check if a file exists in the specified S3 bucket.
     """
-    try:
-        s3_client = boto3.client("s3")
-    except Exception as e:
-        raise RuntimeError("Error initializing S3 client") from e
+    s3_client = S3ClientSingleton().client
 
     try:
         response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=key, MaxKeys=1)
@@ -118,14 +117,14 @@ def check_s3_file_exists(bucket_name: str, key: str) -> bool:
     return False
 
 
-def get_s3_last_modified(bucket: str, key: str) -> float:
+def get_s3_last_modified(bucket: str, key: str) -> datetime.datetime:
     """
     Retrieve the last modified timestamp for an S3 object.
     """
     try:
-        s3 = boto3.client("s3")
-        response = s3.head_object(Bucket=bucket, Key=key)
-        return response["LastModified"].timestamp()
+        s3_client = S3ClientSingleton().client
+        response = s3_client.head_object(Bucket=bucket, Key=key)
+        return response["LastModified"]
     except Exception as e:
         raise RuntimeError(
             f"Error retrieving S3 metadata for s3://{bucket}/{key}"

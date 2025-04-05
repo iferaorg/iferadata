@@ -5,7 +5,7 @@ File system utilities for the ifera package.
 from pathlib import Path
 
 from .config import BaseInstrumentConfig
-from .enums import Source
+from .enums import Source, extension_map
 from .settings import settings
 
 
@@ -14,16 +14,11 @@ def make_path(
     type: str,
     interval: str,
     symbol: str,
-    zipfile: bool = True,
     remove_file: bool = False,
 ) -> Path:
     """Generate a path to a data file."""
     path = Path(settings.DATA_FOLDER, source.value, type, interval, symbol)
-
-    if source == Source.TENSOR:
-        path = path.with_suffix(".pt")
-    else:
-        path = path.with_suffix(".zip" if zipfile else ".csv")
+    path = path.with_suffix(extension_map[source])
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +38,6 @@ def make_instrument_path(
     source: Source,
     instrument: BaseInstrumentConfig,
     remove_file: bool = False,
-    zipfile: bool = True,
 ) -> Path:
     """Generate a path to a data file."""
     file_name = instrument.symbol
@@ -52,6 +46,5 @@ def make_instrument_path(
         instrument.type,
         instrument.interval,
         file_name,
-        zipfile=zipfile,
         remove_file=remove_file,
     )

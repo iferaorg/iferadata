@@ -160,6 +160,7 @@ class BrokerConfig(BaseModel):
         "populate_by_name": True,
     }
 
+
 @singleton
 class ConfigManager:
     """

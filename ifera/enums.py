@@ -15,3 +15,10 @@ class Source(Enum):
     RAW = "raw"
     PROCESSED = "processed"
     TENSOR = "tensor"
+
+
+extension_map = {
+    Source.RAW: ".zip",
+    Source.PROCESSED: ".zip",
+    Source.TENSOR: ".pt",
+}

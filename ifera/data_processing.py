@@ -378,7 +378,7 @@ def process_data(
 
         print("Saving processed data...")
         output_path = make_instrument_path(
-            source=Source.RAW, instrument=instrument, remove_file=True, zipfile=zipfile
+            source=Source.RAW, instrument=instrument, remove_file=True
         )
         if zipfile:
             df.to_csv(str(output_path), header=False, index=False, compression="zip")

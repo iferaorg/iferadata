@@ -1,7 +1,7 @@
 rules:
-  - dependent: "file:data/{source}/{type}/{interval}/{symbol}.zip"
+  - dependent: "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
     depends_on:
-      - "s3:{source}/{type}/{interval}/{symbol}.zip"
+      - "s3:{source}/{type}/{interval}/{symbol}.{ext}"
     refresh_function: "ifera.file_refresh.download_file"
 
   - dependent: "s3:processed/{type}/{interval}/{symbol}.zip"
@@ -9,12 +9,6 @@ rules:
       - "s3:raw/{type}/{interval}/{symbol}.zip"
       - "github:iferaorg/iferadata/data/instruments.json"
     refresh_function: "ifera.file_refresh.process_raw_file"
-
-  # tensor files
-  - dependent: "file:data/tensor/{type}/{interval}/{symbol}.pt"
-    depends_on:
-      - "s3:tensor/{type}/{interval}/{symbol}.pt"
-    refresh_function: "ifera.file_refresh.download_tensor_file"
 
   - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt"
     depends_on:

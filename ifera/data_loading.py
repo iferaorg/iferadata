@@ -60,12 +60,9 @@ def load_data(
         scheme=Scheme.FILE,
         source=source,
         instrument=instrument,
-        zipfile=zipfile,
         reset=reset,
     )
-    file_path = make_instrument_path(
-        source=source, instrument=instrument, zipfile=zipfile
-    )
+    file_path = make_instrument_path(source=source, instrument=instrument)
 
     read_csv_kwargs: Dict[str, Any] = {}
 
@@ -152,13 +149,10 @@ def load_data_tensor(
         scheme=Scheme.FILE,
         source=source,
         instrument=instrument,
-        zipfile=False,
         reset=reset,
     )
     # Load the tensor from the local file
-    file_path = make_instrument_path(
-        source=source, instrument=instrument, zipfile=False
-    )
+    file_path = make_instrument_path(source=source, instrument=instrument)
     tensor = torch.load(str(file_path), map_location=device)
     tensor = tensor.to(dtype=dtype)
 
