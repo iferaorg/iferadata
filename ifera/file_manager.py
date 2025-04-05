@@ -138,9 +138,19 @@ def parse_github_url(url: str) -> Tuple[str, str, str]:
 class FileOperations:
     """Abstract file operations for different storage systems."""
 
-    @staticmethod
-    def exists(file: str) -> bool:
+    def __init__(self):
+        self.exists_cache = {}
+        self.mtime_cache = {}
+
+    def exists(self, file: str) -> bool:
         """Check if a file (file, S3, or GitHub) exists."""
+        if file in self.exists_cache:
+            return self.exists_cache[file]
+
+        if file in self.mtime_cache:
+            self.exists_cache[file] = self.mtime_cache[file] is not None
+            return self.exists_cache[file]
+
         parts = urlparse(file)
         try:
             scheme = Scheme(parts.scheme)
@@ -148,9 +158,9 @@ class FileOperations:
             raise ValueError(f"Unsupported scheme: {parts.scheme}")
 
         if scheme == Scheme.FILE:
-            return os.path.exists(parts.path)
+            result = os.path.exists(parts.path)
         elif scheme == Scheme.S3:
-            return check_s3_file_exists(settings.S3_BUCKET, parts.path)
+            result = check_s3_file_exists(settings.S3_BUCKET, parts.path)
         elif scheme == Scheme.GITHUB:
             try:
                 owner, repo_name, path = parse_github_url(file)
@@ -160,19 +170,29 @@ class FileOperations:
                 # Try to get the file contents to check existence
                 try:
                     repo.get_contents(path)
-                    return True
+                    result = True
                 except GithubException as e:
                     if e.status == 404:  # File not found
-                        return False
-                    raise
+                        result = False
+                    else:
+                        raise
             except Exception as e:
                 print(f"Error checking GitHub file existence: {e}")
                 return False
-        raise ValueError(f"Unsupported scheme: {parts.scheme}")
+        else:
+            raise ValueError(f"Unsupported scheme: {parts.scheme}")
 
-    @staticmethod
-    def get_mtime(file: str) -> datetime.datetime:
-        """Get the modification time of a file (file, S3, or GitHub) in UTC."""
+        self.exists_cache[file] = result
+        return result
+
+    def get_mtime(self, file: str) -> datetime.datetime | None:
+        """
+        Get the modification time of a file (file, S3, or GitHub) in UTC.
+        Returns None if the file does not exist.
+        """
+        if file in self.mtime_cache:
+            return self.mtime_cache[file]
+
         parts = urlparse(file)
         try:
             scheme = Scheme(parts.scheme)
@@ -182,12 +202,13 @@ class FileOperations:
         if scheme == Scheme.FILE:
             path = parts.path
             if not os.path.exists(path):
-                raise FileNotFoundError(f"Local file not found: {path}")
-            return datetime.datetime.fromtimestamp(
-                os.path.getmtime(path), tz=datetime.timezone.utc
-            )
+                result = None
+            else:
+                result = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(path), tz=datetime.timezone.utc
+                )
         elif scheme == Scheme.S3:
-            return get_s3_last_modified(settings.S3_BUCKET, parts.path)
+            result = get_s3_last_modified(settings.S3_BUCKET, parts.path)
         elif scheme == Scheme.GITHUB:
             owner, repo_name, path = parse_github_url(file)
 
@@ -198,23 +219,21 @@ class FileOperations:
                 # Get commit information for the file
                 commits = list(repo.get_commits(path=path))
                 if not commits:
-                    raise FileNotFoundError(
-                        f"No commit history for file: {owner}/{repo_name}/{path}"
-                    )
-
-                # Get the date of the most recent commit
-                latest_commit = commits[0]
-                return latest_commit.commit.committer.date
-
+                    result = None
+                else:
+                    result = commits[0].commit.committer.date
             except GithubException as e:
                 if e.status == 404:
-                    raise FileNotFoundError(
-                        f"GitHub file not found: {owner}/{repo_name}/{path}"
-                    )
-                raise
+                    result = None
+                else:
+                    raise
             except Exception as e:
                 raise RuntimeError(f"Error getting GitHub file timestamp: {e}")
-        raise ValueError(f"Unsupported scheme: {parts.scheme}")
+        else:
+            raise ValueError(f"Unsupported scheme: {parts.scheme}")
+
+        self.mtime_cache[file] = result
+        return result
 
 
 @lru_cache(maxsize=100)
@@ -277,60 +296,64 @@ class FileManager:
         """Check if a file is up-to-date, building its subgraph if needed."""
         if file not in self.graph:
             self.build_subgraph(file)
-        return self._is_up_to_date(file, {})
+        fop = FileOperations()
+        return self._is_up_to_date(file, {}, fop)
 
-    def _is_up_to_date(self, file: str, cache: Dict[str, bool]) -> bool:
+    def _is_up_to_date(
+        self, file: str, cache: Dict[str, bool], fop: FileOperations
+    ) -> bool:
         """Recursively check if a file and its dependencies are up-to-date."""
         if file in cache:
             return cache[file]
 
+        result = True
+
         # Check if the file exists
         try:
-            if not FileOperations.exists(file):
-                cache[file] = False
-                return False
+            mtime = fop.get_mtime(file)
 
-            mtime = FileOperations.get_mtime(file)
+            if mtime is None:
+                result = False
+            else:
+                # Check all dependencies
+                for dep in self.graph.successors(file):
+                    if not self._is_up_to_date(dep, cache, fop):
+                        result = False
+                        break
 
-            # Check all dependencies
-            for dep in self.graph.successors(file):
-                if not self._is_up_to_date(dep, cache):
-                    cache[file] = False
-                    return False
+                    dep_mtime = fop.get_mtime(dep)
 
-                try:
-                    dep_mtime = FileOperations.get_mtime(dep)
-                    if mtime <= dep_mtime:
-                        cache[file] = False
-                        return False
-                except FileNotFoundError:
-                    # Dependency doesn't exist, so file is outdated
-                    cache[file] = False
-                    return False
-
-            cache[file] = True
-            return True
-
+                    # Check if the file is newer than its dependencies
+                    if dep_mtime is None or mtime <= dep_mtime:
+                        result = False
+                        break
         except (ValueError, FileNotFoundError) as e:
             print(f"Error checking if {file} is up to date: {e}")
-            cache[file] = False
-            return False
+            result = False
+
+        cache[file] = result
+        return result
 
     def refresh_file(self, file: str, reset: bool = False) -> None:
         """Refresh a file if stale or missing, building its subgraph if needed."""
         if file not in self.graph:
             self.build_subgraph(file)
-        self._refresh_file(file, reset)
+        fop = FileOperations()
+        self._refresh_file(file, reset, {}, fop)
 
-    def _refresh_file(self, file: str, reset: bool) -> None:
+    def _refresh_file(
+        self, file: str, reset: bool, cache: Dict[str, bool], fop: FileOperations
+    ) -> None:
         """Recursively refresh dependencies, then the file if needed."""
+        has_successors = False
+
         # First refresh all dependencies
         for dep in self.graph.successors(file):
-            self._refresh_file(dep, reset)
+            self._refresh_file(dep, reset, cache, fop)
+            has_successors = True
 
         # Then check if this file needs refreshing
-        has_successors = any(True for _ in self.graph.successors(file))
-        if has_successors and (reset or not self.is_up_to_date(file)):
+        if has_successors and (reset or not self._is_up_to_date(file, cache, fop)):
             try:
                 node_data = self.graph.nodes[file]
                 refresh_func_str = node_data.get("refresh_function")

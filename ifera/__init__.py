@@ -7,7 +7,7 @@ from .enums import Scheme, Source
 from .data_loading import load_data, load_data_tensor
 from .data_models import InstrumentData, DataManager
 from .data_processing import aggregate_large_quote_file, process_data
-from .file_manager import FileManager, make_instrument_url, FileOperations
+from .file_manager import FileManager, make_instrument_url
 from .market_simulator import MarketSimulatorIntraday
 from .masked_series import masked_artr, masked_ema, masked_rtr, masked_sma
 from .policies import *
@@ -42,7 +42,6 @@ __all__ = [
     "InitialArtrStopLossPolicy",
     "ScaledArtrMaintenancePolicy",
     "FileManager",
-    "FileOperations",
     "make_instrument_url",
     "Scheme",
     "Source",

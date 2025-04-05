@@ -6,6 +6,7 @@ import os
 import datetime
 
 import boto3  # type: ignore
+import botocore.exceptions
 from tqdm import tqdm
 from .config import BaseInstrumentConfig
 from .enums import Source
@@ -117,14 +118,23 @@ def check_s3_file_exists(bucket_name: str, key: str) -> bool:
     return False
 
 
-def get_s3_last_modified(bucket: str, key: str) -> datetime.datetime:
+def get_s3_last_modified(bucket: str, key: str) -> datetime.datetime | None:
     """
     Retrieve the last modified timestamp for an S3 object.
+    Returns None if the object does not exist.
     """
     try:
         s3_client = S3ClientSingleton().client
         response = s3_client.head_object(Bucket=bucket, Key=key)
         return response["LastModified"]
+    except botocore.exceptions.ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            # The object does not exist
+            return None
+        else:
+            raise RuntimeError(
+                f"Error retrieving S3 metadata for s3://{bucket}/{key}"
+            ) from e
     except Exception as e:
         raise RuntimeError(
             f"Error retrieving S3 metadata for s3://{bucket}/{key}"
