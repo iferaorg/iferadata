@@ -1,0 +1,295 @@
+# Common templates for instrument groups
+templates:
+  us_futures:
+    currency: USD
+    type: futures
+    interval: 1m
+    tradingStart: "-06:00:00"  # Common trading start for US futures
+    tradingEnd: "17:00:00"     # Common trading end
+    liquidStart: "03:00:00"
+    liquidEnd: "17:00:00"
+    regularStart: "09:30:00"
+    regularEnd: "17:00:00"
+    removeDates: []            # Empty list, can be overridden if needed
+
+# Instrument-specific configurations
+instruments:
+  ES:1m:
+    template: us_futures
+    symbol: ES
+    description: E-mini S&P 500
+    contractMultiplier: 50
+    tickSize: 0.25
+  NQ:1m:
+    template: us_futures
+    symbol: NQ
+    description: E-mini Nasdaq 100
+    contractMultiplier: 20
+    tickSize: 0.25
+  CL:1m:
+    template: us_futures
+    symbol: CL
+    description: Light Sweet Crude Oil
+    contractMultiplier: 1000
+    tickSize: 0.01
+  GC:1m:
+    template: us_futures
+    symbol: GC
+    description: Gold
+    contractMultiplier: 100
+    tickSize: 0.1
+  YM:1m:
+    template: us_futures
+    symbol: YM
+    description: E-mini Dow Jones
+    contractMultiplier: 5
+    tickSize: 1.0
+  EU:1m:
+    template: us_futures
+    symbol: EU
+    description: Euro FX
+    contractMultiplier: 125000
+    tickSize: 0.00005
+  JY:1m:
+    template: us_futures
+    symbol: JY
+    description: Japanese Yen
+    contractMultiplier: 12500000
+    tickSize: 0.0000005
+  AD:1m:
+    template: us_futures
+    symbol: AD
+    description: Australian Dollar
+    contractMultiplier: 100000
+    tickSize: 0.00005
+  RTY:1m:
+    template: us_futures
+    symbol: RTY
+    description: E-mini Russell 2000
+    contractMultiplier: 50
+    tickSize: 0.1
+  HG:1m:
+    template: us_futures
+    symbol: HG
+    description: Copper
+    contractMultiplier: 25000
+    tickSize: 0.0005
+  BP:1m:
+    template: us_futures
+    symbol: BP
+    description: British Pound
+    contractMultiplier: 62500
+    tickSize: 0.0001
+  SI:1m:
+    template: us_futures
+    symbol: SI
+    description: Silver
+    contractMultiplier: 5000
+    tickSize: 0.005
+  TY:1m:
+    template: us_futures
+    symbol: TY
+    description: 10-Year T-Note
+    contractMultiplier: 1000
+    tickSize: 0.015625
+  CD:1m:
+    template: us_futures
+    symbol: CD
+    description: Canadian Dollar
+    contractMultiplier: 100000
+    tickSize: 0.00005
+  FV:1m:
+    template: us_futures
+    symbol: FV
+    description: 5-Year T-Note
+    contractMultiplier: 1000
+    tickSize: 0.0078125
+  NG:1m:
+    template: us_futures
+    symbol: NG
+    description: Natural Gas
+    contractMultiplier: 10000
+    tickSize: 0.001
+  US:1m:
+    template: us_futures
+    symbol: US
+    description: 30-Year T-Bond
+    contractMultiplier: 1000
+    tickSize: 0.03125
+  HO:1m:
+    template: us_futures
+    symbol: HO
+    description: Heating Oil
+    contractMultiplier: 42000
+    tickSize: 0.0001
+  SF:1m:
+    template: us_futures
+    symbol: SF
+    description: Swiss Franc
+    contractMultiplier: 125000
+    tickSize: 0.00005
+  PL:1m:
+    template: us_futures
+    symbol: PL
+    description: Platinum
+    contractMultiplier: 50
+    tickSize: 0.1
+  UB:1m:
+    template: us_futures
+    symbol: UB
+    description: Ultra T-Bond
+    contractMultiplier: 1000
+    tickSize: 0.03125
+  RB:1m:
+    template: us_futures
+    symbol: RB
+    description: RBOB Gasoline
+    contractMultiplier: 42000
+    tickSize: 0.0001
+  NE:1m:
+    template: us_futures
+    symbol: NE
+    description: New Zealand Dollar
+    contractMultiplier: 100000
+    tickSize: 0.00005
+  M6E:1m:
+    template: us_futures
+    symbol: M6E
+    description: E-micro Euro FX
+    contractMultiplier: 12500
+    tickSize: 0.0001
+  QM:1m:
+    template: us_futures
+    symbol: QM
+    description: E-mini Crude Oil
+    contractMultiplier: 500
+    tickSize: 0.025
+  MGC:1m:
+    template: us_futures
+    symbol: MGC
+    description: E-micro Gold
+    contractMultiplier: 10
+    tickSize: 0.1
+  S:1m:
+    template: us_futures
+    symbol: S
+    description: Soybean
+    contractMultiplier: 5000
+    tickSize: 1.0
+  TU:1m:
+    template: us_futures
+    symbol: TU
+    description: 2-Year T-Note
+    contractMultiplier: 2000
+    tickSize: 0.00390625
+  PX:1m:
+    template: us_futures
+    symbol: PX
+    description: Mexixan Peso
+    contractMultiplier: 500000
+    tickSize: 0.00001
+  EMD:1m:
+    template: us_futures
+    symbol: EMD
+    description: E-mini S&P MidCap 400
+    contractMultiplier: 100
+    tickSize: 0.1
+  NKD:1m:
+    template: us_futures
+    symbol: NKD
+    description: Nikkei 225
+    contractMultiplier: 5
+    tickSize: 5.0
+  W:1m:
+    template: us_futures
+    symbol: W
+    description: Wheat
+    contractMultiplier: 5000
+    tickSize: 0.0025
+  ME:1m:
+    template: us_futures
+    symbol: ME
+    description: E-mini Euro FX
+    contractMultiplier: 62500
+    tickSize: 0.0001
+  C:1m:
+    template: us_futures
+    symbol: C
+    description: Corn
+    contractMultiplier: 5000
+    tickSize: 0.0025
+  TN:1m:
+    template: us_futures
+    symbol: TN
+    description: Ultra T-Note
+    contractMultiplier: 1000
+    tickSize: 0.015625
+  BO:1m:
+    template: us_futures
+    symbol: BO
+    description: Soybean Oil
+    contractMultiplier: 60000
+    tickSize: 0.0001
+  BZ:1m:
+    template: us_futures
+    symbol: BZ
+    description: Brent Crude Oil
+    contractMultiplier: 1000
+    tickSize: 0.01
+  M6A:1m:
+    template: us_futures
+    symbol: M6A
+    description: E-micro Australian Dollar
+    contractMultiplier: 10000
+    tickSize: 0.0001
+  SM:1m:
+    template: us_futures
+    symbol: SM
+    description: Soybean Meal
+    contractMultiplier: 100
+    tickSize: 0.1
+  VX:1m:
+    template: us_futures
+    symbol: VX
+    description: VIX
+    contractMultiplier: 1000
+    tickSize: 0.05
+  PA:1m:
+    template: us_futures
+    symbol: PA
+    description: Palladium
+    contractMultiplier: 100
+    tickSize: 0.5
+  HE:1m:
+    template: us_futures
+    symbol: HE
+    description: Lean Hogs
+    contractMultiplier: 40000
+    tickSize: 0.00025
+  LE:1m:
+    template: us_futures
+    symbol: LE
+    description: Live Cattle
+    contractMultiplier: 40000
+    tickSize: 0.00025
+  GF:1m:
+    template: us_futures
+    symbol: GF
+    description: Feeder Cattle
+    contractMultiplier: 50000
+    tickSize: 0.00025
+  IBM:30m:
+    symbol: IBM
+    description: IBM
+    currency: USD
+    type: stock
+    interval: 30m
+    tradingStart: "04:00:00"   # Different trading hours for stocks
+    tradingEnd: "20:00:00"
+    liquidStart: "09:30:00"
+    liquidEnd: "16:00:00"
+    regularStart: "09:30:00"
+    regularEnd: "16:00:00"
+    contractMultiplier: 1
+    tickSize: 0.01
+    removeDates: []

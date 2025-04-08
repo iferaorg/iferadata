@@ -7,7 +7,7 @@ rules:
   - dependent: "s3:processed/{type}/{interval}/{symbol}.zip"
     depends_on:
       - "s3:raw/{type}/{interval}/{symbol}.zip"
-      - "github:iferaorg/iferadata/data/instruments.json"
+      - "github:iferaorg/iferadata/data/instruments.yml"
     refresh_function: "ifera.file_refresh.process_raw_file"
 
   - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt"

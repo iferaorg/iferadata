@@ -3,7 +3,7 @@ Data models for financial instruments.
 """
 
 import datetime
-import json
+import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -181,49 +181,22 @@ class ConfigManager:
         self.last_brokers_update: Optional[float] = None
         self.instruments_data: Dict[str, Dict[str, Any]] = {}
         self.brokers_data: Dict[str, Dict[str, Any]] = {}
-        # Cache for InstrumentConfig instances
         self._base_config_cache: Dict[str, BaseInstrumentConfig] = {}
         self._config_cache: Dict[Tuple[str, str], InstrumentConfig] = {}
-        # Cache for derived configs with different intervals
         self._base_derived_cache: Dict[Tuple[str, str], BaseInstrumentConfig] = {}
         self._derived_cache: Dict[Tuple[str, str, str], InstrumentConfig] = {}
         self._load_data()
 
     def _load_data(self):
         """Load data from the JSON files."""
-        # Load instruments data
-        try:
-            with open(self.instruments_filename, "r", encoding="utf-8") as f:
-                self.instruments_data = json.load(f)
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                f"Configuration file '{self.instruments_filename}' not found."
-            ) from e
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Error decoding JSON from '{self.instruments_filename}': {e}"
-            ) from e
 
-        # Load brokers data
-        try:
-            with open(self.brokers_filename, "r", encoding="utf-8") as f:
-                self.brokers_data = json.load(f)
-        except FileNotFoundError as e:
-            raise FileNotFoundError(
-                f"Configuration file '{self.brokers_filename}' not found."
-            ) from e
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Error decoding JSON from '{self.brokers_filename}': {e}"
-            ) from e
+        with open(self.instruments_filename, "r", encoding="utf-8") as f:
+            self.instruments_data = yaml.safe_load(f) or {}
+        with open(self.brokers_filename, "r", encoding="utf-8") as f:
+            self.brokers_data = yaml.safe_load(f) or {}
 
-        try:
-            path = Path(self.instruments_filename)
-            self.last_instruments_update = path.stat().st_mtime
-            path = Path(self.brokers_filename)
-            self.last_brokers_update = path.stat().st_mtime
-        except Exception as e:
-            raise OSError(f"Error accessing configuration files: {e}") from e
+        self.last_instruments_update = Path(self.instruments_filename).stat().st_mtime
+        self.last_brokers_update = Path(self.brokers_filename).stat().st_mtime
 
         # Clear caches when data is reloaded
         self._base_config_cache.clear()
@@ -233,17 +206,11 @@ class ConfigManager:
 
     def reload_if_updated(self):
         """Reload configs if files have been modified."""
-        try:
-            instruments_mtime = Path(self.instruments_filename).stat().st_mtime
-            brokers_mtime = Path(self.brokers_filename).stat().st_mtime
-        except Exception as e:
-            raise OSError(f"Error accessing configuration files: {e}") from e
+        instruments_mtime = Path(self.instruments_filename).stat().st_mtime
+        brokers_mtime = Path(self.brokers_filename).stat().st_mtime
 
-        if (
-            self.last_instruments_update is None
-            or instruments_mtime > self.last_instruments_update
-            or self.last_brokers_update is None
-            or brokers_mtime > self.last_brokers_update
+        if instruments_mtime > (self.last_instruments_update or 0) or brokers_mtime > (
+            self.last_brokers_update or 0
         ):
             self._load_data()
 
@@ -251,28 +218,32 @@ class ConfigManager:
         """Get base configuration for a specific instrument."""
         self.reload_if_updated()
 
-        # Check if we have a cached config for this instrument
         if instrument_key in self._base_config_cache:
             return self._base_config_cache[instrument_key]
 
         try:
             instrument_dict = self.instruments_data[instrument_key]
         except KeyError as e:
-            raise KeyError(
-                f"Instrument key '{instrument_key}' not found in '{self.instruments_filename}'."
-            ) from e
-        try:
-            config = BaseInstrumentConfig(
-                **instrument_dict, last_update=self.last_instruments_update
-            )
-        except Exception as e:
-            raise ValueError(
-                f"Error creating BaseInstrumentData for '{instrument_key}': {e}"
-            ) from e
+            raise KeyError(f"Instrument key '{instrument_key}' not found.") from e
+
+        # Merge with template if specified
+        if "template" in instrument_dict:
+            template_name = instrument_dict["template"]
+            try:
+                template_dict = self.instruments_data["templates"][template_name]
+            except KeyError:
+                raise KeyError(f"Template '{template_name}' not found.")
+            combined_dict = {**template_dict, **instrument_dict}
+            combined_dict.pop("template", None)
+        else:
+            combined_dict = instrument_dict
+
+        config = BaseInstrumentConfig(
+            **combined_dict, last_update=self.last_instruments_update
+        )
 
         config.instrument_key = instrument_key
 
-        # Cache the base config
         self._base_config_cache[instrument_key] = config
         return config
 
@@ -281,16 +252,15 @@ class ConfigManager:
         self.reload_if_updated()
         try:
             broker_dict = self.brokers_data[broker_name]
-        except KeyError as e:
-            raise KeyError(
-                f"Broker configuration '{broker_name}' not found in '{self.brokers_filename}'."
-            ) from e
-        try:
-            return BrokerConfig(**broker_dict)
-        except Exception as e:
-            raise ValueError(
-                f"Error creating BrokerData for '{broker_name}': {e}"
-            ) from e
+        except KeyError:
+            raise KeyError(f"Broker '{broker_name}' not found.")
+
+        instruments_dict = {}
+        defaults = broker_dict.get("defaults", {})
+        for symbol, instr in broker_dict["instruments"].items():
+            instruments_dict[symbol] = BrokerInstrumentConfig(**{**defaults, **instr})
+
+        return BrokerConfig(name=broker_dict["name"], instruments=instruments_dict)
 
     def _get_config_from_base(
         self, base_config: BaseInstrumentConfig, broker_name: str
