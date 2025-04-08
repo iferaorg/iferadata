@@ -55,9 +55,8 @@ class MarketSimulatorIntraday:
 
     def __init__(self, instrument_data: InstrumentData, broker_name: str):
         cm = ConfigManager()
-        self.instrument: Final = cm.get_config(
-            broker_name=broker_name,
-            instrument_key=instrument_data.instrument.instrument_key,
+        self.instrument: Final = cm.get_config_from_base(
+            base_config=instrument_data.instrument, broker_name=broker_name
         )
 
         self.data: Final = instrument_data.data
