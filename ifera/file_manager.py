@@ -38,16 +38,138 @@ def get_github_client() -> Github:
 # Helper Functions
 
 
+def pattern_to_regex_custom(pattern_path: str) -> Tuple[str, List[str]]:
+    """
+    Convert a pattern with possible regex constraints inside wildcards to a regex.
+    Supports placeholders of the form {name} or {name:regex}.
+    Returns a tuple of (regex_pattern, list_of_wildcard_names).
+    """
+    regex_parts = []
+    wildcard_names = []
+    last_index = 0
+    # This regex matches both {wildcard} and {wildcard:regex}
+    placeholder_regex = re.compile(r"\{([^}:]+)(?::([^}]+))?\}")
+
+    for match in placeholder_regex.finditer(pattern_path):
+        literal_text = pattern_path[last_index : match.start()]
+        regex_parts.append(re.escape(literal_text))
+        name = match.group(1)
+        wildcard_names.append(name)
+        custom_regex = match.group(2) if match.group(2) is not None else ".+?"
+        regex_parts.append(f"({custom_regex})")
+        last_index = match.end()
+
+    regex_parts.append(re.escape(pattern_path[last_index:]))
+    regex_string = "^" + "".join(regex_parts) + "$"
+
+    return regex_string, wildcard_names
+
+
+def get_literal_prefix(pattern: str) -> str:
+    """
+    Extract the literal prefix of a pattern up to the first placeholder.
+    """
+    index = pattern.find("{")
+
+    if index == -1:
+        return pattern
+    else:
+        return pattern[:index]
+
+
+def list_s3_objects(prefix: str) -> List[str]:
+    """
+    List S3 object keys under the given prefix.
+    """
+    from .s3_utils import S3ClientSingleton
+
+    client = S3ClientSingleton().client
+    bucket = settings.S3_BUCKET
+    response = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    keys = []
+
+    if "Contents" in response:
+        for obj in response["Contents"]:
+            keys.append(obj["Key"])
+
+    return keys
+
+
+def expand_dependency_wildcards(
+    dependency_entry: dict, known_wildcards: dict
+) -> List[str]:
+    """
+    Expand a dependency that requires wildcard expansion.
+
+    The dependency_entry should have keys:
+      - "pattern": a dependency pattern (which may include missing wildcards)
+      - "wildcard_expansion": a pattern (typically an S3 URL) used to discover
+         the missing wildcard values. This pattern can specify constraints
+         (e.g. {contract_code:[A-Z][0-9][0-9]}).
+
+    Returns a list of fully substituted dependency file paths.
+    """
+    try:
+        dep_pattern = dependency_entry["pattern"]
+        expansion_pattern = dependency_entry["wildcard_expansion"]
+    except KeyError as e:
+        print(f"Error: Missing key in dependency expansion rule: {e}")
+        return []
+
+    # Substitute known wildcards into the expansion_pattern.
+    try:
+        substituted_expansion = partial_substitute_pattern(expansion_pattern, known_wildcards)
+    except ValueError as e:
+        print(f"Error in substitution for expansion pattern: {e}")
+        return []
+
+    # Parse the substituted URL
+    parsed_url = urlparse(substituted_expansion)
+
+    if parsed_url.scheme != "s3":
+        print("Warning: Wildcard expansion currently only implemented for S3 schemes.")
+        return []
+
+    # Remove leading slash from path (if any) to form an S3 key
+    s3_path_pattern = parsed_url.path.lstrip("/")
+
+    # Build a regex from the s3_path_pattern with constraints
+    regex_str, missing_wildcards = pattern_to_regex_custom(s3_path_pattern)
+
+    # Use the literal prefix (up to the first placeholder) to list S3 objects
+    prefix = get_literal_prefix(s3_path_pattern)
+    object_keys = list_s3_objects(prefix)
+
+    matching_deps = []
+    pattern_re = re.compile(regex_str)
+
+    for key in object_keys:
+        m = pattern_re.match(key)
+        if m:
+            captured_values = m.groups()
+            # Merge known wildcards with the newly extracted ones from the expansion.
+            new_wildcards = dict(known_wildcards)
+
+            for name, value in zip(missing_wildcards, captured_values):
+                new_wildcards[name] = value
+            try:
+                dep_file = substitute_pattern(dep_pattern, new_wildcards)
+                matching_deps.append(dep_file)
+            except ValueError as e:
+                print(f"Error substituting in dependency pattern: {e}")
+                continue
+
+    if not matching_deps:
+        print(
+            f"Warning: No matching files found for wildcard expansion with pattern {substituted_expansion}"
+        )
+
+    return matching_deps
+
+
 def pattern_to_regex(pattern_path: str) -> Tuple[str, List[str]]:
     """
     Convert a pattern path to a regex and extract wildcard names.
-
-    Args:
-        pattern_path (str): A pattern string with {wildcard} placeholders, e.g.,
-                           "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
-
-    Returns:
-        Tuple[str, List[str]]: A tuple containing the regex pattern and a list of wildcard names.
     """
     # Split the pattern_path into literal parts and {wildcard} parts
     split_list = re.split(r"(\{\w+\})", pattern_path)
@@ -57,17 +179,14 @@ def pattern_to_regex(pattern_path: str) -> Tuple[str, List[str]]:
     # Process each part from the split
     for part in split_list:
         if re.match(r"\{\w+\}", part):
-            # This is a {wildcard} part, e.g., "{source}"
-            name = part[1:-1]  # Extract the name inside braces, e.g., "source"
+            name = part[1:-1]
             wildcard_names.append(name)
-            regex_parts.append("(.+?)")  # Non-greedy capturing group
+            regex_parts.append("(.+?)")
         else:
-            # This is a literal part, escape any special regex characters
             regex_parts.append(re.escape(part))
 
-    # Combine all parts into a single regex string
     regex_string = "".join(regex_parts)
-    # Add ^ and $ to match the entire string
+
     return "^" + regex_string + "$", wildcard_names
 
 
@@ -76,20 +195,7 @@ def match_pattern(pattern: str, file: str) -> Optional[Dict[str, str]]:
     pattern_parts = urlparse(pattern)
     file_parts = urlparse(file)
 
-    # Quick scheme check
-    if pattern_parts.scheme != file_parts.scheme:
-        return None
-
-    # Check bucket/domain matches for S3
-    if pattern_parts.scheme == "s3" and pattern_parts.netloc != file_parts.netloc:
-        return None
-
-    # For local paths, ensure netloc is empty
-    if pattern_parts.scheme == "file" and pattern_parts.netloc != "":
-        return None
-
-    # For GitHub paths, check repository match
-    if pattern_parts.scheme == "github" and pattern_parts.netloc != file_parts.netloc:
+    if pattern_parts.scheme != file_parts.scheme or pattern_parts.netloc != "":
         return None
 
     regex, wildcard_names = pattern_to_regex(pattern_parts.path)
@@ -97,6 +203,7 @@ def match_pattern(pattern: str, file: str) -> Optional[Dict[str, str]]:
 
     if match:
         return dict(zip(wildcard_names, match.groups()))
+
     return None
 
 
@@ -112,17 +219,34 @@ def substitute_pattern(pattern: str, wildcards: Dict[str, str]) -> str:
     return re.sub(r"\{(\w+)\}", replacer, pattern)
 
 
+def partial_substitute_pattern(pattern: str, wildcards: Dict[str, str]) -> str:
+    """
+    Partially substitute wildcard values into a pattern.
+    If a wildcard is not provided, leave it unchanged.
+    """
+    def replacer(match):
+        # Get the value for the wildcard; if not available, use the original placeholder.
+        value = wildcards.get(match.group(1))
+        if value is None:
+            return match.group(0)
+        return value
+        
+    return re.sub(r"\{(\w+)\}", replacer, pattern)
+
+
 def parse_github_url(url: str) -> Tuple[str, str, str]:
     """Parse a GitHub URL into owner, repo, and path components.
 
     Format: github://owner/repo/path/to/file.ext
     """
     parts = urlparse(url)
+
     if parts.scheme != "github":
         raise ValueError(f"Not a GitHub URL: {url}")
 
     # Split the path, removing leading slash
     path_parts = parts.path.split("/", 2)
+
     if len(path_parts) < 3:
         raise ValueError(
             f"Invalid GitHub URL format: {url}. Expected github://owner/repo/path/to/file"
@@ -251,10 +375,8 @@ def import_function(func_str: str) -> Callable:
 class FileManager:
     def __init__(self, config_file: str = "dependencies.yml"):
         """Initialize with a list of dependency rules."""
-
         self.graph = nx.DiGraph()
         try:
-            # Load the configuration file from the package directory
             package_dir = os.path.dirname(os.path.abspath(__file__))
             file_path = os.path.join(package_dir, config_file)
             with open(file_path, "r") as f:
@@ -266,40 +388,45 @@ class FileManager:
             raise ValueError(f"Error loading config from {config_file}: {e}")
 
     def build_subgraph(self, file: str) -> None:
-        """Build the dependency subgraph starting from a file."""
-        self._build_subgraph(file, set())
-
-    def _build_subgraph(self, file: str, visited: Set[str]) -> None:
         """Recursively build the graph for a file and its dependencies."""
-        if file in visited:
+        if file in self.graph:
             return
-        visited.add(file)
 
         for rule in self.rules:
             wildcards = match_pattern(rule["dependent"], file)
-
             if wildcards:
                 self.graph.add_node(
                     file, refresh_function=rule["refresh_function"], wildcards=wildcards
                 )
-                for dep_pattern in rule["depends_on"]:
-                    try:
-                        dep_file = substitute_pattern(dep_pattern, wildcards)
-                        self.graph.add_edge(file, dep_file)
-                        self._build_subgraph(dep_file, visited)
-                    except ValueError as e:
-                        # Log the error but continue with other dependencies
+                for dep in rule["depends_on"]:
+                    if isinstance(dep, str):
+                        try:
+                            dep_file = substitute_pattern(dep, wildcards)
+                            self.build_subgraph(dep_file)
+                            self.graph.add_edge(file, dep_file)
+                        except ValueError as e:
+                            print(
+                                f"Warning: {e} when processing dependency {dep} for {file}"
+                            )
+                    elif isinstance(dep, dict):
+                        # Process dependency with wildcard expansion.
+                        expanded_files = expand_dependency_wildcards(dep, wildcards)
+                        if not expanded_files:
+                            print(
+                                f"Warning: Skipping dependency {dep.get('pattern', '')} for {file} as no expansion matches were found."
+                            )
+                        for dep_file in expanded_files:
+                            self.build_subgraph(dep_file)
+                            self.graph.add_edge(file, dep_file)
+                    else:
                         print(
-                            f"Warning: {e} when processing dependency {dep_pattern} for {file}"
+                            f"Warning: Unexpected dependency type {dep} for file {file}"
                         )
-
-                # Only match the first rule that applies
                 break
 
     def is_up_to_date(self, file: str) -> bool:
         """Check if a file is up-to-date, building its subgraph if needed."""
-        if file not in self.graph:
-            self.build_subgraph(file)
+        self.build_subgraph(file)
 
         if file not in self.graph:
             raise ValueError(f"File {file} not found in dependency graph")
@@ -344,8 +471,7 @@ class FileManager:
 
     def refresh_file(self, file: str, reset: bool = False) -> None:
         """Refresh a file if stale or missing, building its subgraph if needed."""
-        if file not in self.graph:
-            self.build_subgraph(file)
+        self.build_subgraph(file)
 
         if file not in self.graph:
             raise ValueError(f"File {file} not found in dependency graph")
@@ -383,8 +509,7 @@ class FileManager:
 
     def get_dependencies(self, file: str) -> List[str]:
         """Get all dependencies for a file."""
-        if file not in self.graph:
-            self.build_subgraph(file)
+        self.build_subgraph(file)
         return list(self.graph.successors(file))
 
 

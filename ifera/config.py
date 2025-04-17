@@ -54,6 +54,13 @@ class BaseInstrumentConfig(BaseModel):
 
     parent_config: Optional["BaseInstrumentConfig"] = Field(None, exclude=True)
 
+    @property
+    def file_symbol(self) -> str:
+        """Return the file name component based on presence of contract_code."""
+        if self.contract_code:
+            return f"{self.symbol}-{self.contract_code}"
+        return self.symbol
+
     @field_validator(
         "trading_start",
         "trading_end",
@@ -175,8 +182,8 @@ class ConfigManager:
 
     def __init__(
         self,
-        instruments_filename: str = "data/instruments.json",
-        brokers_filename: str = "data/brokers.json",
+        instruments_filename: str = "data/instruments.yml",
+        brokers_filename: str = "data/brokers.yml",
     ):
         self.instruments_filename = instruments_filename
         self.brokers_filename = brokers_filename
@@ -187,10 +194,10 @@ class ConfigManager:
         self._base_config_cache: Dict[str, BaseInstrumentConfig] = {}
         self._config_cache: Dict[Tuple[str, str], InstrumentConfig] = {}
         self._base_derived_cache: Dict[
-            Tuple[str, Optional[str], Optional[datetime.date]], BaseInstrumentConfig
+            Tuple[str, Optional[str], Optional[str]], BaseInstrumentConfig
         ] = {}
         self._derived_cache: Dict[
-            Tuple[str, str, Optional[str], Optional[datetime.date]], InstrumentConfig
+            Tuple[str, str, Optional[str], Optional[str]], InstrumentConfig
         ] = {}
         self._load_data()
 
@@ -327,33 +334,33 @@ class ConfigManager:
 
     def create_derived_base_config(
         self,
-        parent_config: InstrumentConfig,
+        parent_config: BaseInstrumentConfig,
         new_interval: Optional[str] = None,
-        expiration_date: Optional[datetime.date] = None,
+        contract_code: Optional[str] = None,
     ) -> BaseInstrumentConfig:
         """
-        Create a derived BaseInstrumentConfig with a new interval and/or expiration date.
+        Create a derived BaseInstrumentConfig with a new interval and/or contract code.
 
         Args:
             parent_config: The parent BaseInstrumentConfig
             new_interval: Optional new interval string (e.g., '5m', '1h')
-            expiration_date: Optional expiration date for futures individual contracts
+            contract_code: Optional contract code for futures individual contracts (e.g., 'M24')
 
         Returns:
             A new BaseInstrumentConfig with updated fields
 
         Raises:
-            ValueError: If neither new_interval nor expiration_date is provided,
-                        or if expiration_date is used with non-futures instruments
+            ValueError: If neither new_interval nor contract_code is provided,
+                        or if contract_code is used with non-futures instruments
         """
-        if new_interval is None and expiration_date is None:
+        if new_interval is None and contract_code is None:
             raise ValueError(
-                "At least one of new_interval or expiration_date must be provided."
+                "At least one of new_interval or contract_code must be provided."
             )
 
         # Check if we already have this derived config in the cache
-        cache_key = (parent_config.symbol, new_interval, expiration_date)
-        if cache_key in self._derived_cache:
+        cache_key = (parent_config.symbol, new_interval, contract_code)
+        if cache_key in self._base_derived_cache:
             return self._base_derived_cache[cache_key]
 
         config_dict = parent_config.model_dump()
@@ -364,7 +371,7 @@ class ConfigManager:
             parent_step_seconds = parent_config.time_step.total_seconds()
             new_step_seconds = time_step.total_seconds()
 
-            # Validate interval (adapted from original logic)
+            # Validate interval
             if new_step_seconds < parent_step_seconds:
                 raise ValueError(
                     f"Child interval ({new_interval}) must be >= parent interval ({parent_config.interval})"
@@ -406,21 +413,14 @@ class ConfigManager:
             config_dict["end_time"] = end_time
             config_dict["total_steps"] = total_steps
 
-        if expiration_date is not None:
+        if contract_code is not None:
             if parent_config.type != "futures":
                 raise ValueError(
-                    "expiration_date can only be set for futures instruments."
+                    "contract_code can only be set for futures instruments."
                 )
-
-            config_dict["expiration_date"] = expiration_date
-            # Compute contract_code (e.g., "M24" for June 2024)
-            month_code = "FGHJKMNQUVXZ"[
-                expiration_date.month - 1
-            ]  # F=Jan, M=Jun, Z=Dec
-            year_code = str(expiration_date.year % 100).zfill(
-                2
-            )  # Last two digits of year
-            config_dict["contract_code"] = month_code + year_code
+            config_dict["contract_code"] = contract_code
+            config_dict["type"] = "futures_individual"
+            # Do not set expiration_date; it will be calculated elsewhere
 
         # Create child config
         child_config = BaseInstrumentConfig(**config_dict)
@@ -435,26 +435,26 @@ class ConfigManager:
         self,
         parent_config: InstrumentConfig,
         new_interval: Optional[str] = None,
-        expiration_date: Optional[datetime.date] = None,
+        contract_code: Optional[str] = None,
     ) -> InstrumentConfig:
         """
-        Create a derived InstrumentConfig with a new interval and/or expiration date.
+        Create a derived InstrumentConfig with a new interval and/or contract code.
 
         Args:
             parent_config: The parent InstrumentConfig
             new_interval: Optional new interval string (e.g., '5m', '1h')
-            expiration_date: Optional expiration date for futures individual contracts
+            contract_code: Optional contract code for futures individual contracts (e.g., 'M24')
 
         Returns:
             A new InstrumentConfig with updated fields
 
         Raises:
-            ValueError: If neither new_interval nor expiration_date is provided
+            ValueError: If neither new_interval nor contract_code is provided
             KeyError: If broker configuration is missing
         """
-        if new_interval is None and expiration_date is None:
+        if new_interval is None and contract_code is None:
             raise ValueError(
-                "At least one of new_interval or expiration_date must be provided."
+                "At least one of new_interval or contract_code must be provided."
             )
 
         # Check if we already have this derived config in the cache
@@ -462,7 +462,7 @@ class ConfigManager:
             parent_config.broker_name,
             parent_config.symbol,
             new_interval,
-            expiration_date,
+            contract_code,
         )
 
         if cache_key in self._derived_cache:
@@ -471,7 +471,7 @@ class ConfigManager:
         base_config = self.create_derived_base_config(
             parent_config=parent_config,
             new_interval=new_interval,
-            expiration_date=expiration_date,
+            contract_code=contract_code,
         )
 
         config = self._get_config_from_base(
@@ -498,13 +498,11 @@ class ConfigManager:
         Raises:
             KeyError: If no broker configuration is found for the instrument
         """
-
         if base_config.parent_config is None:
             cache_key = (
                 base_config.symbol,
                 broker_name,
             )
-
             if cache_key not in self._config_cache:
                 config = self._get_config_from_base(
                     base_config=base_config, broker_name=broker_name
@@ -517,9 +515,8 @@ class ConfigManager:
                 base_config.parent_config.symbol,
                 base_config.parent_config.interval,
                 broker_name,
-                base_config.expiration_date,
+                base_config.contract_code,
             )
-
             if cache_key not in self._derived_cache:
                 config = self._get_config_from_base(
                     base_config=base_config, broker_name=broker_name

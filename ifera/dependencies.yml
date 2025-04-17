@@ -10,7 +10,15 @@ rules:
       - "github:iferaorg/iferadata/data/instruments.yml"
     refresh_function: "ifera.file_refresh.process_raw_file"
 
+  - dependent: "s3:tensor/futures_rollower/{interval}/{symbol}.pt"
+    depends_on:
+      - "s3:tensor/futures/{interval}/{symbol}.pt"
+      - pattern: "s3:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt"
+        wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+    refresh_function: "ifera.file_refresh.calculate_rollover_tensor"
+
   - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt"
     depends_on:
       - "s3:processed/{type}/{interval}/{symbol}.zip"
     refresh_function: "ifera.file_refresh.process_tensor_file"
+

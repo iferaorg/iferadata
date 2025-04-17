@@ -40,7 +40,7 @@ def make_instrument_path(
     remove_file: bool = False,
 ) -> Path:
     """Generate a path to a data file."""
-    file_name = instrument.symbol
+    file_name = instrument.file_symbol
     return make_path(
         source,
         instrument.type,

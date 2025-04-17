@@ -32,5 +32,5 @@ def make_instrument_url(
         source,
         instrument.type,
         instrument.interval,
-        instrument.symbol,
+        instrument.file_symbol,
     )
