@@ -35,8 +35,7 @@ def download_file(
     fm = FileManager()
 
     if reset or not fm.is_up_to_date(file_url):
-        bucket = settings.S3_BUCKET
-        download_s3_file(bucket, path, str(file_path))
+        download_s3_file(path, str(file_path))
 
 
 def process_raw_file(
@@ -74,10 +73,9 @@ def process_raw_file(
             process_data(df, instrument=instrument, zipfile=True)
 
             # Upload the processed file to S3
-            bucket = settings.S3_BUCKET
             key = make_s3_key(Source.PROCESSED, instrument, zipfile=True)
             file_path = make_path(Source.PROCESSED, type, interval, file_name)
-            upload_s3_file(bucket, key, str(file_path))
+            upload_s3_file(key, str(file_path))
 
             # Touch the local file to update its timestamp
             file_path.touch()
@@ -128,9 +126,8 @@ def process_tensor_file(
             torch.save(tensor, str(tensor_file_path))
 
             # Upload to S3
-            bucket = settings.S3_BUCKET
             s3_key = f"tensor/{type}/{interval}/{file_name}.pt"
-            upload_s3_file(bucket, s3_key, str(tensor_file_path))
+            upload_s3_file(s3_key, str(tensor_file_path))
 
             # Touch the local file to update its timestamp
             tensor_file_path.touch()

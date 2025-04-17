@@ -4,7 +4,6 @@ import datetime
 from typing import Dict, List, Optional, Set, Tuple, Callable
 import yaml
 import networkx as nx
-import boto3
 from urllib.parse import urlparse
 import importlib
 from functools import lru_cache
@@ -15,7 +14,7 @@ from .enums import Scheme, Source
 from .url_utils import make_instrument_url
 from .settings import settings
 from .decorators import singleton
-from .s3_utils import check_s3_file_exists, get_s3_last_modified
+from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
 
 # Initialize GitHub client (using singleton pattern to avoid multiple instances)
 _github_client = None
@@ -75,24 +74,6 @@ def get_literal_prefix(pattern: str) -> str:
         return pattern
     else:
         return pattern[:index]
-
-
-def list_s3_objects(prefix: str) -> List[str]:
-    """
-    List S3 object keys under the given prefix.
-    """
-    from .s3_utils import S3ClientSingleton
-
-    client = S3ClientSingleton().client
-    bucket = settings.S3_BUCKET
-    response = client.list_objects_v2(Bucket=bucket, Prefix=prefix)
-    keys = []
-
-    if "Contents" in response:
-        for obj in response["Contents"]:
-            keys.append(obj["Key"])
-
-    return keys
 
 
 def expand_dependency_wildcards(
@@ -287,7 +268,7 @@ class FileOperations:
         if scheme == Scheme.FILE:
             result = os.path.exists(parts.path)
         elif scheme == Scheme.S3:
-            result = check_s3_file_exists(settings.S3_BUCKET, parts.path)
+            result = check_s3_file_exists(parts.path)
         elif scheme == Scheme.GITHUB:
             try:
                 owner, repo_name, path = parse_github_url(file)
@@ -335,7 +316,7 @@ class FileOperations:
                     os.path.getmtime(path), tz=datetime.timezone.utc
                 )
         elif scheme == Scheme.S3:
-            result = get_s3_last_modified(settings.S3_BUCKET, parts.path)
+            result = get_s3_last_modified(parts.path)
         elif scheme == Scheme.GITHUB:
             owner, repo_name, path = parse_github_url(file)
 
