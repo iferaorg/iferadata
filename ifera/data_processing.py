@@ -41,7 +41,7 @@ def add_missing_rows(
         how="outer",
         suffixes=("", "_y"),
         sort=True,
-    )[group.columns]
+    )[group.columns].copy()
     merged["close"] = merged["close"].ffill()
     first_open = group["open"].iloc[0]
     merged["close"] = merged["close"].fillna(first_open)
@@ -378,7 +378,7 @@ def process_data(
 
         print("Saving processed data...")
         output_path = make_instrument_path(
-            source=Source.RAW, instrument=instrument, remove_file=True
+            source=Source.PROCESSED, instrument=instrument, remove_file=True
         )
         if zipfile:
             df.to_csv(str(output_path), header=False, index=False, compression="zip")

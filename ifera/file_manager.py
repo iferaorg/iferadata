@@ -118,7 +118,9 @@ def expand_dependency_wildcards(
 
     # Substitute known wildcards into the expansion_pattern.
     try:
-        substituted_expansion = partial_substitute_pattern(expansion_pattern, known_wildcards)
+        substituted_expansion = partial_substitute_pattern(
+            expansion_pattern, known_wildcards
+        )
     except ValueError as e:
         print(f"Error in substitution for expansion pattern: {e}")
         return []
@@ -224,13 +226,14 @@ def partial_substitute_pattern(pattern: str, wildcards: Dict[str, str]) -> str:
     Partially substitute wildcard values into a pattern.
     If a wildcard is not provided, leave it unchanged.
     """
+
     def replacer(match):
         # Get the value for the wildcard; if not available, use the original placeholder.
         value = wildcards.get(match.group(1))
         if value is None:
             return match.group(0)
         return value
-        
+
     return re.sub(r"\{(\w+)\}", replacer, pattern)
 
 
@@ -494,7 +497,17 @@ class FileManager:
         if has_successors and (reset or not self._is_up_to_date(file, cache, fop)):
             try:
                 node_data = self.graph.nodes[file]
-                refresh_func_str = node_data.get("refresh_function")
+                refresh_func_node = node_data.get("refresh_function")
+                additional_arguments = {}
+
+                if isinstance(refresh_func_node, str):
+                    refresh_func_str = refresh_func_node
+                elif isinstance(refresh_func_node, dict):
+                    refresh_func_str = refresh_func_node["name"]
+                    additional_arguments = refresh_func_node.get("additional_args", {})
+                else:
+                    raise ValueError(f"Invalid refresh function for file {file}")
+
                 if not refresh_func_str:
                     raise ValueError(f"No refresh function defined for file {file}")
 
@@ -502,7 +515,7 @@ class FileManager:
                 wildcards = node_data.get("wildcards", {})
 
                 # Execute the refresh function with the extracted wildcards
-                refresh_func(**wildcards, reset=reset)
+                refresh_func(**wildcards, **additional_arguments, reset=reset)
 
             except Exception as e:
                 raise RuntimeError(f"Failed to refresh file {file}: {e}")

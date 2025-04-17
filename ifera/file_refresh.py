@@ -39,65 +39,102 @@ def download_file(
         download_s3_file(bucket, path, str(file_path))
 
 
-def process_raw_file(type: str, interval: str, symbol: str, reset: bool) -> None:
+def process_raw_file(
+    type: str,
+    interval: str,
+    symbol: str,
+    contract_code: str = "",
+    reset: bool = False,
+    keep_dependencies: bool = False,
+) -> None:
     """
     Process a raw file from S3 if it is not up to date.
     The file is expected to be in a specific directory structure.
     The S3 file is expected to exist and up-to-date.
     """
 
-    file_url = make_url(Scheme.FILE, Source.PROCESSED, type, interval, symbol)
+    file_name = f"{symbol}-{contract_code}" if contract_code else symbol
+    file_url = make_url(Scheme.FILE, Source.PROCESSED, type, interval, file_name)
     fm = FileManager()
 
     if reset or not fm.is_up_to_date(file_url):
-        raw_file_path = make_path(Source.RAW, type, interval, symbol)
+        raw_file_path = make_path(Source.RAW, type, interval, file_name)
         raw_file_exists = raw_file_path.exists()
-        cm = ConfigManager()
-        instrument = cm.get_base_instrument_config(f"{symbol}:{interval}")
 
-        df = load_data(raw=True, instrument=instrument)
-        process_data(df, instrument=instrument, zipfile=True)
-        # Upload the processed file to S3
-        bucket = settings.S3_BUCKET
-        key = make_s3_key(Source.PROCESSED, instrument, zipfile=True)
-        file_path = make_path(Source.PROCESSED, type, interval, symbol)
-        upload_s3_file(bucket, key, str(file_path))
-        # Touch the local file to update its timestamp
-        file_path.touch()
+        try:
+            cm = ConfigManager()
+            instrument = cm.get_base_instrument_config(symbol, interval)
 
-        # Remove the raw file if it was not already present
-        if not raw_file_exists:
-            raw_file_path.unlink(missing_ok=True)
+            if contract_code:
+                instrument = cm.create_derived_base_config(
+                    instrument, contract_code=contract_code
+                )
+
+            df = load_data(raw=True, instrument=instrument)
+            process_data(df, instrument=instrument, zipfile=True)
+
+            # Upload the processed file to S3
+            bucket = settings.S3_BUCKET
+            key = make_s3_key(Source.PROCESSED, instrument, zipfile=True)
+            file_path = make_path(Source.PROCESSED, type, interval, file_name)
+            upload_s3_file(bucket, key, str(file_path))
+
+            # Touch the local file to update its timestamp
+            file_path.touch()
+        finally:
+            # Remove the raw file if it was not already present
+            if not raw_file_exists or not keep_dependencies:
+                raw_file_path.unlink(missing_ok=True)
 
 
-def process_tensor_file(type: str, interval: str, symbol: str, reset: bool) -> None:
+def process_tensor_file(
+    type: str,
+    interval: str,
+    symbol: str,
+    contract_code: str = "",
+    reset: bool = False,
+    keep_dependencies: bool = False,
+) -> None:
     """
     Process the processed file to generate the tensor file and upload to S3.
     """
     fm = FileManager()
-    tensor_file_url = make_url(Scheme.FILE, Source.TENSOR, type, interval, symbol)
+    file_name = f"{symbol}-{contract_code}" if contract_code else symbol
+    tensor_file_url = make_url(Scheme.FILE, Source.TENSOR, type, interval, file_name)
 
     if reset or not fm.is_up_to_date(tensor_file_url):
         cm = ConfigManager()
-        instrument = cm.get_base_instrument_config(f"{symbol}:{interval}")
-        processed_file_path = make_path(Source.PROCESSED, type, interval, symbol)
+        instrument = cm.get_base_instrument_config(symbol, interval)
+
+        if contract_code:
+            instrument = cm.create_derived_base_config(
+                instrument, contract_code=contract_code
+            )
+
+        processed_file_path = make_path(Source.PROCESSED, type, interval, file_name)
         processed_file_exists = processed_file_path.exists()
-        # Load processed DataFrame
-        df = load_data(raw=False, instrument=instrument, zipfile=True)
-        # Convert to tensor
-        tensor = torch.as_tensor(df.to_numpy(), dtype=torch.float32)
-        tensor = rearrange(tensor, "(d t) c -> d t c", t=instrument.total_steps)
-        tensor = tensor[..., 4:].clone()  # Skip first 4 columns
-        # Save locally
-        tensor_file_path = make_path(Source.TENSOR, type, interval, symbol)
-        torch.save(tensor, str(tensor_file_path))
-        # Upload to S3
-        bucket = settings.S3_BUCKET
-        s3_key = f"tensor/{type}/{interval}/{symbol}.pt"
-        upload_s3_file(bucket, s3_key, str(tensor_file_path))
-        # Touch the local file to update its timestamp
-        tensor_file_path.touch()
-        
-        # Remove the processed file if it was not already present
-        if not processed_file_exists:
-            processed_file_path.unlink(missing_ok=True)
+
+        try:
+            # Load processed DataFrame
+            df = load_data(raw=False, instrument=instrument, zipfile=True)
+
+            # Convert to tensor
+            tensor = torch.as_tensor(df.to_numpy(), dtype=torch.float32)
+            tensor = rearrange(tensor, "(d t) c -> d t c", t=instrument.total_steps)
+            tensor = tensor[..., 4:].clone()  # Skip first 4 columns
+
+            # Save locally
+            tensor_file_path = make_path(Source.TENSOR, type, interval, file_name)
+            torch.save(tensor, str(tensor_file_path))
+
+            # Upload to S3
+            bucket = settings.S3_BUCKET
+            s3_key = f"tensor/{type}/{interval}/{file_name}.pt"
+            upload_s3_file(bucket, s3_key, str(tensor_file_path))
+
+            # Touch the local file to update its timestamp
+            tensor_file_path.touch()
+        finally:
+            # Remove the processed file if it was not already present
+            if not processed_file_exists or not keep_dependencies:
+                processed_file_path.unlink(missing_ok=True)

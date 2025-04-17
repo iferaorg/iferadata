@@ -176,7 +176,7 @@ class BrokerConfig(BaseModel):
 @singleton
 class ConfigManager:
     """
-    Loads and manages instrument configurations from JSON.
+    Loads and manages instrument configurations from YAML.
     Implemented as a singleton to ensure only one instance exists.
     """
 
@@ -191,8 +191,8 @@ class ConfigManager:
         self.last_brokers_update: Optional[float] = None
         self.instruments_data: Dict[str, Dict[str, Any]] = {}
         self.brokers_data: Dict[str, Dict[str, Any]] = {}
-        self._base_config_cache: Dict[str, BaseInstrumentConfig] = {}
-        self._config_cache: Dict[Tuple[str, str], InstrumentConfig] = {}
+        self._base_config_cache: Dict[Tuple[str, str], BaseInstrumentConfig] = {}
+        self._config_cache: Dict[Tuple[str, str, str], InstrumentConfig] = {}
         self._base_derived_cache: Dict[
             Tuple[str, Optional[str], Optional[str]], BaseInstrumentConfig
         ] = {}
@@ -202,7 +202,7 @@ class ConfigManager:
         self._load_data()
 
     def _load_data(self):
-        """Load data from the JSON files."""
+        """Load data from the YAML files."""
 
         with open(self.instruments_filename, "r", encoding="utf-8") as f:
             self.instruments_data = yaml.safe_load(f) or {}
@@ -228,17 +228,20 @@ class ConfigManager:
         ):
             self._load_data()
 
-    def get_base_instrument_config(self, instrument_key: str) -> BaseInstrumentConfig:
-        """Get base configuration for a specific instrument."""
+    def get_base_instrument_config(
+        self, symbol: str, interval: str
+    ) -> BaseInstrumentConfig:
+        """Get base configuration for a specific instrument and interval."""
         self.reload_if_updated()
 
-        if instrument_key in self._base_config_cache:
-            return self._base_config_cache[instrument_key]
+        cache_key = (symbol, interval)
+        if cache_key in self._base_config_cache:
+            return self._base_config_cache[cache_key]
 
         try:
-            instrument_dict = self.instruments_data[instrument_key]
+            instrument_dict = self.instruments_data["instruments"][symbol]
         except KeyError as e:
-            raise KeyError(f"Instrument key '{instrument_key}' not found.") from e
+            raise KeyError(f"Instrument symbol '{symbol}' not found.") from e
 
         # Merge with template if specified
         if "template" in instrument_dict:
@@ -252,11 +255,25 @@ class ConfigManager:
         else:
             combined_dict = instrument_dict
 
+        # Check if the interval is allowed
+        allowed_intervals = combined_dict.get("intervals", [])
+        if interval not in allowed_intervals:
+            raise ValueError(
+                f"Interval '{interval}' not allowed for instrument '{symbol}'. "
+                f"Allowed intervals: {allowed_intervals}"
+            )
+
+        # Remove 'intervals' as it's not part of BaseInstrumentConfig
+        combined_dict.pop("intervals", None)
+
+        # Set the interval
+        combined_dict["interval"] = interval
+
         config = BaseInstrumentConfig(
             **combined_dict, last_update=self.last_instruments_update
         )
 
-        self._base_config_cache[instrument_key] = config
+        self._base_config_cache[cache_key] = config
         return config
 
     def get_broker_config(self, broker_name: str) -> BrokerConfig:
@@ -301,7 +318,7 @@ class ConfigManager:
             "broker_name": broker_name,
         }
 
-        # Create and cache the config
+        # Create the config
         config = InstrumentConfig(**combined_dict)
 
         if base_config.contract_code is not None:
@@ -311,25 +328,23 @@ class ConfigManager:
 
         return config
 
-    def get_config(self, broker_name: str, instrument_key: str) -> InstrumentConfig:
-        """Get combined configuration for a specific instrument and broker."""
+    def get_config(
+        self, broker_name: str, symbol: str, interval: str
+    ) -> InstrumentConfig:
+        """Get combined configuration for a specific instrument, interval, and broker."""
         self.reload_if_updated()
 
-        # Check if we have a cached config for this combination
-        cache_key = (broker_name, instrument_key)
+        cache_key = (broker_name, symbol, interval)
         if cache_key in self._config_cache:
             return self._config_cache[cache_key]
 
-        # Get base instrument configuration
-        base_config = self.get_base_instrument_config(instrument_key)
+        base_config = self.get_base_instrument_config(symbol, interval)
 
-        # Create and cache the config
         config = self._get_config_from_base(
             base_config=base_config, broker_name=broker_name
         )
 
         self._config_cache[cache_key] = config
-
         return config
 
     def create_derived_base_config(
@@ -499,17 +514,15 @@ class ConfigManager:
             KeyError: If no broker configuration is found for the instrument
         """
         if base_config.parent_config is None:
-            cache_key = (
-                base_config.symbol,
-                broker_name,
-            )
-            if cache_key not in self._config_cache:
-                config = self._get_config_from_base(
-                    base_config=base_config, broker_name=broker_name
-                )
-                self._config_cache[cache_key] = config
+            cache_key = (broker_name, base_config.symbol, base_config.interval)
+            if cache_key in self._config_cache:
+                return self._config_cache[cache_key]
 
-            return self._config_cache[cache_key]
+            config = self._get_config_from_base(
+                base_config=base_config, broker_name=broker_name
+            )
+            self._config_cache[cache_key] = config
+            return config
         else:
             cache_key = (
                 base_config.parent_config.symbol,
@@ -517,13 +530,14 @@ class ConfigManager:
                 broker_name,
                 base_config.contract_code,
             )
-            if cache_key not in self._derived_cache:
-                config = self._get_config_from_base(
-                    base_config=base_config, broker_name=broker_name
-                )
-                self._derived_cache[cache_key] = config
+            if cache_key in self._derived_cache:
+                return self._derived_cache[cache_key]
 
-            return self._derived_cache[cache_key]
+            config = self._get_config_from_base(
+                base_config=base_config, broker_name=broker_name
+            )
+            self._derived_cache[cache_key] = config
+            return config
 
     def clear_cache(self):
         """Clear all configuration caches."""
