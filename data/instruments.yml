@@ -11,6 +11,7 @@ templates:
     regularEnd: "17:00:00"
     removeDates: []            # Empty list, can be overridden if needed
     intervals: ["1m", "30m"]
+    startDate: "2009-09-28"
 
 # Instrument-specific configurations
 instruments:
@@ -140,6 +141,7 @@ instruments:
     description: Ultra T-Bond
     contractMultiplier: 1000
     tickSize: 0.03125
+    startDate: "2011-11-03"
   RB:
     template: us_futures
     symbol: RB
@@ -170,6 +172,7 @@ instruments:
     description: E-micro Gold
     contractMultiplier: 10
     tickSize: 0.1
+    startDate: "2011-04-04"
   S:
     template: us_futures
     symbol: S
@@ -200,6 +203,7 @@ instruments:
     description: Nikkei 225
     contractMultiplier: 5
     tickSize: 5.0
+    startDate: "2010-12-10"
   W:
     template: us_futures
     symbol: W
@@ -224,6 +228,7 @@ instruments:
     description: Ultra T-Note
     contractMultiplier: 1000
     tickSize: 0.015625
+    startDate: "2016-10-02"
   BO:
     template: us_futures
     symbol: BO
@@ -236,12 +241,14 @@ instruments:
     description: Brent Crude Oil
     contractMultiplier: 1000
     tickSize: 0.01
+    startDate: "2013-05-06"
   M6A:
     template: us_futures
     symbol: M6A
     description: E-micro Australian Dollar
     contractMultiplier: 10000
     tickSize: 0.0001
+    startDate: "2010-07-01"
   SM:
     template: us_futures
     symbol: SM
@@ -260,24 +267,28 @@ instruments:
     description: Palladium
     contractMultiplier: 100
     tickSize: 0.5
+    startDate: "2009-09-30"
   HE:
     template: us_futures
     symbol: HE
     description: Lean Hogs
     contractMultiplier: 40000
     tickSize: 0.00025
+    startDate: "2009-09-30"
   LE:
     template: us_futures
     symbol: LE
     description: Live Cattle
     contractMultiplier: 40000
     tickSize: 0.00025
+    startDate: "2009-09-30"
   GF:
     template: us_futures
     symbol: GF
     description: Feeder Cattle
     contractMultiplier: 50000
     tickSize: 0.00025
+    startDate: "2009-09-30"
   IBM:
     symbol: IBM
     description: IBM

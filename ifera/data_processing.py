@@ -330,6 +330,8 @@ def process_data(
         print("Converting datetime columns...")
         df = calculate_time_columns(df, instrument)
 
+        df = df[df["trade_date"] >= instrument.start_date]
+
         if instrument.remove_dates is not None:
             df = df[~df["trade_date"].isin(instrument.remove_dates)]
 
