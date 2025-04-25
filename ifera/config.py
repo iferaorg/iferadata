@@ -42,6 +42,7 @@ class BaseInstrumentConfig(BaseModel):
     remove_dates: Optional[List[datetime.date]] = Field(
         None, alias="removeDates", validate_default=True
     )
+    start_date: datetime.date = Field(..., alias="startDate")
     last_update: Optional[float] = Field(default=None)
     # Derived Fields
     time_step: pd.Timedelta = pd.Timedelta(0)
