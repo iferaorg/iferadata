@@ -56,12 +56,6 @@ def load_data(
 ) -> pd.DataFrame:
     """Load data from CSV files."""
     source = Source.RAW if raw else Source.PROCESSED
-    refresh_file(
-        scheme=Scheme.FILE,
-        source=source,
-        instrument=instrument,
-        reset=reset,
-    )
     file_path = make_instrument_path(source=source, instrument=instrument)
 
     read_csv_kwargs: Dict[str, Any] = {}

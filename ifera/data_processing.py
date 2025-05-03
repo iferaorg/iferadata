@@ -330,10 +330,12 @@ def process_data(
         print("Converting datetime columns...")
         df = calculate_time_columns(df, instrument)
 
-        df = df[df["trade_date"] >= instrument.start_date]
+        start_date_ts = pd.to_datetime(instrument.start_date)
+        df = df[df["trade_date"] >= start_date_ts]
 
         if instrument.remove_dates is not None:
-            df = df[~df["trade_date"].isin(instrument.remove_dates)]
+            remove_dates_ts = pd.to_datetime(instrument.remove_dates)
+            df = df[~df["trade_date"].isin(remove_dates_ts)]
 
         print("Processing groups...")
         # Convert the unique dates to a list explicitly with the right type

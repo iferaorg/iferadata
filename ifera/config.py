@@ -81,6 +81,15 @@ class BaseInstrumentConfig(BaseModel):
                 f"Error parsing timedelta from value {value}: {exc}"
             ) from exc
 
+    @field_validator("start_date", mode="before")
+    @classmethod
+    def parse_start_date(cls, value):
+        """Parse start_date from string value."""
+        try:
+            return pd.to_datetime(value)
+        except Exception as exc:
+            raise ValueError(f"Error parsing start_date: {exc}") from exc
+
     @field_validator("remove_dates", mode="before")
     @classmethod
     def parse_remove_dates(cls, value):
