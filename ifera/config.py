@@ -43,6 +43,9 @@ class BaseInstrumentConfig(BaseModel):
         None, alias="removeDates", validate_default=True
     )
     start_date: datetime.date = Field(..., alias="startDate")
+    days_of_week: List[int] = Field(
+        ..., alias="daysOfWeek", validate_default=True
+    )
     last_update: Optional[float] = Field(default=None)
     # Derived Fields
     time_step: pd.Timedelta = pd.Timedelta(0)
@@ -100,6 +103,15 @@ class BaseInstrumentConfig(BaseModel):
             return [pd.to_datetime(date_str).date() for date_str in value]
         except Exception as exc:
             raise ValueError(f"Error parsing remove_dates: {exc}") from exc
+
+    @field_validator("days_of_week", mode="before")
+    @classmethod
+    def parse_days_of_week(cls, value):
+        """Parse days_of_week from string values."""
+        if isinstance(value, list):
+            return [int(day) for day in value]
+        else:
+            raise ValueError("days_of_week must be a list of integers.")    
 
     @model_validator(mode="after")
     def compute_derived_fields(self) -> "BaseInstrumentConfig":

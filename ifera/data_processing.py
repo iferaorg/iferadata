@@ -337,6 +337,9 @@ def process_data(
             remove_dates_ts = pd.to_datetime(instrument.remove_dates)
             df = df[~df["trade_date"].isin(remove_dates_ts)]
 
+        if instrument.days_of_week is not None:
+            df = df[df["trade_date"].dt.dayofweek.isin(instrument.days_of_week)]
+
         print("Processing groups...")
         # Convert the unique dates to a list explicitly with the right type
         unique_dates = df["trade_date"].unique()
