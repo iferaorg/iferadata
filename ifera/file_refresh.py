@@ -98,7 +98,7 @@ def process_tensor_file(
     # Convert to tensor
     tensor = torch.as_tensor(df.to_numpy(), dtype=torch.float32)
     tensor = rearrange(tensor, "(d t) c -> d t c", t=instrument.total_steps)
-    tensor = tensor[..., 4:].clone()  # Skip first 4 columns
+    # tensor = tensor[..., 4:].clone()  # Skip first 4 columns
 
     # Save locally
     file_name = f"{symbol}-{contract_code}" if contract_code else symbol

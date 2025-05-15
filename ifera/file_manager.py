@@ -384,11 +384,6 @@ class RuleType(Enum):
     REFRESH = "refresh"
 
 
-class EdgeType(Enum):
-    DEPENDS_ON = "depends_on"
-    IF_UP_TO_DATE = "if_up_to_date"
-
-
 @singleton
 class FileManager:
 
@@ -436,7 +431,6 @@ class FileManager:
         dependencies: List[str | dict],
         wildcards,
         rule_type: RuleType,
-        edge_type: Optional[EdgeType] = None,
     ) -> None:
         graph = self.get_graph(rule_type)
 
@@ -444,9 +438,8 @@ class FileManager:
             if isinstance(dep, str):
                 try:
                     dep_file = substitute_pattern(dep, wildcards)
-                    if edge_type == EdgeType.DEPENDS_ON:
-                        self.build_subgraph(dep_file, rule_type)
-                    graph.add_edge(parent_node, dep_file, edge_type=edge_type)
+                    self.build_subgraph(dep_file, rule_type)
+                    graph.add_edge(parent_node, dep_file)
                 except ValueError as e:
                     print(
                         f"Warning: {e} when processing dependency {dep} for {parent_node}"
@@ -459,9 +452,8 @@ class FileManager:
                         f"Warning: Skipping dependency {dep.get('pattern', '')} for {parent_node} as no expansion matches were found."
                     )
                 for dep_file in expanded_files:
-                    if edge_type == EdgeType.DEPENDS_ON:
-                        self.build_subgraph(dep_file, rule_type)
-                    graph.add_edge(parent_node, dep_file, edge_type=edge_type)
+                    self.build_subgraph(dep_file, rule_type)
+                    graph.add_edge(parent_node, dep_file)
             else:
                 print(
                     f"Warning: Unexpected dependency type {dep} for file {parent_node}"
@@ -474,6 +466,7 @@ class FileManager:
         if file in graph:
             return
 
+        graph.add_node(file)
         rules = self.get_rules(rule_type)
 
         for rule in rules:
@@ -482,35 +475,18 @@ class FileManager:
             if wildcards:
                 graph.add_node(file, wildcards=wildcards)
 
-                if rule.get(EdgeType.DEPENDS_ON.value) and not any(
-                    data.get("edge_type") == EdgeType.DEPENDS_ON
-                    for _, _, data in graph.out_edges(file, data=True)
-                ):
-                    if rule.get("process_function"):
-                        graph.nodes[file]["process_function"] = rule["process_function"]
+                if rule.get("refresh_function"):
+                    graph.nodes[file]["refresh_function"] = rule["refresh_function"]
 
+                if rule["depends_on"]:
                     self.add_dependencies(
                         file,
                         rule["depends_on"],
                         wildcards,
                         rule_type,
-                        edge_type=EdgeType.DEPENDS_ON,
                     )
-
-                if rule.get(EdgeType.IF_UP_TO_DATE.value) and not any(
-                    data.get("edge_type") == EdgeType.IF_UP_TO_DATE
-                    for _, _, data in graph.out_edges(file, data=True)
-                ):
-                    if rule.get("refresh_function"):
-                        graph.nodes[file]["refresh_function"] = rule["refresh_function"]
-
-                    self.add_dependencies(
-                        file,
-                        rule["if_up_to_date"],
-                        wildcards,
-                        rule_type,
-                        edge_type=EdgeType.IF_UP_TO_DATE,
-                    )
+            
+                break
 
     def is_up_to_date(self, file: str) -> bool:
         """Check if a file is up-to-date, building its subgraph if needed."""
@@ -566,12 +542,13 @@ class FileManager:
 
         fop = FileOperations()
         temp_files = []
-        self._refresh_file(file, reset, {}, fop, temp_files)
-
-        # Remove temporary files
-        for temp_file in temp_files:
-            if temp_file != file:
-                fop.remove(temp_file, Scheme.FILE)
+        try:
+            self._refresh_file(file, reset, {}, fop, temp_files)
+        finally:
+            # Remove temporary files
+            for temp_file in temp_files:
+                if temp_file != file:
+                    fop.remove(temp_file, Scheme.FILE)
 
     def _refresh_file(
         self,
@@ -602,23 +579,22 @@ class FileManager:
         fop: FileOperations,
         temp_files: List[str],
     ) -> None:
-        node_data = self.refresh_graph.nodes[file]
-
+        node_data = self.dependency_graph.nodes[file]
         refresh_func_node = node_data.get("refresh_function")
 
         if refresh_func_node and all(
-            et != EdgeType.IF_UP_TO_DATE or self._is_up_to_date(dep, cache, fop)
-            for _, dep, et in self.refresh_graph.edges(file, data="edge_type")  # type: ignore
+            self._is_up_to_date(dep, cache, fop)
+            for dep in self.dependency_graph.successors(file)
         ):
             func_node = refresh_func_node
         else:
-            for _, dep, et in self.refresh_graph.edges(file, data="edge_type"):  # type: ignore
-                if et == EdgeType.DEPENDS_ON:
-                    self.build_subgraph(dep, RuleType.DEPENDENCY)
-                    if reset or not self._is_up_to_date(dep, cache, fop):
-                        self._refresh_stale_file(dep, reset, cache, fop, temp_files)
+            for dep in self.refresh_graph.successors(file):
+                self.build_subgraph(dep, RuleType.DEPENDENCY)
+                if reset or not self._is_up_to_date(dep, cache, fop):
+                    self._refresh_stale_file(dep, reset, cache, fop, temp_files)
 
-            func_node = node_data.get("process_function")
+            node_data = self.refresh_graph.nodes[file]
+            func_node = node_data.get("refresh_function")
 
         if func_node:
             additional_arguments = {}
@@ -649,8 +625,7 @@ class FileManager:
             wildcards = node_data.get("wildcards", {})
             process_func(**wildcards, **additional_arguments)
 
-            # Delete file from cache
-            cache.pop(file, None)
+            cache[file] = True
             fop.remove_from_cache(file)
 
     def get_dependencies(self, file: str) -> List[str]:
@@ -658,6 +633,24 @@ class FileManager:
         self.build_subgraph(file, RuleType.DEPENDENCY)
         return list(self.dependency_graph.successors(file))
 
+    def get_node_params(self, rule_type: RuleType, file: str) -> dict:
+        """Get parameters for a node in the graph."""
+        graph = self.get_graph(rule_type)
+        self.build_subgraph(file, rule_type)
+        
+        if file not in graph:
+            raise ValueError(f"File {file} not found in {rule_type.value} graph")
+
+        node = graph.nodes[file]
+        params = node.get("wildcards", {})
+        refresh_func = node.get("refresh_function")
+
+        if refresh_func and isinstance(refresh_func, dict):
+            additional_args = refresh_func.get("additional_args", {})
+            params.update(additional_args)
+
+        return params
+        
 
 def refresh_file(
     scheme: Scheme,

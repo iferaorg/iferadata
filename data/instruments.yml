@@ -13,6 +13,7 @@ templates:
     intervals: ["1m", "30m"]
     startDate: "2009-10-01"
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
+    physicalDelivery: true  # Indicates that these futures are physically delivered
 
 # Instrument-specific configurations
 instruments:
@@ -22,12 +23,14 @@ instruments:
     description: E-mini S&P 500
     contractMultiplier: 50
     tickSize: 0.25
+    physicalDelivery: false
   NQ:
     template: us_futures
     symbol: NQ
     description: E-mini Nasdaq 100
     contractMultiplier: 20
     tickSize: 0.25
+    physicalDelivery: false
   CL:
     template: us_futures
     symbol: CL
@@ -46,6 +49,7 @@ instruments:
     description: E-mini Dow Jones
     contractMultiplier: 5
     tickSize: 1.0
+    physicalDelivery: false
   EU:
     template: us_futures
     symbol: EU
@@ -58,18 +62,21 @@ instruments:
     description: Japanese Yen
     contractMultiplier: 12500000
     tickSize: 0.0000005
+    physicalDelivery: false
   AD:
     template: us_futures
     symbol: AD
     description: Australian Dollar
     contractMultiplier: 100000
     tickSize: 0.00005
+    physicalDelivery: false
   RTY:
     template: us_futures
     symbol: RTY
     description: E-mini Russell 2000
     contractMultiplier: 50
     tickSize: 0.1
+    physicalDelivery: false
   HG:
     template: us_futures
     symbol: HG
@@ -82,6 +89,7 @@ instruments:
     description: British Pound
     contractMultiplier: 62500
     tickSize: 0.0001
+    physicalDelivery: false
   SI:
     template: us_futures
     symbol: SI
@@ -100,6 +108,7 @@ instruments:
     description: Canadian Dollar
     contractMultiplier: 100000
     tickSize: 0.00005
+    physicalDelivery: false
   FV:
     template: us_futures
     symbol: FV
@@ -130,6 +139,7 @@ instruments:
     description: Swiss Franc
     contractMultiplier: 125000
     tickSize: 0.00005
+    physicalDelivery: false
   PL:
     template: us_futures
     symbol: PL
@@ -155,12 +165,14 @@ instruments:
     description: New Zealand Dollar
     contractMultiplier: 100000
     tickSize: 0.00005
+    physicalDelivery: false
   M6E:
     template: us_futures
     symbol: M6E
     description: E-micro Euro FX
     contractMultiplier: 12500
     tickSize: 0.0001
+    physicalDelivery: false
   QM:
     template: us_futures
     symbol: QM
@@ -198,6 +210,7 @@ instruments:
     description: E-mini S&P MidCap 400
     contractMultiplier: 100
     tickSize: 0.1
+    physicalDelivery: false
   NKD:
     template: us_futures
     symbol: NKD

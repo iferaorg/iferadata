@@ -8,13 +8,11 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 import torch
-from einops import rearrange
 from tqdm import tqdm
 
-from .config import InstrumentConfig, BaseInstrumentConfig
-from .enums import Scheme, Source
+from .config import BaseInstrumentConfig
+from .enums import Source
 from .file_utils import make_instrument_path
-from .file_manager import refresh_file
 
 
 def count_lines(file_path: str, is_zip: bool = False) -> int:
@@ -51,7 +49,6 @@ def load_data(
     raw: bool,
     instrument: BaseInstrumentConfig,
     dtype: str = "float32",
-    reset: bool = False,
     zipfile: bool = True,
 ) -> pd.DataFrame:
     """Load data from CSV files."""
@@ -130,24 +127,21 @@ def torch_dtype_to_numpy_dtype(dtype: torch.dtype) -> np.dtype:
 
 def load_data_tensor(
     instrument: BaseInstrumentConfig,
-    reset: bool = False,
     dtype: torch.dtype = torch.float32,
     device: Optional[torch.device] = None,
+    strip_date_time: bool = True,
 ) -> torch.Tensor:
     """Load processed data as a PyTorch tensor using dependency-based file refreshing."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     source = Source.TENSOR
-    # Refresh the local tensor file
-    refresh_file(
-        scheme=Scheme.FILE,
-        source=source,
-        instrument=instrument,
-        reset=reset,
-    )
+
     # Load the tensor from the local file
     file_path = make_instrument_path(source=source, instrument=instrument)
     tensor = torch.load(str(file_path), map_location=device)
     tensor = tensor.to(dtype=dtype)
+    
+    if strip_date_time:
+        tensor = tensor[:, 4:].clone()  # Skip first 4 columns
 
     return tensor

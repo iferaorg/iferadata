@@ -46,6 +46,7 @@ class BaseInstrumentConfig(BaseModel):
     days_of_week: List[int] = Field(
         ..., alias="daysOfWeek", validate_default=True
     )
+    physical_delivery: bool = Field(..., alias="physicalDelivery")
     last_update: Optional[float] = Field(default=None)
     # Derived Fields
     time_step: pd.Timedelta = pd.Timedelta(0)
