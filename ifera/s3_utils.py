@@ -195,3 +195,20 @@ def list_s3_objects(prefix: str) -> List[str]:
                     keys.append(obj["Key"])
 
     return keys
+
+
+def delete_s3_file(key: str) -> None:
+    """
+    Delete a file from S3.
+    """
+    wrapper = S3ClientSingleton()
+    s3_client = wrapper.client
+
+    try:
+        s3_client.delete_object(Bucket=settings.S3_BUCKET, Key=key)
+        if wrapper.cache:
+            wrapper.last_modified.pop(key, None)
+    except Exception as e:
+        raise RuntimeError(
+            f"Error deleting file from S3 (bucket='{settings.S3_BUCKET}', key='{key}')"
+        ) from e

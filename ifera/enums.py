@@ -15,10 +15,12 @@ class Source(Enum):
     RAW = "raw"
     PROCESSED = "processed"
     TENSOR = "tensor"
+    META = "meta"
 
 
 extension_map = {
     Source.RAW: ".zip",
     Source.PROCESSED: ".zip",
     Source.TENSOR: ".pt",
+    Source.META: ".yml",
 }

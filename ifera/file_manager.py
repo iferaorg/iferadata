@@ -10,9 +10,7 @@ import importlib
 from functools import lru_cache
 from github import Github
 from github.GithubException import GithubException
-from .config import BaseInstrumentConfig
-from .enums import Scheme, Source
-from .url_utils import make_instrument_url
+from .enums import Scheme
 from .settings import settings
 from .decorators import singleton
 from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
@@ -478,7 +476,7 @@ class FileManager:
                 if rule.get("refresh_function"):
                     graph.nodes[file]["refresh_function"] = rule["refresh_function"]
 
-                if rule["depends_on"]:
+                if rule.get("depends_on"):
                     self.add_dependencies(
                         file,
                         rule["depends_on"],
@@ -587,6 +585,7 @@ class FileManager:
             for dep in self.dependency_graph.successors(file)
         ):
             func_node = refresh_func_node
+            rule_type = RuleType.DEPENDENCY
         else:
             for dep in self.refresh_graph.successors(file):
                 self.build_subgraph(dep, RuleType.DEPENDENCY)
@@ -595,38 +594,69 @@ class FileManager:
 
             node_data = self.refresh_graph.nodes[file]
             func_node = node_data.get("refresh_function")
+            rule_type = RuleType.REFRESH
 
-        if func_node:
-            additional_arguments = {}
-            func_str = None
+        if not func_node:
+            return
 
-            if isinstance(func_node, str):
-                func_str = func_node
-            elif isinstance(func_node, dict):
-                func_str = func_node["name"]
-                additional_arguments = func_node.get("additional_args", {})
-            else:
-                raise ValueError(f"Invalid process function for file {file}")
+        # -------------------------------------------------
+        # 1.  Pull out “static” information from the rule
+        # -------------------------------------------------
+        func_str: str | None = None
+        additional_arguments = {}
+        list_args_spec = {}
 
-            if not func_str:
-                raise ValueError(f"No process function defined for file {file}")
+        if isinstance(func_node, str):
+            func_str = func_node
+        elif isinstance(func_node, dict):
+            func_str = func_node["name"]
+            additional_arguments = dict(func_node.get("additional_args", {}))  # copy
+            list_args_spec = func_node.get("list_args", {})
+        else:
+            raise ValueError(f"Invalid process function for file {file}")
 
-            parts = urlparse(file)
-            scheme = Scheme(parts.scheme)
+        if not func_str:
+            raise ValueError(f"No process function defined for file {file}")
 
-            if (
-                scheme == Scheme.FILE
-                and not os.path.exists(parts.path)
-                and file not in temp_files
-            ):
-                temp_files.append(file)
+        # -------------------------------------------------
+        # 2.  Build *dynamic* list-type arguments (list_args)
+        # -------------------------------------------------
+        if list_args_spec:          # Only present on a few rules
+            for arg_name, wildcard_key in list_args_spec.items():
+                values: list[str] = []
+                graph = self.get_graph(rule_type)
+                for dep in graph.successors(file):
+                    dep_wc = graph.nodes[dep].get("wildcards", {})
+                    val = dep_wc.get(wildcard_key)
+                    if val is not None and val not in values:   # keep order, avoid dups
+                        values.append(val)
 
-            process_func = import_function(func_str)
-            wildcards = node_data.get("wildcards", {})
-            process_func(**wildcards, **additional_arguments)
+                if not values:
+                    raise RuntimeError(
+                        f"Could not build list argument '{arg_name}' for '{file}'; "
+                        f"none of the direct dependencies expose wildcard '{wildcard_key}'."
+                    )
 
-            cache[file] = True
-            fop.remove_from_cache(file)
+                additional_arguments[arg_name] = values
+
+        # -------------------------------------------------
+        # 3.  Normal execution path continues as before
+        # -------------------------------------------------
+        parts = urlparse(file)
+        scheme = Scheme(parts.scheme)
+        if (
+            scheme == Scheme.FILE
+            and not os.path.exists(parts.path)
+            and file not in temp_files
+        ):
+            temp_files.append(file)
+
+        process_func = import_function(func_str)
+        wildcards = node_data.get("wildcards", {})
+        process_func(**wildcards, **additional_arguments)
+
+        cache[file] = True
+        fop.remove_from_cache(file)
 
     def get_dependencies(self, file: str) -> List[str]:
         """Get all dependencies for a file."""
@@ -650,23 +680,3 @@ class FileManager:
             params.update(additional_args)
 
         return params
-        
-
-def refresh_file(
-    scheme: Scheme,
-    source: Source,
-    instrument: BaseInstrumentConfig,
-    reset: bool = False,
-) -> None:
-    """
-    Refresh a file from S3 if it is not up to date.
-    The file is expected to be in a specific directory structure.
-    The S3 file is expected to exist and up-to-date.
-    """
-    fm = FileManager()
-    url = make_instrument_url(
-        scheme,
-        source,
-        instrument,
-    )
-    fm.refresh_file(url, reset=reset)

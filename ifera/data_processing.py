@@ -2,7 +2,8 @@
 Data processing functionality for financial data.
 """
 
-from typing import Optional, Tuple
+import datetime
+from typing import Optional, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,6 @@ from tqdm import tqdm
 from .config import BaseInstrumentConfig
 from .enums import Source
 from .file_utils import make_instrument_path
-from .data_models import InstrumentData
 
 SECONDS_IN_DAY = 86400
 
@@ -400,4 +400,197 @@ def process_data(
             f"Error processing data for instrument {instrument.symbol}: {e}"
         ) from e
 
+
+def _last_business_day(
+    date_: datetime.date,
+    trading_days_ord: set[int],
+) -> datetime.date:
+    """
+    Return the most-recent calendar day **≤ `date_`** that is present in the
+    dataset ( `trading_days_ord` is a set of ordinal dates that *do* trade).
+
+    Because public-holidays or other outages may remove otherwise-valid
+    weekdays, we walk backwards one day at a time until we find a match.
+
+    Parameters
+    ----------
+    date_ : datetime.date
+        Anchor date (inclusive).
+    trading_days_ord : set[int]
+        All trading days in the dataset (as `date.toordinal()` integers).
+
+    Returns
+    -------
+    datetime.date
+        The last trading day **on or before** `date_`.
+    """
+    # Check if there are any trading days before the given date
+    if not trading_days_ord or date_.toordinal() < min(trading_days_ord):
+        return date_
+    
+    cur = date_
+    while cur.toordinal() not in trading_days_ord:
+        cur -= datetime.timedelta(days=1)
+    return cur
+
+
+def _forced_roll_date(instr, trading_days_ord: set[int]) -> int | None:
+    """
+    Return the ordinal of the last trading day **before**
+    min(instr.expiration_date, instr.first_notice_date).
+
+    If either date is missing, fall back to the one that is present.
+    If both are missing, return None (no forced roll rule).
+    """
+    exp_dt = instr.expiration_date
+    fnd_dt = instr.first_notice_date
+
+    # Nothing to enforce
+    if exp_dt is None and fnd_dt is None:
+        return None
+
+    # Choose the earlier of the two that exist
+    if exp_dt is None:
+        anchor = fnd_dt
+    elif fnd_dt is None:
+        anchor = exp_dt
+    else:
+        anchor = min(exp_dt, fnd_dt)  # the “critical” date
+
+    # Step back to the previous trading day actually present in the data
+    prev_trade_day = _last_business_day(
+        anchor - datetime.timedelta(days=1), trading_days_ord
+    )
+    return prev_trade_day.toordinal()
+
+
+def calculate_rollover(
+    instruments: List[BaseInstrumentConfig],
+    data: List[torch.Tensor],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if not instruments:
+        raise ValueError("`instruments` may not be empty")
+
+    # Common dtype / device --------------------------------------------------
+    device = data[0].device
+    dtype = data[0].dtype
+
+    OFFSET_CH = 3  # offset_time_seconds
+    ORD_TRD_CH = 2  # ord_trade_date
+    OPEN_CH = 4  # open
+    VOL_CH = 8  # volume
+
+    cut_off = instruments[0].rollover_offset
+    end_time = int(instruments[0].end_time.total_seconds())
+    alpha_raw = instruments[0].rollover_vol_alpha
+    alpha = alpha_raw if alpha_raw is not None else 1.0
+    start_ord = instruments[0].start_date.toordinal()
+
+    # Pre-compute: per contract  ➜  dict( ord_trade_date → (volume<15:30>, open15:30) )
+    contract_day_stats: list[dict[int, tuple[float, float]]] = []
+
+    for tens in tqdm(data, desc="Pre-processing contracts"):
+        n_days, _, _ = tens.shape
+        stats: dict[int, tuple[float, float]] = {}
+
+        for d in range(n_days):
+            # --- basic day-level arrays ---------------------------------------
+            ord_td = int(tens[d, 0, ORD_TRD_CH].item())
+
+            if ord_td < start_ord - 1:
+                continue
+    
+            times_d = tens[d, :, OFFSET_CH]
+            vols_d = tens[d, :, VOL_CH]
+
+            # ①  Current-day volume up to (but **not incl.**) 15 : 30
+            v_up_to_cutoff = vols_d[times_d < cut_off].sum().item()
+
+            # ②  Previous-trading-day volume **after** 15 : 30
+            v_prev_after_cutoff = 0.0
+            if d > 0:  # not available on very first day
+                times_prev = tens[d - 1, :, OFFSET_CH]
+                vols_prev = tens[d - 1, :, VOL_CH]
+                v_prev_after_cutoff = (
+                    vols_prev[(times_prev >= cut_off) & (times_prev <= end_time)]
+                    .sum()
+                    .item()
+                )
+
+            # ③  Full 24-h liquidity snapshot
+            liq_vol = v_prev_after_cutoff + v_up_to_cutoff
+
+            # ④  15 : 30 price (needed for ratio when we roll)
+            mask_cutoff = (times_d == cut_off).nonzero(as_tuple=False)
+            if mask_cutoff.numel() != 1:
+                raise RuntimeError("15 : 30 bar missing (or duplicated) in dataset")
+            idx_cutoff: int = int(mask_cutoff.item())
+            price_cutoff = tens[d, idx_cutoff, OPEN_CH].item()
+
+            stats[ord_td] = (liq_vol, price_cutoff)
+
+        contract_day_stats.append(stats)
+
+    # Build the master calendar ---------------------------------------------
+    all_days_ord_full = sorted({day for stats in contract_day_stats for day in stats.keys()})
+    trading_days_ord = set(all_days_ord_full) 
+
+    contract_forced_roll: list[int | None] = [
+        _forced_roll_date(inst, trading_days_ord) for inst in instruments
+    ]
+
+    all_days_ord = [d for d in all_days_ord_full if d >= start_ord]
+    n_days = len(all_days_ord)
+
+    # Output tensors (initialised with NaNs) ---------------------------------
+    ratios = torch.full((n_days,), float("nan"), dtype=dtype, device=device)
+    active_idx = torch.zeros((n_days,), dtype=torch.int64, device=device)
+
+    # Pick the **first** active contract: highest volume on first calendar day
+    first_day = all_days_ord[0]
+    vols_first = [stats.get(first_day, (0.0, 0.0))[0] for stats in contract_day_stats]
+    current = int(torch.tensor(vols_first).argmax().item())
+
+    # -----------------------------------------------------------------------
+    for pos, day in enumerate(all_days_ord):
+        active_idx[pos] = current
+
+        # Volume today for active contract (0 if not trading any more)
+        cur_vol, cur_open = contract_day_stats[current].get(day, (0.0, float("nan")))
+
+        # Forced roll?
+        forced_date = contract_forced_roll[current]
+        forced = forced_date is not None and day >= forced_date
+
+        # Look-ahead volumes -------------------------------------------------
+        fut_volumes = []
+        fut_candidates = []
+        for j in range(current + 1, len(instruments)):
+            vol_j, open_j = contract_day_stats[j].get(day, (0.0, float("nan")))
+            if vol_j > 0:  # contract is trading on this day
+                fut_volumes.append(vol_j)
+                fut_candidates.append((j, open_j, vol_j))
+
+        # Decide to roll -----------------------------------------------------
+        should_roll = False
+        target_idx = current
+        if forced and fut_candidates:
+            should_roll = True
+            # pick highest volume among futures
+            target_idx = max(fut_candidates, key=lambda t: t[2])[0]
+        elif fut_candidates:
+            max_future_vol = max(fut_volumes)
+            if cur_vol * alpha < max_future_vol:  # liquidity roll
+                should_roll = True
+                target_idx = max(fut_candidates, key=lambda t: t[2])[0]
+
+        # Execute roll (record the ratio) -----------------------------------
+        if should_roll and target_idx != current:
+            new_open = contract_day_stats[target_idx][day][1]
+            if not np.isnan(cur_open) and cur_open != 0:
+                ratios[pos] = new_open / cur_open
+            active_idx[pos] = target_idx
+            current = target_idx
+
+    return ratios, active_idx
 

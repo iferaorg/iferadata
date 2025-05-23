@@ -316,6 +316,254 @@ IBKR:
       slippage: 0.02
       minSlippage: 0.01
       referencePrice: 160.0
+barchart:
+  name: barchart.com
+  defaults:
+    minCommission: 0.0
+    maxCommissionPct: 0.0
+    slippage: 0.0
+    margin: 0.0
+    commission: 0.0
+    minSlippage: 0.0
+    referencePrice: 0.0
+  instruments:
+    ES:
+      instrumentSymbol: ES
+      brokerSymbol: ES
+    NQ:
+      instrumentSymbol: NQ
+      brokerSymbol: NQ
+    CL:
+      instrumentSymbol: CL
+      brokerSymbol: CL
+    GC:
+      instrumentSymbol: GC
+      brokerSymbol: GC
+    YM:
+      instrumentSymbol: YM
+      brokerSymbol: YM
+    EU:
+      instrumentSymbol: EU
+      brokerSymbol: E6
+    JY:
+      instrumentSymbol: JY
+      brokerSymbol: J6
+    AD:
+      instrumentSymbol: AD
+      brokerSymbol: A6
+    RTY:
+      instrumentSymbol: RTY
+      brokerSymbol: QR
+    HG:
+      instrumentSymbol: HG
+      brokerSymbol: HG
+    BP:
+      instrumentSymbol: BP
+      brokerSymbol: B6
+    SI:
+      instrumentSymbol: SI
+      brokerSymbol: SI
+    TY:
+      instrumentSymbol: TY
+      brokerSymbol: ZN
+    CD:
+      instrumentSymbol: CD
+      brokerSymbol: D6
+    FV:
+      instrumentSymbol: FV
+      brokerSymbol: ZF
+    NG:
+      instrumentSymbol: NG
+      brokerSymbol: NG
+    US:
+      instrumentSymbol: US
+      brokerSymbol: ZB
+    HO:
+      instrumentSymbol: HO
+      brokerSymbol: HO
+    SF:
+      instrumentSymbol: SF
+      brokerSymbol: S6
+    PL:
+      instrumentSymbol: PL
+      brokerSymbol: PL
+    UB:
+      instrumentSymbol: UB
+      brokerSymbol: UD
+    RB:
+      instrumentSymbol: RB
+      brokerSymbol: RB
+    NE:
+      instrumentSymbol: NE
+      brokerSymbol: N6
+    M6E:
+      instrumentSymbol: M6E
+      brokerSymbol: MF
+    QM:
+      instrumentSymbol: QM
+      brokerSymbol: QM
+    MGC:
+      instrumentSymbol: MGC
+      brokerSymbol: GR
+    S:
+      instrumentSymbol: S
+      brokerSymbol: ZS
+    TU:
+      instrumentSymbol: TU
+      brokerSymbol: ZT
+    PX:
+      instrumentSymbol: PX
+      brokerSymbol: M6
+    EMD:
+      instrumentSymbol: EMD
+      brokerSymbol: EW
+    W:
+      instrumentSymbol: W
+      brokerSymbol: ZW
+    C:
+      instrumentSymbol: C
+      brokerSymbol: ZC
+    TN:
+      instrumentSymbol: TN
+      brokerSymbol: TN
+    BO:
+      instrumentSymbol: BO
+      brokerSymbol: ZL
+    BZ:
+      instrumentSymbol: BZ
+      brokerSymbol: QA
+    M6A:
+      instrumentSymbol: M6A
+      brokerSymbol: MG
+    M6B:
+      instrumentSymbol: M6B
+      brokerSymbol: MB
+    SM:
+      instrumentSymbol: SM
+      brokerSymbol: ZM
+    VX:
+      instrumentSymbol: VX
+      brokerSymbol: VI
+    PA:
+      instrumentSymbol: PA
+      brokerSymbol: PA
+    HE:
+      instrumentSymbol: HE
+      brokerSymbol: HE
+    LE:
+      instrumentSymbol: LE
+      brokerSymbol: LE
+    GF:
+      instrumentSymbol: GF
+      brokerSymbol: GF
+    ME:
+      instrumentSymbol: ME
+      brokerSymbol: E7
+    SIL:
+      instrumentSymbol: SIL
+      brokerSymbol: SO
+    QG:
+      instrumentSymbol: QG
+      brokerSymbol: QG
+    BTC:
+      instrumentSymbol: BTC
+      brokerSymbol: BT
+    JE:
+      instrumentSymbol: JE
+      brokerSymbol: J7
+    RP:
+      instrumentSymbol: RP
+      brokerSymbol: RP
+    MCD:
+      instrumentSymbol: MCD
+      brokerSymbol: WK
+    RY:
+      instrumentSymbol: RY
+      brokerSymbol: RY
+    QO:
+      instrumentSymbol: QO
+      brokerSymbol: QO
+    BR:
+      instrumentSymbol: BR
+      brokerSymbol: L6
+    YK:
+      instrumentSymbol: YK
+      brokerSymbol: XK
+    YC:
+      instrumentSymbol: YC
+      brokerSymbol: XN
+    RF:
+      instrumentSymbol: RF
+      brokerSymbol: RF
+    YW:
+      instrumentSymbol: YW
+      brokerSymbol: XW
+    RA:
+      instrumentSymbol: RA
+      brokerSymbol: T6
+    SIR:
+      instrumentSymbol: SIR
+      brokerSymbol: H3
+    RR:
+      instrumentSymbol: RR
+      brokerSymbol: ZR
+    QI:
+      instrumentSymbol: QI
+      brokerSymbol: QI
+    XAE:
+      instrumentSymbol: XAE
+      brokerSymbol: BM
+    O:
+      instrumentSymbol: O
+      brokerSymbol: ZO
+    MSF:
+      instrumentSymbol: MSF
+      brokerSymbol: WN
+    XAU:
+      instrumentSymbol: XAU
+      brokerSymbol: JE
+    XAF:
+      instrumentSymbol: XAF
+      brokerSymbol: BN
+    XAV:
+      instrumentSymbol: XAV
+      brokerSymbol: BS
+    FF:
+      instrumentSymbol: FF
+      brokerSymbol: ZQ
+    XAK:
+      instrumentSymbol: XAK
+      brokerSymbol: JB
+    XAI:
+      instrumentSymbol: XAI
+      brokerSymbol: JG
+    XAY:
+      instrumentSymbol: XAY
+      brokerSymbol: BI
+    XAP:
+      instrumentSymbol: XAP
+      brokerSymbol: BL
+    SEK:
+      instrumentSymbol: SEK
+      brokerSymbol: SK
+    XAB:
+      instrumentSymbol: XAB
+      brokerSymbol: JA
+    AJY:
+      instrumentSymbol: AJY
+      brokerSymbol: UK
+    PJY:
+      instrumentSymbol: PJY
+      brokerSymbol: UR
+    AC:
+      instrumentSymbol: AC
+      brokerSymbol: FL
+    EAD:
+      instrumentSymbol: EAD
+      brokerSymbol: UC
+    ECD:
+      instrumentSymbol: ECD
+      brokerSymbol: UE
 MISSING:
   ME:
     instrumentSymbol: ME

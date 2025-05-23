@@ -3,4 +3,5 @@ megalinter-reports/
 data/raw/
 data/processed/
 data/tensor/
+data/meta/
 .env

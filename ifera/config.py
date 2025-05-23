@@ -43,17 +43,23 @@ class BaseInstrumentConfig(BaseModel):
         None, alias="removeDates", validate_default=True
     )
     start_date: datetime.date = Field(..., alias="startDate")
-    days_of_week: List[int] = Field(
-        ..., alias="daysOfWeek", validate_default=True
+    days_of_week: List[int] = Field(..., alias="daysOfWeek", validate_default=True)
+    rollover_time: Optional[pd.Timedelta] = Field(
+        None, alias="rolloverTime", validate_default=True
     )
-    physical_delivery: bool = Field(..., alias="physicalDelivery")
+    rollover_vol_alpha: Optional[float] = Field(
+        None, alias="rolloverVolAlpha", validate_default=True
+    )
     last_update: Optional[float] = Field(default=None)
+
     # Derived Fields
     time_step: pd.Timedelta = pd.Timedelta(0)
     end_time: pd.Timedelta = pd.Timedelta(0)
+    rollover_offset: int = 0
     total_steps: int = 0
 
     expiration_date: Optional[datetime.date] = Field(None, alias="expirationDate")
+    first_notice_date: Optional[datetime.date] = Field(None, alias="firstNoticeDate")
     rollover_date: Optional[datetime.date] = Field(None, alias="rolloverDate")
     contract_code: Optional[str] = Field(None, alias="contractCode")
 
@@ -73,6 +79,7 @@ class BaseInstrumentConfig(BaseModel):
         "liquid_end",
         "regular_start",
         "regular_end",
+        "rollover_time",
         mode="before",
     )
     @classmethod
@@ -112,7 +119,7 @@ class BaseInstrumentConfig(BaseModel):
         if isinstance(value, list):
             return [int(day) for day in value]
         else:
-            raise ValueError("days_of_week must be a list of integers.")    
+            raise ValueError("days_of_week must be a list of integers.")
 
     @model_validator(mode="after")
     def compute_derived_fields(self) -> "BaseInstrumentConfig":
@@ -131,9 +138,25 @@ class BaseInstrumentConfig(BaseModel):
             ][-1]
             total_seconds = self.end_time.total_seconds()
             step_seconds = self.time_step.total_seconds()
+
             if step_seconds <= 0:
                 raise ValueError("Invalid time_step: must be positive.")
+
             self.total_steps = int(total_seconds / step_seconds) + 1
+
+            if self.rollover_time is not None:
+                if self.rollover_time < self.trading_start:
+                    raise ValueError(
+                        "Rollover time must be greater than trading start time."
+                    )
+                if self.rollover_time > self.trading_end:
+                    raise ValueError(
+                        "Rollover time must be less than trading end time."
+                    )
+                self.rollover_offset = int(
+                    (self.rollover_time - self.trading_start).total_seconds()
+                )
+
             if self.last_update is None:
                 self.last_update = -float("inf")
         except Exception as exc:

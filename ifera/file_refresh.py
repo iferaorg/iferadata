@@ -1,15 +1,19 @@
 import torch
 import pathlib as pl
+import yaml
+from tqdm import tqdm
 from einops import rearrange
-from .s3_utils import download_s3_file, upload_s3_file, make_s3_key
+from .url_utils import contract_notice_and_expiry
+from .s3_utils import download_s3_file, upload_s3_file
 from .data_loading import load_data
 from .data_processing import process_data
 from .config import ConfigManager
 from .enums import Source, extension_map
 from .file_utils import make_path
+from .config import ConfigManager
 
 
-def download_file(source: str, type: str, interval: str, symbol: str, ext: str) -> None:
+def download_file(source: str, type: str, interval: str, symbol: str, ext: str, contract_code: str = "") -> None:
     """
     Download a file from S3 if it is not up to date.
     The file is expected to be in a specific directory structure.
@@ -22,6 +26,9 @@ def download_file(source: str, type: str, interval: str, symbol: str, ext: str) 
         raise ValueError(
             f"Extension '{ext}' does not match the expected extension for source '{source_enum.value}'."
         )
+        
+    if contract_code:
+        symbol = f"{symbol}-{contract_code}"
 
     path = f"{source}/{type}/{interval}/{symbol}.{ext}"
     file_path = make_path(source_enum, type, interval, symbol)
@@ -104,3 +111,60 @@ def process_tensor_file(
     file_name = f"{symbol}-{contract_code}" if contract_code else symbol
     tensor_file_path = make_path(Source.TENSOR, type, interval, file_name)
     torch.save(tensor, str(tensor_file_path))
+
+
+def process_futures_metadata(
+    symbol: str,
+    contract_codes: list[str]
+) -> None:
+    """
+    Fetch ``First Notice`` and ``Expiration`` dates for a set of futures
+    contracts (``symbol`` + ``contract_code``) from Barchart and save
+    them in a YAML file:
+
+        meta/futures/dates/{symbol}.yml
+
+    The YAML structure is::
+
+        F10:
+          first_notice_date: 2010-12-31
+          expiration_date:   2011-01-27
+        G10:
+          first_notice_date: …
+          expiration_date:   …
+
+    Parameters
+    ----------
+    symbol
+        Root futures symbol, e.g. ``"GC"``.
+    contract_codes
+        List of contract codes such as ``["F10", "G10", …]`` (month letter
+        + 2-digit year).
+    """
+    dates: dict[str, dict[str, str | None]] = {}
+    cm = ConfigManager()
+    instrument = cm.get_config(broker_name="barchart", symbol=symbol, interval="30m")
+    broker_symbol = instrument.broker_symbol
+
+    print(f"Fetching contract dates for {symbol} ({broker_symbol})...")
+
+    for code in tqdm(contract_codes):
+        full_symbol = f"{broker_symbol}{code}"          # e.g. "GCF10"
+        first_notice, expiration = contract_notice_and_expiry(full_symbol)
+
+        dates[code] = {
+            "first_notice_date": first_notice.isoformat() if first_notice else None,
+            "expiration_date":   expiration.isoformat()   if expiration   else None,
+        }
+
+    file_path = make_path(Source.META, "futures", "dates", symbol)
+
+    with open(file_path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(
+            dates,
+            fh,
+            sort_keys=True,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+        

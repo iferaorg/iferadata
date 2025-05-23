@@ -1,15 +1,28 @@
 dependency_rules:
+  # Download
   - dependent: "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
     depends_on:
       - "s3:{source}/{type}/{interval}/{symbol}.{ext}"
     refresh_function: "ifera.file_refresh.download_file"
 
+  # Raw
+  - dependent: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+  - dependent: "s3:raw/{type}/{interval}/{symbol}.zip"
+
+  # Metadata
+  - dependent: "s3:meta/futures/dates/{symbol}.yml"
+    depends_on:
+      - "github:iferaorg/iferadata/data/instruments.yml"
+      - "github:iferaorg/iferadata/ifera/dependencies.yml"
+      - pattern: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
+        wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
+
   # Raw -> Processed
   - dependent: "s3:processed/{type}/{interval}/{symbol}.zip"
     depends_on:
-      - "s3:raw/{type}/{interval}/{symbol}.zip"
       - "github:iferaorg/iferadata/data/instruments.yml"
       - "github:iferaorg/iferadata/ifera/dependencies.yml"
+      - "s3:raw/{type}/{interval}/{symbol}.zip"
 
   # Special tensors
   - dependent: "s3:tensor/futures_rollover/{interval}/{symbol}.pt"
@@ -28,6 +41,19 @@ refresh_rules:
     depends_on:
       - "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
     refresh_function: "ifera.file_refresh.upload_file"
+
+  # Fake file for metadata
+  - dependent: "file:data/meta/futures_individual/30m/{symbol}-{contract_code}.zip"
+
+  # Metadata
+  - dependent: "file:data/meta/futures/dates/{symbol}.yml"
+    depends_on:
+      - pattern: "file:data/meta/futures_individual/30m/{symbol}-{contract_code}.zip"
+        wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
+    refresh_function:
+      name: "ifera.file_refresh.process_futures_metadata"
+      list_args:
+        contract_codes: contract_code
 
   # Raw -> Processed
   - dependent: "file:data/processed/futures_individual/{interval}/{symbol}-{contract_code}.zip"
