@@ -11,7 +11,7 @@ templates:
     regularEnd: "17:00:00"
     removeDates: []            # Empty list, can be overridden if needed
     intervals: ["1m", "30m"]
-    startDate: "2011-01-01"    # "2009-10-01"
+    startDate: "2009-10-01"
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
     rolloverTime: "15:30:00"
     rolloverVolAlpha: 0.5
@@ -303,3 +303,5 @@ instruments:
     tickSize: 0.01
     removeDates: []
     intervals: ["30m"]
+    startDate: "2011-01-01"
+    daysOfWeek: [0, 1, 2, 3, 4, 5]  # Monday to Saturday

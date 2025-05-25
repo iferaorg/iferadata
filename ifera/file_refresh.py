@@ -1,11 +1,12 @@
 import torch
 import pathlib as pl
 import yaml
+import datetime as dt
 from tqdm import tqdm
 from einops import rearrange
 from .url_utils import contract_notice_and_expiry
 from .s3_utils import download_s3_file, upload_s3_file
-from .data_loading import load_data
+from .data_loading import load_data, load_data_tensor
 from .data_processing import process_data
 from .config import ConfigManager
 from .enums import Source, extension_map
@@ -13,7 +14,14 @@ from .file_utils import make_path
 from .config import ConfigManager
 
 
-def download_file(source: str, type: str, interval: str, symbol: str, ext: str, contract_code: str = "") -> None:
+def download_file(
+    source: str,
+    type: str,
+    interval: str,
+    symbol: str,
+    ext: str,
+    contract_code: str = "",
+) -> None:
     """
     Download a file from S3 if it is not up to date.
     The file is expected to be in a specific directory structure.
@@ -26,7 +34,7 @@ def download_file(source: str, type: str, interval: str, symbol: str, ext: str, 
         raise ValueError(
             f"Extension '{ext}' does not match the expected extension for source '{source_enum.value}'."
         )
-        
+
     if contract_code:
         symbol = f"{symbol}-{contract_code}"
 
@@ -113,10 +121,7 @@ def process_tensor_file(
     torch.save(tensor, str(tensor_file_path))
 
 
-def process_futures_metadata(
-    symbol: str,
-    contract_codes: list[str]
-) -> None:
+def process_futures_metadata_raw(symbol: str, contract_codes: list[str]) -> None:
     """
     Fetch ``First Notice`` and ``Expiration`` dates for a set of futures
     contracts (``symbol`` + ``contract_code``) from Barchart and save
@@ -149,13 +154,78 @@ def process_futures_metadata(
     print(f"Fetching contract dates for {symbol} ({broker_symbol})...")
 
     for code in tqdm(contract_codes):
-        full_symbol = f"{broker_symbol}{code}"          # e.g. "GCF10"
+        full_symbol = f"{broker_symbol}{code}"  # e.g. "GCF10"
         first_notice, expiration = contract_notice_and_expiry(full_symbol)
 
         dates[code] = {
             "first_notice_date": first_notice.isoformat() if first_notice else None,
-            "expiration_date":   expiration.isoformat()   if expiration   else None,
+            "expiration_date": expiration.isoformat() if expiration else None,
         }
+
+    file_path = make_path(Source.META, "futures", "dates_raw", symbol)
+
+    with open(file_path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(
+            dates,
+            fh,
+            sort_keys=True,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+
+
+def process_futures_metadata(symbol: str) -> None:
+    """
+    Fetch ``First Notice`` and ``Expiration`` dates for a set of futures
+    contracts (``symbol`` + ``contract_code``) from Barchart and save
+    them in a YAML file:
+
+        meta/futures/dates/{symbol}.yml
+
+    The YAML structure is::
+
+        F10:
+          first_notice_date: 2010-12-31
+          expiration_date:   2011-01-27
+        G10:
+          first_notice_date: …
+          expiration_date:   …
+
+    Parameters
+    ----------
+    symbol
+        Root futures symbol, e.g. ``"GC"``.
+    contract_codes
+        List of contract codes such as ``["F10", "G10", …]`` (month letter
+        + 2-digit year).
+    """
+    raw_yml_path = make_path(Source.META, "futures", "dates_raw", symbol)
+    if not raw_yml_path.exists():
+        raise FileNotFoundError(
+            f"Raw metadata file for {symbol} not found at {raw_yml_path}. "
+            "Please run process_futures_metadata_raw first."
+        )
+        
+    cm = ConfigManager()
+    instrument = cm.get_base_instrument_config(symbol, "30m")
+    
+    with open(raw_yml_path, "r", encoding="utf-8") as fh:
+        dates = yaml.safe_load(fh)
+        
+        for code, date_info in dates.items():
+            expiration = date_info.get("expiration_date")
+            full_symbol = f"{symbol}-{code}"  # e.g. "GC-F10"
+
+            if expiration is None:
+                print(f"Warning: Expiration date for {full_symbol} not found. Using last date in data.")
+                contract_instrument = cm.create_derived_base_config(
+                    instrument, contract_code=code
+                )
+                t = load_data_tensor(contract_instrument, device=torch.device("cpu"), strip_date_time=False)
+                expiration = dt.date.fromordinal(int(t[-1, 0, 2].item()))
+                t = None
+                
+                dates[code]["expiration_date"] = expiration.isoformat() if expiration else None
 
     file_path = make_path(Source.META, "futures", "dates", symbol)
 
@@ -167,4 +237,4 @@ def process_futures_metadata(
             default_flow_style=False,
             allow_unicode=True,
         )
-        
+

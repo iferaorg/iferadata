@@ -215,13 +215,6 @@ IBKR:
       commission: 2.25
       minSlippage: 0.1
       referencePrice: 3200.0
-    NKD:
-      instrumentSymbol: NKD
-      brokerSymbol: NKD
-      margin: 14795
-      commission: 3.02
-      minSlippage: 5.0
-      referencePrice: 3900.0
     W:
       instrumentSymbol: W
       brokerSymbol: ZW
@@ -575,3 +568,13 @@ MISSING:
     slippage: 0.0
     minSlippage: 0.0001
     referencePrice: 0.7
+  NKD:
+    instrumentSymbol: NKD
+    brokerSymbol: NKD
+    margin: 14795
+    commission: 3.02
+    minCommission: 0.0
+    maxCommissionPct: 0.0
+    slippage: 0.0
+    minSlippage: 5.0
+    referencePrice: 3900.0

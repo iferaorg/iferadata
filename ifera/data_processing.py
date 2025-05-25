@@ -3,6 +3,7 @@ Data processing functionality for financial data.
 """
 
 import datetime
+import zipfile as zip_file
 from typing import Optional, List, Tuple
 
 import numpy as np
@@ -302,6 +303,28 @@ def perform_final_calculations(
     df: pd.DataFrame, instrument: BaseInstrumentConfig
 ) -> pd.DataFrame:
     """Perform final calculations for ordinal dates and time seconds."""
+    # Handle empty DataFrame case
+    if df.empty:
+        return pd.DataFrame(columns=[
+            'open', 'high', 'low', 'close', 'volume',
+            'date', 'time', 'offset_time', 'trade_date',
+            'ord_date', 'time_seconds', 'ord_trade_date', 'offset_time_seconds'
+        ]).astype({
+            'open': df.dtypes['open'],
+            'high': df.dtypes['high'],
+            'low': df.dtypes['low'],
+            'close': df.dtypes['close'],
+            'volume': df.dtypes['volume'],
+            'date': 'datetime64[ns]',
+            'time': 'timedelta64[ns]',
+            'offset_time': 'timedelta64[ns]',
+            'trade_date': 'datetime64[ns]',
+            'ord_date': 'int64',
+            'time_seconds': 'float64',
+            'ord_trade_date': 'int64',
+            'offset_time_seconds': 'float64'
+        })
+    
     offset_seconds = instrument.trading_start.total_seconds()
     df = df.assign(
         ord_trade_date=df["trade_date"].map(lambda x: x.toordinal()),
@@ -328,77 +351,77 @@ def process_data(
     This function transforms raw OHLCV data into a standardized format with proper time offsets
     and date calculations. It handles missing data points and ensures regular intervals.
     """
-    try:
-        print("Converting datetime columns...")
-        df = calculate_time_columns(df, instrument)
+    print("Converting datetime columns...")
+    df = calculate_time_columns(df, instrument)
 
-        start_date_ts = pd.to_datetime(instrument.start_date)
-        df = df[df["trade_date"] >= start_date_ts]
+    start_date_ts = pd.to_datetime(instrument.start_date)
+    df = df[df["trade_date"] >= start_date_ts]
 
-        if instrument.remove_dates is not None:
-            remove_dates_ts = pd.to_datetime(instrument.remove_dates)
-            df = df[~df["trade_date"].isin(remove_dates_ts)]
+    if instrument.remove_dates is not None and len(instrument.remove_dates) > 0:
+        remove_dates_ts = pd.to_datetime(instrument.remove_dates)
+        df = df[~df["trade_date"].isin(remove_dates_ts)]
 
-        if instrument.days_of_week is not None:
-            df = df[df["trade_date"].dt.dayofweek.isin(instrument.days_of_week)]
+    if instrument.days_of_week is not None and len(instrument.days_of_week) > 0:
+        df = df[df["trade_date"].dt.dayofweek.isin(instrument.days_of_week)]
 
-        print("Processing groups...")
-        # Convert the unique dates to a list explicitly with the right type
-        unique_dates = df["trade_date"].unique()
-        unique_dates_list = [pd.Timestamp(d) for d in unique_dates]
+    print("Processing groups...")
+    # Convert the unique dates to a list explicitly with the right type
+    unique_dates = df["trade_date"].unique()
+    unique_dates_list = [pd.Timestamp(d) for d in unique_dates]
 
-        processed_groups = [
-            process_group(df[df["trade_date"] == date], instrument)
-            for date in tqdm(unique_dates_list, desc="Processing trade dates")
-        ]
+    processed_groups = [
+        process_group(df[df["trade_date"] == date], instrument)
+        for date in tqdm(unique_dates_list, desc="Processing trade dates")
+    ]
 
-        if processed_groups:
-            df = pd.concat(processed_groups, ignore_index=True)
+    if processed_groups:
+        df = pd.concat(processed_groups, ignore_index=True)
+
+    df = df[
+        (df["offset_time"] >= pd.Timedelta(0))
+        & (df["offset_time"] <= instrument.end_time)
+    ]
+
+    df = df.groupby("trade_date").filter(
+        lambda x: x["open"].count() == instrument.total_steps
+    )
+
+    df.sort_values(["trade_date", "offset_time"], inplace=True)
+
+    print("Performing final calculations...")
+    df = perform_final_calculations(df, instrument)
+
+    cols = [
+        "ord_date",
+        "time_seconds",
+        "ord_trade_date",
+        "offset_time_seconds",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    ]
+    df = df[cols]
+    df = df.reset_index(drop=True, inplace=False)  # type: ignore
+
+    print("Saving processed data...")
+    output_path = make_instrument_path(
+        source=Source.PROCESSED, instrument=instrument, remove_file=True
+    )
+    
+    if zipfile:
+        if df.empty:
+            # Create zip file with empty CSV file containing header
+            with zip_file.ZipFile(str(output_path), 'w', zip_file.ZIP_DEFLATED) as zf:
+                csv_name = output_path.stem + '.csv'
+                empty_csv_content = ""
+                zf.writestr(csv_name, empty_csv_content)
         else:
-            df = pd.DataFrame()
-
-        df = df[
-            (df["offset_time"] >= pd.Timedelta(0))
-            & (df["offset_time"] <= instrument.end_time)
-        ]
-
-        df = df.groupby("trade_date").filter(
-            lambda x: x["open"].count() == instrument.total_steps
-        )
-
-        df.sort_values(["trade_date", "offset_time"], inplace=True)
-
-        print("Performing final calculations...")
-        df = perform_final_calculations(df, instrument)
-
-        cols = [
-            "ord_date",
-            "time_seconds",
-            "ord_trade_date",
-            "offset_time_seconds",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-        df = df[cols]
-        df = df.reset_index(drop=True, inplace=False)  # type: ignore
-
-        print("Saving processed data...")
-        output_path = make_instrument_path(
-            source=Source.PROCESSED, instrument=instrument, remove_file=True
-        )
-        if zipfile:
             df.to_csv(str(output_path), header=False, index=False, compression="zip")
-        else:
-            df.to_csv(str(output_path), header=False, index=False)
-        print(f"Processed data saved to {output_path}")
-
-    except Exception as e:
-        raise RuntimeError(
-            f"Error processing data for instrument {instrument.symbol}: {e}"
-        ) from e
+    else:
+        df.to_csv(str(output_path), header=False, index=False)
+    print(f"Processed data saved to {output_path}")
 
 
 def _last_business_day(
