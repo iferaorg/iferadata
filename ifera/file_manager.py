@@ -680,3 +680,34 @@ class FileManager:
             params.update(additional_args)
 
         return params
+    
+    def dependencies_max_last_modified(
+        self, file: str, rule_type: RuleType = RuleType.DEPENDENCY, scheme_filter: Optional[Scheme] = None
+    ) -> datetime.datetime | None:
+        """Get the maximum last modified time of all dependencies."""
+        self.build_subgraph(file, rule_type)
+        graph = self.get_graph(rule_type)
+
+        if file not in graph:
+            raise ValueError(f"File {file} not found in {rule_type.value} graph")
+
+        max_mtime = None
+        fop = FileOperations()
+
+        for dep in graph.successors(file):
+            if scheme_filter:
+                parts = urlparse(dep)
+                try:
+                    scheme = Scheme(parts.scheme)
+                except ValueError:
+                    raise ValueError(f"Unsupported scheme: {parts.scheme}")
+
+                if scheme != scheme_filter:
+                    continue
+
+            mtime = fop.get_mtime(dep)
+            if mtime is not None:
+                if max_mtime is None or mtime > max_mtime:
+                    max_mtime = mtime
+
+        return max_mtime

@@ -2,17 +2,18 @@ import torch
 import pathlib as pl
 import yaml
 import datetime as dt
+import time
 from tqdm import tqdm
 from einops import rearrange
-from .url_utils import contract_notice_and_expiry
+from .url_utils import contract_notice_and_expiry, make_url
 from .s3_utils import download_s3_file, upload_s3_file
 from .data_loading import load_data, load_data_tensor
 from .data_processing import process_data
 from .config import ConfigManager
-from .enums import Source, extension_map
+from .enums import Source, extension_map, Scheme
 from .file_utils import make_path
 from .config import ConfigManager
-
+from .file_manager import FileManager
 
 def download_file(
     source: str,
@@ -59,6 +60,15 @@ def upload_file(source: str, type: str, interval: str, symbol: str, ext: str) ->
 
     path = f"{source}/{type}/{interval}/{symbol}.{ext}"
     file_path = make_path(source_enum, type, interval, symbol)
+    
+    target_path = make_url(Scheme.S3, source_enum, type, interval, symbol)
+    fm = FileManager()
+    dep_last_modified = fm.dependencies_max_last_modified(target_path, scheme_filter=Scheme.S3)
+    
+    # Sleep for 1 second to ensure the file created timestamp is updated if necessary
+    if dep_last_modified and (dt.datetime.now(tz=dt.timezone.utc) - dep_last_modified).total_seconds() < 1:
+        time.sleep(1)
+
     upload_s3_file(path, str(file_path))
 
     # Touch the local file to update its timestamp
@@ -222,7 +232,8 @@ def process_futures_metadata(symbol: str) -> None:
                     instrument, contract_code=code
                 )
                 t = load_data_tensor(contract_instrument, device=torch.device("cpu"), strip_date_time=False)
-                expiration = dt.date.fromordinal(int(t[-1, 0, 2].item()))
+                if t.shape[0] != 0:
+                    expiration = dt.date.fromordinal(int(t[-1, 0, 2].item()))
                 t = None
                 
                 dates[code]["expiration_date"] = expiration.isoformat() if expiration else None
