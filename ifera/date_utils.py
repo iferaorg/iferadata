@@ -485,11 +485,3 @@ def calculate_expiration(
         return handler(year, month)
     else:
         raise NotImplementedError(f"Rule {rule} not implemented.")
-
-    # Columbus Day and Veterans Day closures for FX and Interest Rate futures
-    if asset_class in ['FX', 'Interest Rate']:
-        if rule == ExpirationRule.LAST_BUSINESS_DAY_CONTRACT_MONTH:
-            if datetime.date(year, month, 1).month == 10:  # October
-                return business_days_before(datetime.date(year, month, 1), 3, country='US')
-            elif datetime.date(year, month, 1).month == 11:  # November
-                return business_days_before(datetime.date(year, month, 1), 2, country='US')
