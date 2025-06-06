@@ -1,0 +1,77 @@
+Here are the defined patterns:
+
+P1: Coincident or Near Coincident Dates: first_notice_date is within +/- 1 business day of expiration_date.
+P2: Prior Month Notice: first_notice_date is (approximately) the last business day of the calendar month preceding the expiration_date's month.
+P3: Post Expiration Notice (Short Delay): first_notice_date is a few (e.g., 2-5) business days after expiration_date.
+P4: Next Month or Later Notice (Significant Delay):
+P4a: expiration_date is at the end of one month, and first_notice_date is at the end of the next month or a subsequent month.
+P4b: first_notice_date is the 1st of the calendar month after the expiration_date's month.
+P5: Intra-Month Notice (Not P1):
+P5a: first_notice_date is the 1st of expiration_date's month.
+P5b: first_notice_date is significantly earlier in expiration_date's month (but not the 1st, and not meeting P1 criteria).
+Mixed: The symbol exhibits multiple distinct primary patterns across its history.
+Highly Variable/Many Nulls: While a primary pattern might be discernible, the data contains a high number of null values or inconsistent, non-repeating date relationships that make categorization complex.
+Here is the list of symbols grouped by their primary pattern category:
+
+P1: Coincident or Near Coincident Dates (first_notice_date is within +/- 1 business day of expiration_date)
+
+AD (Notes: Some historical P3 characteristics)
+BP (Notes: Some historical P3 characteristics)
+CD
+EMD (Notes: Some anomalies matching P5a or P4b)
+ES
+EU (Notes: Older entries sometimes resemble P3)
+GF (Notes: Some anomalies matching P5a)
+HE (Notes: Some instances of P3)
+JY (Notes: Older entries sometimes resemble P3)
+M6A (Notes: When data present; many nulls)
+M6E (Notes: When data present; many nulls)
+NE (Notes: Older entries sometimes resemble P3)
+NQ
+PX (Notes: Older entries (pre-2014) showed P3 or had nulls)
+QM (Notes: Historically mostly P1; recent entries show P3; many nulls)
+RTY (Notes: Older entries have many nulls)
+SF (Notes: Older entries (pre-2014) showed P3 variation)
+YM (Notes: Some anomalies matching P5a or P4 variants; many nulls in older entries)
+P2: Prior Month Notice (first_notice_date is approx. the last business day of the month prior to expiration_date's month)
+
+BO
+C
+FV
+GC
+HG
+MGC (Notes: Many nulls)
+PA
+PL
+S
+SI
+SM
+TN (Notes: Many nulls, especially in older entries)
+TU
+TY
+UB (Notes: One anomaly (Z11) matched P1)
+US (Notes: One anomaly (Z11) matched P3/P4)
+W (Notes: Some nulls)
+P3: Post Expiration Notice (Short Delay) (first_notice_date is a few business days after expiration_date)
+
+CL (Notes: Some nulls)
+HO
+NG (Notes: Some nulls)
+RB (This pattern is also seen as a secondary or historical characteristic in AD, BP, CD, EU, HE, JY, NE, PX, QM, SF)
+P4: Next Month or Later Notice (Significant Delay)
+
+P4a (ED EOM, FND EOM next+ month):
+(Seen as part of BZ's mixed characteristics)
+P4b (FND 1st of next month):
+(Seen as part of VX's mixed characteristics and as anomalies in EMD, YM)
+P5: Intra-Month Notice (Not P1)
+
+P5a (FND 1st of ED month):
+(Seen as part of VX's mixed characteristics and as anomalies in EMD, GF, YM)
+P5b (FND earlier in ED month, not 1st/P1):
+LE (This is its dominant characteristic)
+Mixed (Multiple distinct primary patterns)
+
+BZ (Exhibits characteristics of P1, P3, and P4a)
+VX (Exhibits characteristics of P1, P4b, P5a; generally highly variable with many nulls)
+This categorization should provide a clearer understanding of the different behaviors of first_notice_date relative to expiration_date across the analyzed symbols.
