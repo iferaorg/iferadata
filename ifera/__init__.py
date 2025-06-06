@@ -3,7 +3,7 @@ ifera
 """
 
 from .config import BrokerConfig, ConfigManager, InstrumentConfig
-from .enums import Scheme, Source
+from .enums import Scheme, Source, ExpirationRule
 from .data_loading import load_data, load_data_tensor
 from .data_models import InstrumentData, DataManager
 from .data_processing import (
@@ -18,6 +18,8 @@ from .policies import *
 from .series import artr, ema, ema_slow, ffill, rtr, sma
 from .settings import settings
 from .s3_utils import list_s3_objects, download_s3_file, upload_s3_file, delete_s3_file
+from .decorators import ThreadSafeCache
+from .date_utils import calculate_expiration
 
 __all__ = [
     "InstrumentConfig",
@@ -55,4 +57,7 @@ __all__ = [
     "download_s3_file",
     "upload_s3_file",
     "delete_s3_file",
+    "ThreadSafeCache",
+    "calculate_expiration",
+    "ExpirationRule",
 ]

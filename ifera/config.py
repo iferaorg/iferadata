@@ -50,6 +50,13 @@ class BaseInstrumentConfig(BaseModel):
     rollover_vol_alpha: Optional[float] = Field(
         None, alias="rolloverVolAlpha", validate_default=True
     )
+    last_trading_day_rule: Optional[str] = Field(
+        None, alias="lastTradeDayRule", validate_default=True
+    )
+    first_notice_day_rule: Optional[str] = Field(
+        None, alias="firstNoticeDayRule", validate_default=True
+    )
+    asset_class: Optional[str] = Field(None, alias="assetClass", validate_default=True)
     last_update: Optional[float] = Field(default=None)
 
     # Derived Fields

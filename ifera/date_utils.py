@@ -15,20 +15,19 @@ from .enums import ExpirationRule
 # -----------------------------------------------------------------------------
 
 FUTURES_MONTH_CODES = {
-    'F': 1,    # January
-    'G': 2,    # February
-    'H': 3,    # March
-    'J': 4,    # April
-    'K': 5,    # May
-    'M': 6,    # June
-    'N': 7,    # July
-    'Q': 8,    # August
-    'U': 9,    # September
-    'V': 10,   # October
-    'X': 11,   # November
-    'Z': 12,   # December
+    "F": 1,  # January
+    "G": 2,  # February
+    "H": 3,  # March
+    "J": 4,  # April
+    "K": 5,  # May
+    "M": 6,  # June
+    "N": 7,  # July
+    "Q": 8,  # August
+    "U": 9,  # September
+    "V": 10,  # October
+    "X": 11,  # November
+    "Z": 12,  # December
 }
-
 
 # -----------------------------------------------------------------------------
 # 3. HOLIDAY CALENDARS
@@ -38,55 +37,72 @@ FUTURES_MONTH_CODES = {
 US_HOLIDAYS = holidays.financial.ny_stock_exchange.NewYorkStockExchange()
 
 # UK (England) public holidays:
-UK_HOLIDAYS = holidays.financial_holidays('UK', subdiv='ENG')
+UK_HOLIDAYS = holidays.financial_holidays("UK", subdiv="ENG")
+
+# -----------------------------------------------------------------------------
+# 4. ADDITIONAL HOLIDAY CHECKS
+# -----------------------------------------------------------------------------
+
+
+def is_columbus_day(dt: datetime.date) -> bool:
+    """Check if the date is Columbus Day (second Monday in October)."""
+    return dt.month == 10 and dt.weekday() == 0 and 8 <= dt.day <= 14
+
+
+def is_veterans_day_observed(dt: datetime.date) -> bool:
+    """Check if the date is Veterans Day observed."""
+    if dt.month != 11:
+        return False
+    nov11 = datetime.date(dt.year, 11, 11)
+    if nov11.weekday() < 5:  # Monday to Friday
+        return dt == nov11
+    elif nov11.weekday() == 5:  # Saturday
+        return dt == nov11 - datetime.timedelta(days=1)  # Friday
+    elif nov11.weekday() == 6:  # Sunday
+        return dt == nov11 + datetime.timedelta(days=1)  # Monday
+    return False
 
 
 # -----------------------------------------------------------------------------
-# 4. BASIC BUSINESS-DAY HELPERS
+# 5. BASIC BUSINESS-DAY HELPERS
 # -----------------------------------------------------------------------------
 
-def is_business_day(dt: datetime.date,
-                    *,
-                    country: str = 'US') -> bool:
+
+def is_business_day(
+    dt: datetime.date, *, country: str = "US", asset_class: Optional[str] = None
+) -> bool:
     """
     Returns True if `dt` is a business day in the specified country’s calendar.
-    Weekends are always non–business days; holidays come from python‐holidays.
+    Weekends are always non-business days; holidays include standard financial holidays,
+    plus Columbus Day and Veterans Day for FX and Interest Rate futures.
     """
     if dt.weekday() >= 5:
-        return False  # Saturday or Sunday
-
-    if country.upper() == 'US':
-        return dt not in US_HOLIDAYS
-    elif country.upper() == 'UK':
+        return False
+    if country.upper() == "US":
+        if dt in US_HOLIDAYS:
+            return False
+        if asset_class in ["FX", "Interest Rate"]:
+            if is_columbus_day(dt) or is_veterans_day_observed(dt):
+                return False
+        return True
+    elif country.upper() == "UK":
         return dt not in UK_HOLIDAYS
     else:
-        # fallback: treat all weekdays as business days
         return True
 
 
 def adjust_to_previous_business_day(
-    dt: datetime.date,
-    *,
-    country: str = 'US'
+    dt: datetime.date, *, country: str = "US", asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    If `dt` is not a business day (in given country), walk backwards
-    until a business day is found.
-    """
+    """Adjust to the previous business day if `dt` is not a business day."""
     d = dt
-    while not is_business_day(d, country=country):
+    while not is_business_day(d, country=country, asset_class=asset_class):
         d -= datetime.timedelta(days=1)
     return d
 
 
-def prior_month(
-    year: int,
-    month: int
-) -> tuple[int, int]:
-    """
-    Return the year and month of the month prior to (year, month).
-    Handles year rollover correctly.
-    """
+def prior_month(year: int, month: int) -> tuple[int, int]:
+    """Return the year and month of the prior month."""
     if month == 1:
         return year - 1, 12
     else:
@@ -94,37 +110,28 @@ def prior_month(
 
 
 def last_business_day_of_month(
-    year: int,
-    month: int,
-    *,
-    country: str = 'US'
+    year: int, month: int, *, country: str = "US", asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    Return the last business day (Mon–Fri excluding holidays) of a given month.
-    """
-    # Find the last calendar day of that month:
+    """Return the last business day of a given month."""
     if month == 12:
         last_day = datetime.date(year, 12, 31)
     else:
         last_day = datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
-
-    return adjust_to_previous_business_day(last_day, country=country)
+    return adjust_to_previous_business_day(
+        last_day, country=country, asset_class=asset_class
+    )
 
 
 def third_last_business_day_of_month(
-    year: int,
-    month: int,
-    *,
-    country: str = 'US'
+    year: int, month: int, *, country: str = "US", asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    Return the third-last business day of that month.
-    """
-    # Starting from last business day, step backwards counting business days:
+    """Return the third-last business day of that month."""
     count = 0
-    d = last_business_day_of_month(year, month, country=country)
+    d = last_business_day_of_month(
+        year, month, country=country, asset_class=asset_class
+    )
     while True:
-        if is_business_day(d, country=country):
+        if is_business_day(d, country=country, asset_class=asset_class):
             count += 1
             if count == 3:
                 return d
@@ -136,15 +143,14 @@ def nth_business_day_of_month(
     month: int,
     n: int,
     *,
-    country: str = 'US'
+    country: str = "US",
+    asset_class: Optional[str] = None,
 ) -> datetime.date:
-    """
-    Return the nth business day of the given month (1-based).
-    """
+    """Return the nth business day of the given month (1-based)."""
     d = datetime.date(year, month, 1)
     count = 0
     while True:
-        if is_business_day(d, country=country):
+        if is_business_day(d, country=country, asset_class=asset_class):
             count += 1
             if count == n:
                 return d
@@ -155,34 +161,22 @@ def business_days_before(
     ref_date: datetime.date,
     n: int,
     *,
-    country: str = 'US'
+    country: str = "US",
+    asset_class: Optional[str] = None,
 ) -> datetime.date:
-    """
-    Return the date that is `n` business days before `ref_date`.
-    For example, if n=1, returns the prior business day.
-    """
+    """Return the date that is `n` business days before `ref_date`."""
     d = ref_date - datetime.timedelta(days=1)
     count = 0
     while True:
-        if is_business_day(d, country=country):
+        if is_business_day(d, country=country, asset_class=asset_class):
             count += 1
             if count == n:
                 return d
         d -= datetime.timedelta(days=1)
 
 
-def nth_weekday_of_month(
-    year: int,
-    month: int,
-    weekday: int,
-    n: int
-) -> datetime.date:
-    """
-    Return the date of the nth occurrence of `weekday` in that month.
-    `weekday`: Monday=0 … Sunday=6. `n` is 1-based.
-    E.g. for 3rd Friday: weekday=4, n=3.
-    """
-    # Start from the first day of the month:
+def nth_weekday_of_month(year: int, month: int, weekday: int, n: int) -> datetime.date:
+    """Return the date of the nth occurrence of `weekday` in that month."""
     d = datetime.date(year, month, 1)
     count = 0
     while True:
@@ -192,177 +186,172 @@ def nth_weekday_of_month(
                 return d
         d += datetime.timedelta(days=1)
         if d.month != month:
-            raise ValueError(f"Month {month}/{year} has fewer than {n} occurrences of weekday {weekday}.")
+            raise ValueError(
+                f"Month {month}/{year} has fewer than {n} occurrences of weekday {weekday}."
+            )
 
 
 # -----------------------------------------------------------------------------
-# 5. RULE-BY-RULE IMPLEMENTATIONS
+# 6. RULE-BY-RULE IMPLEMENTATIONS
 # -----------------------------------------------------------------------------
+
 
 def _rule_last_business_day_contract_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the last business day of the contract month."""
-    return last_business_day_of_month(year, month, country='US')
+    return last_business_day_of_month(
+        year, month, country="US", asset_class=asset_class
+    )
 
 
 def _rule_third_last_business_day_contract_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the third-last business day of the contract month."""
-    return third_last_business_day_of_month(year, month, country='US')
+    return third_last_business_day_of_month(
+        year, month, country="US", asset_class=asset_class
+    )
 
 
 def _rule_seven_business_days_prior_last_bus_day(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates 7 business days prior to the last business day of the contract month."""
-    last_bd = last_business_day_of_month(year, month, country='US')
-    return business_days_before(last_bd, 7, country='US')
+    last_bd = last_business_day_of_month(
+        year, month, country="US", asset_class=asset_class
+    )
+    return business_days_before(last_bd, 7, country="US", asset_class=asset_class)
 
 
 def _rule_tenth_business_day_contract_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the 10th business day of the contract month."""
-    return nth_business_day_of_month(year, month, 10, country='US')
+    return nth_business_day_of_month(
+        year, month, 10, country="US", asset_class=asset_class
+    )
 
 
 def _rule_last_business_day_prior_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the last business day of the month prior to the contract month."""
     prev_year, prev_month = prior_month(year, month)
-    return last_business_day_of_month(prev_year, prev_month, country='US')
+    return last_business_day_of_month(
+        prev_year, prev_month, country="US", asset_class=asset_class
+    )
 
 
 def _rule_third_last_business_day_prior_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the third-last business day of the month prior to the contract month."""
     prev_year, prev_month = prior_month(year, month)
-    return third_last_business_day_of_month(prev_year, prev_month, country='US')
+    return third_last_business_day_of_month(
+        prev_year, prev_month, country="US", asset_class=asset_class
+    )
 
 
 def _rule_third_friday_contract_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the 3rd Friday of the contract month."""
     raw = nth_weekday_of_month(year, month, weekday=4, n=3)  # Friday=4
-    return adjust_to_previous_business_day(raw, country='US')
+    return adjust_to_previous_business_day(raw, country="US", asset_class=asset_class)
 
 
 def _rule_one_bus_day_prior_third_wed(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates 1 business day prior to the third Wednesday of the contract month."""
     third_wed = nth_weekday_of_month(year, month, weekday=2, n=3)  # Wednesday=2
-    raw = business_days_before(third_wed, 1, country='US')
-    return raw  # already a business day
+    return business_days_before(third_wed, 1, country="US", asset_class=asset_class)
 
 
 def _rule_two_bus_days_prior_third_wed(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates 2 business days prior to the third Wednesday of the contract month."""
     third_wed = nth_weekday_of_month(year, month, weekday=2, n=3)  # Wednesday=2
-    raw = business_days_before(third_wed, 2, country='US')
-    return raw
+    return business_days_before(third_wed, 2, country="US", asset_class=asset_class)
 
 
 def _rule_three_bus_days_before_25th_prior_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    Trading terminates 3 business days before the 25th calendar day of the month prior.
-    If the 25th is NOT a business day, trading terminates 4 business days before the 25th
-    of the prior month.
-    """
-    # Determine prior‐month and year:
+    """Trading terminates 3 business days before the 25th of the prior month, or 4 if 25th is not a business day."""
     prev_year, prev_month = prior_month(year, month)
-
     d25 = datetime.date(prev_year, prev_month, 25)
-    if is_business_day(d25, country='US'):
-        # 3 business days before:
-        return business_days_before(d25, 3, country='US')
+    if is_business_day(d25, country="US", asset_class=asset_class):
+        return business_days_before(d25, 3, country="US", asset_class=asset_class)
     else:
-        # 4 business days before:
-        return business_days_before(d25, 4, country='US')
+        return business_days_before(d25, 4, country="US", asset_class=asset_class)
 
 
 def _rule_four_bus_days_before_25th_prior_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    Trading terminates 4 business days before the 25th calendar day of the month prior.
-    If the 25th is NOT a business day, trading terminates 5 business days before the 25th.
-    """
-    # Determine prior‐month and year:
+    """Trading terminates 4 business days before the 25th of the prior month, or 5 if 25th is not a business day."""
     prev_year, prev_month = prior_month(year, month)
-
     d25 = datetime.date(prev_year, prev_month, 25)
-    if is_business_day(d25, country='US'):
-        return business_days_before(d25, 4, country='US')
+    if is_business_day(d25, country="US", asset_class=asset_class):
+        return business_days_before(d25, 4, country="US", asset_class=asset_class)
     else:
-        return business_days_before(d25, 5, country='US')
+        return business_days_before(d25, 5, country="US", asset_class=asset_class)
 
 
 def _rule_business_day_prior_15th(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """Trading terminates on the business day prior to the 15th day of the contract month."""
     d15 = datetime.date(year, month, 15)
-    return business_days_before(d15, 1, country='US')
+    return business_days_before(d15, 1, country="US", asset_class=asset_class)
+
+
+def _rule_bz_pre2016(
+    year: int, month: int, asset_class: Optional[str] = None
+) -> datetime.date:
+    """
+    Compute the last trading day for Brent Last Day Financial Futures
+    under the pre-2016 rule (business day prior to the 15th calendar day
+    before the contract month).
+    """
+    contract_start = datetime.date(year, month, 1)
+    d15 = contract_start - datetime.timedelta(days=15)
+    last_trading_day = business_days_before(
+        d15, 1, country="UK", asset_class=asset_class
+    )
+
+    return last_trading_day
 
 
 def _rule_feb_london_special(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    - If contract month is February: trading terminates on the 2nd-last London business day
-      of (month – 2).
-    - Otherwise: trading terminates on the last London business day of (month – 2).
-    """
-    prev_year, prev_month = prior_month(*prior_month(year, month)) # 2 months prior
+    """Special rule for February and other months using London business days."""
+    # ----------  Historical cut-over  ----------
+    if (year < 2016) or (year == 2016 and month <= 2):
+        return _rule_bz_pre2016(year, month, asset_class=asset_class)
 
+    prev_year, prev_month = prior_month(*prior_month(year, month))
     if month == 2:
-        # 2nd-last London business day of prev_month:
-        last_ld = last_business_day_of_month(prev_year, prev_month, country='UK')
-        # step backwards to find the 2nd last:
-        return business_days_before(last_ld, 1, country='UK')
+        last_ld = last_business_day_of_month(
+            prev_year, prev_month, country="UK", asset_class=asset_class
+        )
+        return business_days_before(last_ld, 1, country="UK", asset_class=asset_class)
     else:
-        # last London business day of prev_month:
-        return last_business_day_of_month(prev_year, prev_month, country='UK')
+        return last_business_day_of_month(
+            prev_year, prev_month, country="UK", asset_class=asset_class
+        )
 
 
 def _rule_last_thursday_special(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """
-    Trading terminates on the last Thursday of the contract month, subject to:
-      - If that Thursday or any of the four prior weekdays 
-        is NOT a business day, move back by 7 days and re‐check.
-      - Exception: For November contracts, terminates on the Thursday prior to
-        Thanksgiving Day (which is the 4th Thursday of Nov). Then apply the
-        same “preceded by a business day” rule.
-    """
+    """Trading terminates on the last Thursday with specific conditions."""
+
     def _find_last_thursday(y: int, m: int) -> datetime.date:
-        # Find the last Thursday of (y,m):
-        # Start from the last day of month, go backward until weekday == Thursday(3).
         if m == 12:
             cand = datetime.date(y, 12, 31)
         else:
@@ -371,69 +360,72 @@ def _rule_last_thursday_special(
             cand -= datetime.timedelta(days=1)
         return cand
 
-    def _check_previous_n_weekdays(cand: datetime.date, n: int, country_code: str) -> bool:
-        """
-        Check if the given date `cand` and the prior `n` calendar weekdays
-        are all business days in the specified country.
-        """
-        if not is_business_day(cand, country=country_code):
+    def _check_previous_n_weekdays(
+        cand: datetime.date, n: int, country_code: str
+    ) -> bool:
+        if not is_business_day(cand, country=country_code, asset_class=asset_class):
             return False
-        
         needed = n
         d = cand - datetime.timedelta(days=1)
-
         while needed > 0:
             if d.weekday() < 5:
-                if not is_business_day(d, country=country_code):
+                if not is_business_day(
+                    d, country=country_code, asset_class=asset_class
+                ):
                     return False
                 needed -= 1
             d -= datetime.timedelta(days=1)
         return True
 
-    def _previous_clean_thursday(cand: datetime.date, country_code: str) -> datetime.date:
-        """
-        Given a Thursday candidate, check if it AND the prior 4 calendar‐day weekdays
-        are all business days. If not, step back by 7 days and try again, cheking only
-        the previous one weekday.
-        """
+    def _previous_clean_thursday(
+        cand: datetime.date, country_code: str
+    ) -> datetime.date:
         if not _check_previous_n_weekdays(cand, 4, country_code):
             cand -= datetime.timedelta(days=7)
-            # Step back by 7 days and recheck:
             while not _check_previous_n_weekdays(cand, 1, country_code):
                 cand -= datetime.timedelta(days=7)
-                
         return cand
 
-    # If November rule:
     if month == 11:
-        # Thanksgiving = 4th Thursday of November:
         thanksgiving = nth_weekday_of_month(year, 11, weekday=3, n=4)
-        cand = thanksgiving - datetime.timedelta(days=7)  # Thursday prior
-        return _previous_clean_thursday(cand, country_code='US')
-
-    # For all other months:
+        cand = thanksgiving - datetime.timedelta(days=7)
+        return _previous_clean_thursday(cand, country_code="US")
     raw_last_thu = _find_last_thursday(year, month)
-    return _previous_clean_thursday(raw_last_thu, country_code='US')
+    return _previous_clean_thursday(raw_last_thu, country_code="US")
 
 
 def _rule_thursday_prior_second_friday_con_month(
-    year: int,
-    month: int
+    year: int, month: int, asset_class: Optional[str] = None
+) -> datetime.date:
+    """Trading terminates on the Thursday prior to the second Friday of the contract month."""
+    second_friday = nth_weekday_of_month(year, month, weekday=4, n=2)  # Friday=4
+    raw_thursday = second_friday - datetime.timedelta(days=1)
+    return adjust_to_previous_business_day(
+        raw_thursday, country="US", asset_class=asset_class
+    )
+
+
+def _rule_first_business_day_after_first_friday(
+    year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
     """
-    Trading terminates on the Thursday prior to the second Friday of the contract month.
+    “First business day after the first Friday of the contract month.”
+    1. Find the first Friday in that month/year.
+    2. Advance one calendar day, then loop forward until you hit a business day.
     """
-    # Find the second Friday of the month:
-    second_friday = nth_weekday_of_month(year, month, weekday=4, n=2)  # Friday=4
-    # Step back to the prior Thursday:
-    raw_thursday = second_friday - datetime.timedelta(days=1)
+    # 1. Compute the first Friday (weekday=4) of the given month/year:
+    first_friday = nth_weekday_of_month(year, month, weekday=4, n=1)
 
-    # Check if that Thursday is a business day:
-    return adjust_to_previous_business_day(raw_thursday, country='US')
+    # 2. Move to the next calendar day, then skip weekends/holidays:
+    d = first_friday + datetime.timedelta(days=1)
+    while not is_business_day(d, country="US", asset_class=asset_class):
+        d += datetime.timedelta(days=1)
+
+    return d
 
 
 # -----------------------------------------------------------------------------
-# 6. DISPATCHER FUNCTION
+# 7. DISPATCHER FUNCTION
 # -----------------------------------------------------------------------------
 
 _RULE_HANDLERS = {
@@ -452,21 +444,17 @@ _RULE_HANDLERS = {
     ExpirationRule.FEB_LONDON_SPECIAL_RULE: _rule_feb_london_special,
     ExpirationRule.LAST_THURSDAY_SPECIAL_RULE: _rule_last_thursday_special,
     ExpirationRule.THURSDAY_PRIOR_SECOND_FRIDAY_CON_MONTH: _rule_thursday_prior_second_friday_con_month,
+    ExpirationRule.FIRST_BUSINESS_DAY_AFTER_FIRST_FRIDAY: _rule_first_business_day_after_first_friday,
 }
 
 
 def calculate_expiration(
-    month_code: str,
-    rule: ExpirationRule,
-    asset_class: Optional[str] = None
+    month_code: str, rule: ExpirationRule, asset_class: Optional[str] = None
 ) -> datetime.date:
     """
     Given a futures-month code (e.g. "G15" meaning Feb 2015) and a rule,
-    return the expiration date according to that rule.
-
-    Assumes two-digit year → 2000 + year. Adjust if needed for other centuries.
+    return the expiration date according to that rule, adjusted for asset class holidays.
     """
-    # 1) Parse the code:
     if len(month_code) < 2:
         raise ValueError(f"Invalid month code: {month_code}")
 
@@ -477,11 +465,10 @@ def calculate_expiration(
 
     month = FUTURES_MONTH_CODES[mon_letter]
     yy = int(year_digits)
-    year = 2000 + yy  # NOTE: adjust logic if you need a century‐rollover rule
+    year = 2000 + yy
 
-    # 2) Dispatch to the correct rule implementation:
     handler = _RULE_HANDLERS.get(rule)
     if handler:
-        return handler(year, month)
+        return handler(year, month, asset_class=asset_class)
     else:
         raise NotImplementedError(f"Rule {rule} not implemented.")

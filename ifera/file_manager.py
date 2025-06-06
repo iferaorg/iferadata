@@ -259,10 +259,7 @@ class FileOperations:
             return self.exists_cache[file]
 
         parts = urlparse(file)
-        try:
-            scheme = Scheme(parts.scheme)
-        except ValueError:
-            raise ValueError(f"Unsupported scheme: {parts.scheme}")
+        scheme = Scheme(parts.scheme)
 
         if scheme == Scheme.FILE:
             result = os.path.exists(parts.path)
@@ -483,7 +480,7 @@ class FileManager:
                         wildcards,
                         rule_type,
                     )
-            
+
                 break
 
     def is_up_to_date(self, file: str) -> bool:
@@ -621,14 +618,14 @@ class FileManager:
         # -------------------------------------------------
         # 2.  Build *dynamic* list-type arguments (list_args)
         # -------------------------------------------------
-        if list_args_spec:          # Only present on a few rules
+        if list_args_spec:  # Only present on a few rules
             for arg_name, wildcard_key in list_args_spec.items():
                 values: list[str] = []
                 graph = self.get_graph(rule_type)
                 for dep in graph.successors(file):
                     dep_wc = graph.nodes[dep].get("wildcards", {})
                     val = dep_wc.get(wildcard_key)
-                    if val is not None and val not in values:   # keep order, avoid dups
+                    if val is not None and val not in values:  # keep order, avoid dups
                         values.append(val)
 
                 if not values:
@@ -667,7 +664,7 @@ class FileManager:
         """Get parameters for a node in the graph."""
         graph = self.get_graph(rule_type)
         self.build_subgraph(file, rule_type)
-        
+
         if file not in graph:
             raise ValueError(f"File {file} not found in {rule_type.value} graph")
 
@@ -680,9 +677,12 @@ class FileManager:
             params.update(additional_args)
 
         return params
-    
+
     def dependencies_max_last_modified(
-        self, file: str, rule_type: RuleType = RuleType.DEPENDENCY, scheme_filter: Optional[Scheme] = None
+        self,
+        file: str,
+        rule_type: RuleType = RuleType.DEPENDENCY,
+        scheme_filter: Optional[Scheme] = None,
     ) -> datetime.datetime | None:
         """Get the maximum last modified time of all dependencies."""
         self.build_subgraph(file, rule_type)
@@ -697,10 +697,7 @@ class FileManager:
         for dep in graph.successors(file):
             if scheme_filter:
                 parts = urlparse(dep)
-                try:
-                    scheme = Scheme(parts.scheme)
-                except ValueError:
-                    raise ValueError(f"Unsupported scheme: {parts.scheme}")
+                scheme = Scheme(parts.scheme)
 
                 if scheme != scheme_filter:
                     continue

@@ -24,120 +24,167 @@ instruments:
     description: E-mini S&P 500
     contractMultiplier: 50
     tickSize: 0.25
+    lastTradeDayRule: THIRD_FRIDAY_CONTRACT_MONTH
+    assetClass: Equities
   NQ:
     template: us_futures
     symbol: NQ
     description: E-mini Nasdaq 100
     contractMultiplier: 20
     tickSize: 0.25
+    lastTradeDayRule: THIRD_FRIDAY_CONTRACT_MONTH
+    assetClass: Equities
   CL:
     template: us_futures
     symbol: CL
     description: Light Sweet Crude Oil
     contractMultiplier: 1000
     tickSize: 0.01
+    lastTradeDayRule: THREE_BUSINESS_DAYS_BEFORE_25TH_PRIOR_MONTH
+    assetClass: Energy
   GC:
     template: us_futures
     symbol: GC
     description: Gold
     contractMultiplier: 100
     tickSize: 0.1
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Metals
   YM:
     template: us_futures
     symbol: YM
     description: E-mini Dow Jones
     contractMultiplier: 5
     tickSize: 1.0
+    lastTradeDayRule: THIRD_FRIDAY_CONTRACT_MONTH
+    assetClass: Equities
   EU:
     template: us_futures
     symbol: EU
     description: Euro FX
     contractMultiplier: 125000
     tickSize: 0.00005
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   JY:
     template: us_futures
     symbol: JY
     description: Japanese Yen
     contractMultiplier: 12500000
     tickSize: 0.0000005
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   AD:
     template: us_futures
     symbol: AD
     description: Australian Dollar
     contractMultiplier: 100000
     tickSize: 0.00005
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   RTY:
     template: us_futures
     symbol: RTY
     description: E-mini Russell 2000
     contractMultiplier: 50
     tickSize: 0.1
+    lastTradeDayRule: THIRD_FRIDAY_CONTRACT_MONTH
+    assetClass: Equities
   HG:
     template: us_futures
     symbol: HG
     description: Copper
     contractMultiplier: 25000
     tickSize: 0.0005
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Metals
   BP:
     template: us_futures
     symbol: BP
     description: British Pound
     contractMultiplier: 62500
     tickSize: 0.0001
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   SI:
     template: us_futures
     symbol: SI
     description: Silver
     contractMultiplier: 5000
     tickSize: 0.005
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH 
+    assetClass: Metals
   TY:
     template: us_futures
     symbol: TY
     description: 10-Year T-Note
     contractMultiplier: 1000
     tickSize: 0.015625
+    lastTradeDayRule: SEVEN_BUSINESS_DAYS_PRIOR_LAST_BUS_DAY
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Interest Rate
   CD:
     template: us_futures
     symbol: CD
     description: Canadian Dollar
     contractMultiplier: 100000
     tickSize: 0.00005
+    lastTradeDayRule: ONE_BUSINESS_DAY_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   FV:
     template: us_futures
     symbol: FV
     description: 5-Year T-Note
     contractMultiplier: 1000
     tickSize: 0.0078125
+    lastTradeDayRule: LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Interest Rate
   NG:
     template: us_futures
     symbol: NG
     description: Natural Gas
     contractMultiplier: 10000
     tickSize: 0.001
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Energy
   US:
     template: us_futures
     symbol: US
     description: 30-Year T-Bond
     contractMultiplier: 1000
     tickSize: 0.03125
+    lastTradeDayRule: SEVEN_BUSINESS_DAYS_PRIOR_LAST_BUS_DAY
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Interest Rate
   HO:
     template: us_futures
     symbol: HO
     description: Heating Oil
     contractMultiplier: 42000
     tickSize: 0.0001
+    lastTradeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Energy
   SF:
     template: us_futures
     symbol: SF
     description: Swiss Franc
     contractMultiplier: 125000
     tickSize: 0.00005
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   PL:
     template: us_futures
     symbol: PL
     description: Platinum
     contractMultiplier: 50
     tickSize: 0.1
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Metals
   UB:
     template: us_futures
     symbol: UB
@@ -145,30 +192,41 @@ instruments:
     contractMultiplier: 1000
     tickSize: 0.03125
     startDate: "2011-11-03"
+    lastTradeDayRule: SEVEN_BUSINESS_DAYS_PRIOR_LAST_BUS_DAY
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Interest Rate
   RB:
     template: us_futures
     symbol: RB
     description: RBOB Gasoline
     contractMultiplier: 42000
     tickSize: 0.0001
+    lastTradeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Energy
   NE:
     template: us_futures
     symbol: NE
     description: New Zealand Dollar
     contractMultiplier: 100000
     tickSize: 0.00005
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   M6E:
     template: us_futures
     symbol: M6E
     description: E-micro Euro FX
     contractMultiplier: 12500
     tickSize: 0.0001
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   QM:
     template: us_futures
     symbol: QM
     description: E-mini Crude Oil
     contractMultiplier: 500
     tickSize: 0.025
+    lastTradeDayRule: FOUR_BUSINESS_DAYS_BEFORE_25TH_PRIOR_MONTH
+    assetClass: Energy
   MGC:
     template: us_futures
     symbol: MGC
@@ -176,30 +234,42 @@ instruments:
     contractMultiplier: 10
     tickSize: 0.1
     startDate: "2011-04-04"
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    assetClass: Metals
   S:
     template: us_futures
     symbol: S
     description: Soybean
     contractMultiplier: 5000
-    tickSize: 1.0
+    tickSize: 0.0025
+    lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Agriculture
   TU:
     template: us_futures
     symbol: TU
     description: 2-Year T-Note
     contractMultiplier: 2000
     tickSize: 0.00390625
+    lastTradeDayRule: LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Interest Rate
   PX:
     template: us_futures
     symbol: PX
     description: Mexican Peso
     contractMultiplier: 500000
     tickSize: 0.00001
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   EMD:
     template: us_futures
     symbol: EMD
     description: E-mini S&P MidCap 400
     contractMultiplier: 100
     tickSize: 0.1
+    lastTradeDayRule: THIRD_FRIDAY_CONTRACT_MONTH
+    assetClass: Equities
   NKD:
     template: us_futures
     symbol: NKD
@@ -207,24 +277,34 @@ instruments:
     contractMultiplier: 5
     tickSize: 5.0
     startDate: "2010-12-10"
+    lastTradeDayRule: THURSDAY_PRIOR_SECOND_FRIDAY_CON_MONTH
+    assetClass: Equities
   W:
     template: us_futures
     symbol: W
     description: Wheat
     contractMultiplier: 5000
     tickSize: 0.0025
+    lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Agriculture
   ME:
     template: us_futures
     symbol: ME
     description: E-mini Euro FX
     contractMultiplier: 62500
     tickSize: 0.0001
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   C:
     template: us_futures
     symbol: C
     description: Corn
     contractMultiplier: 5000
     tickSize: 0.0025
+    lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Agriculture
   TN:
     template: us_futures
     symbol: TN
@@ -232,12 +312,18 @@ instruments:
     contractMultiplier: 1000
     tickSize: 0.015625
     startDate: "2016-10-02"
+    lastTradeDayRule: SEVEN_BUSINESS_DAYS_PRIOR_LAST_BUS_DAY
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Interest Rate
   BO:
     template: us_futures
     symbol: BO
     description: Soybean Oil
     contractMultiplier: 60000
     tickSize: 0.0001
+    lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Agriculture
   BZ:
     template: us_futures
     symbol: BZ
@@ -245,6 +331,8 @@ instruments:
     contractMultiplier: 1000
     tickSize: 0.01
     startDate: "2013-05-06"
+    lastTradeDayRule: FEB_LONDON_SPECIAL_RULE
+    assetClass: Energy
   M6A:
     template: us_futures
     symbol: M6A
@@ -252,42 +340,58 @@ instruments:
     contractMultiplier: 10000
     tickSize: 0.0001
     startDate: "2010-07-01"
+    lastTradeDayRule: TWO_BUSINESS_DAYS_PRIOR_THIRD_WEDNESDAY
+    assetClass: FX
   SM:
     template: us_futures
     symbol: SM
     description: Soybean Meal
     contractMultiplier: 100
     tickSize: 0.1
+    lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Agriculture
   VX:
     template: us_futures
     symbol: VX
     description: VIX
     contractMultiplier: 1000
     tickSize: 0.05
+    assetClass: Equities
   PA:
     template: us_futures
     symbol: PA
     description: Palladium
     contractMultiplier: 100
     tickSize: 0.5
+    lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
+    assetClass: Metals
   HE:
     template: us_futures
     symbol: HE
     description: Lean Hogs
     contractMultiplier: 40000
     tickSize: 0.00025
+    lastTradeDayRule: TENTH_BUSINESS_DAY_CONTRACT_MONTH
+    assetClass: Agriculture
   LE:
     template: us_futures
     symbol: LE
     description: Live Cattle
     contractMultiplier: 40000
     tickSize: 0.00025
+    lastTradeDayRule: LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: FIRST_BUSINESS_DAY_AFTER_FIRST_FRIDAY
+    assetClass: Agriculture
   GF:
     template: us_futures
     symbol: GF
     description: Feeder Cattle
     contractMultiplier: 50000
     tickSize: 0.00025
+    lastTradeDayRule: LAST_THURSDAY_SPECIAL_RULE
+    assetClass: Agriculture
   IBM:
     symbol: IBM
     description: IBM

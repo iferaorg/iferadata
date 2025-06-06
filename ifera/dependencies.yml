@@ -20,8 +20,6 @@ dependency_rules:
   - dependent: "s3:meta/futures/dates/{symbol}.yml"
     depends_on:
       - "s3:meta/futures/dates_raw/{symbol}.yml"
-      - pattern: "s3:tensor/futures_individual/30m/{symbol}-{contract_code}.pt"
-        wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
 
   # Raw -> Processed
   - dependent: "s3:processed/{type}/{interval}/{symbol}.zip"
@@ -63,8 +61,6 @@ refresh_rules:
   - dependent: "file:data/meta/futures/dates/{symbol}.yml"
     depends_on:
       - "file:data/meta/futures/dates_raw/{symbol}.yml"
-      - pattern: "file:data/tensor/futures_individual/30m/{symbol}-{contract_code}.pt"
-        wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
     refresh_function:
       name: "ifera.file_refresh.process_futures_metadata"
 

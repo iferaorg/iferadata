@@ -264,13 +264,6 @@ IBKR:
       commission: 3.0
       minSlippage: 0.1
       referencePrice: 310.0
-    VX:
-      instrumentSymbol: VX
-      brokerSymbol: VIX
-      margin: 9781
-      commission: 2.38
-      minSlippage: 0.05
-      referencePrice: 20.0
     PA:
       instrumentSymbol: PA
       brokerSymbol: PA
@@ -578,3 +571,13 @@ MISSING:
     slippage: 0.0
     minSlippage: 5.0
     referencePrice: 3900.0
+  VX:
+    instrumentSymbol: VX
+    brokerSymbol: VIX
+    margin: 9781
+    commission: 2.38
+    minCommission: 0.0
+    maxCommissionPct: 0.0
+    slippage: 0.0
+    minSlippage: 0.05
+    referencePrice: 20.0
