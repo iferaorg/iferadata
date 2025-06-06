@@ -428,7 +428,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             for stage in stage_list:
                 if stage not in processed and parent_dict[stage] in processed:
                     parent_config = config_dict[parent_dict[stage]]
-                    derived_config = config_manager.create_derived_config(
+                    derived_config = config_manager.create_derived_base_config(
                         parent_config, stage
                     )
                     config_dict[stage] = derived_config
@@ -444,7 +444,6 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self.derived_data = [
             data_manager.get_instrument_data(
                 config,
-                zipfile=True,
                 dtype=instrument_data.dtype,
                 device=instrument_data.device,
             )
@@ -605,5 +604,214 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         # Update the full state with the modified subset
         self.stage[batch_indices] = current_stage
         self.base_price[batch_indices] = current_base_price
+
+        return action, stop_loss
+
+
+class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
+    """
+    A position maintenance policy that adjusts stop-loss levels to maintain a fixed percentage of unrealized gains.
+
+    This policy operates in two stages:
+    - **Stage 1**: Waits until the price moves N ATR into profit, using ArtrStopLossPolicy.
+            Transitions to Stage 2 when the ATR-based stop-loss exceeds the entry price (higher for long, lower for short).
+    - **Stage 2**: Sets the stop-loss to retain a fixed percentage of unrealized gains relative to an anchor price, acting as a trailing stop.
+
+    Attributes:
+        instrument_data (InstrumentData): Financial instrument data.
+        stage1_atr_multiple (float): ATR multiple for Stage 1 stop-loss calculation.
+        trailing_stop (bool): Whether to adjust stop-loss as a trailing stop in Stage 1.
+        skip_stage1 (bool): If True, skips Stage 1 and starts at Stage 2.
+        keep_percent (float): Percentage of unrealized gains to retain (0 < keep_percent < 1).
+        anchor_type (str): Anchor price type ("entry", "initial_stop", "artificial", "last_stage1_stop", "artificial_stage2").
+        artr_policy (ArtrStopLossPolicy): Policy for ATR-based stop-loss in Stage 1.
+        stage (torch.Tensor): Current stage per batch element (0 = Stage 1, 1 = Stage 2).
+        anchor (torch.Tensor): Anchor price per batch element for Stage 2 calculations.
+    """
+
+    def __init__(
+        self,
+        instrument_data: InstrumentData,
+        stage1_atr_multiple: float,
+        trailing_stop: bool,
+        skip_stage1: bool,
+        keep_percent: float,
+        anchor_type: str,
+    ) -> None:
+        super().__init__()
+        # Validate anchor_type and conditions
+        if anchor_type not in [
+            "entry",
+            "initial_stop",
+            "artificial",
+            "last_stage1_stop",
+            "artificial_stage2",
+        ]:
+            raise ValueError("Invalid anchor_type")
+        if anchor_type in ["last_stage1_stop", "artificial_stage2"] and (
+            skip_stage1 or not trailing_stop
+        ):
+            raise ValueError(
+                "anchor_type 'last_stage1_stop' and 'artificial_stage2' require skip_stage1=False and trailing_stop=True"
+            )
+        if anchor_type in ["artificial", "artificial_stage2"] and not (
+            0 < keep_percent < 1
+        ):
+            raise ValueError(
+                "keep_percent must be between 0 and 1 for 'artificial' and 'artificial_stage2' anchor_types"
+            )
+
+        self.instrument_data = instrument_data
+        self.trailing_stop = trailing_stop
+        self.skip_stage1 = skip_stage1
+        self.keep_percent = keep_percent
+        self.anchor_type = anchor_type
+        self.artr_policy = ArtrStopLossPolicy(instrument_data, stage1_atr_multiple)
+
+        # Initialize state tensors (populated in reset)
+        self.stage = torch.tensor(())
+        self.anchor = torch.tensor(())
+
+    def reset(self, mask: torch.Tensor) -> None:
+        """
+        Reset the policy's state for specified batch elements.
+
+        Args:
+            mask (torch.Tensor): Boolean tensor where True indicates batches to reset.
+        """
+        if self.stage.shape[0] == 0:
+            device = self.instrument_data.device
+            dtype = self.instrument_data.dtype
+            batch_size = mask.shape[0]
+            initial_stage = 1 if self.skip_stage1 else 0
+            self.stage = torch.full(
+                (batch_size,), initial_stage, dtype=torch.long, device=device
+            )
+            self.anchor = torch.full(
+                (batch_size,), float("nan"), dtype=dtype, device=device
+            )
+        else:
+            initial_stage = 1 if self.skip_stage1 else 0
+            self.stage[mask] = initial_stage
+            self.anchor[mask] = float("nan")
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+        batch_indices: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute actions and stop-loss levels based on the current state.
+
+        Args:
+            date_idx (torch.Tensor): Batch of date indices.
+            time_idx (torch.Tensor): Batch of time indices.
+            position (torch.Tensor): Current positions (non-zero).
+            prev_stop (torch.Tensor): Previous stop-loss levels.
+            entry_price (torch.Tensor): Entry prices for positions.
+            batch_indices (torch.Tensor): Indices of batch elements to process.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
+                - action: Always zero (no new positions opened).
+                - stop_loss: Updated stop-loss levels.
+        """
+        if self.stage.shape[0] == 0 or batch_indices.max() >= self.stage.shape[0]:
+            raise ValueError(
+                "Policy state not initialized or batch indices out of range. Call reset first."
+            )
+
+        # Initialize outputs: no new actions, start with previous stop-loss
+        action = torch.zeros_like(position)
+        stop_loss = prev_stop.clone()
+
+        # Get current state for the batch
+        current_stage = self.stage[batch_indices]
+
+        # Set anchor for certain anchor_types on first call
+        first_call_mask = torch.isnan(self.anchor[batch_indices])
+        set_anchor_mask = first_call_mask & (
+            self.anchor_type in ["entry", "initial_stop", "artificial"]
+        )
+        if set_anchor_mask.any():
+            subset = set_anchor_mask
+            indices = batch_indices[subset]
+            if self.anchor_type == "entry":
+                self.anchor[indices] = entry_price[subset]
+            elif self.anchor_type == "initial_stop":
+                self.anchor[indices] = prev_stop[subset]
+            elif self.anchor_type == "artificial":
+                reference_channel = torch.where(
+                    position[subset] > 0, 1, 2
+                )  # 1 for high, 2 for low
+                reference_price = self.instrument_data.data[
+                    date_idx[subset], time_idx[subset], reference_channel
+                ]
+                self.anchor[indices] = (
+                    prev_stop[subset] - self.keep_percent * reference_price
+                ) / (1 - self.keep_percent)
+
+        # Stage 1: ATR-based waiting period
+        stage1_mask = current_stage == 0
+        if stage1_mask.any():
+            subset = stage1_mask
+            indices = batch_indices[subset]
+            atr_stop = self.artr_policy(
+                date_idx[subset],
+                time_idx[subset],
+                position[subset],
+                torch.zeros_like(position[subset]),
+                prev_stop[subset],
+            )
+            move_to_stage2 = (position[subset] > 0) & (
+                atr_stop > entry_price[subset]
+            ) | (position[subset] < 0) & (atr_stop < entry_price[subset])
+            if move_to_stage2.any():
+                move_indices = indices[move_to_stage2]
+                if self.anchor_type == "last_stage1_stop":
+                    self.anchor[move_indices] = atr_stop[move_to_stage2]
+                elif self.anchor_type == "artificial_stage2":
+                    reference_channel = torch.where(
+                        position[subset][move_to_stage2] > 0, 1, 2
+                    )
+                    reference_price = self.instrument_data.data[
+                        date_idx[subset][move_to_stage2],
+                        time_idx[subset][move_to_stage2],
+                        reference_channel,
+                    ]
+                    self.anchor[move_indices] = (
+                        atr_stop[move_to_stage2] - self.keep_percent * reference_price
+                    ) / (1 - self.keep_percent)
+                self.stage[move_indices] = 1
+            if self.trailing_stop:
+                stop_loss[subset] = atr_stop
+
+        # Stage 2: Percent-based stop-loss
+        stage2_mask = current_stage == 1
+        if stage2_mask.any():
+            subset = stage2_mask
+            indices = batch_indices[subset]
+            anchor = self.anchor[indices]
+            # Use high for long, low for short as reference price
+            reference_channel = torch.where(position[subset] > 0, 1, 2)
+            reference_price = self.instrument_data.data[
+                date_idx[subset], time_idx[subset], reference_channel
+            ]
+            # Calculate candidate stop-loss
+            candidate_stop_loss = torch.where(
+                position[subset] > 0,
+                anchor + self.keep_percent * (reference_price - anchor),
+                anchor - self.keep_percent * (anchor - reference_price),
+            )
+            # Ensure stop-loss only tightens (trailing stop behavior)
+            stop_loss[subset] = torch.where(
+                position[subset] > 0,
+                torch.maximum(prev_stop[subset], candidate_stop_loss),
+                torch.minimum(prev_stop[subset], candidate_stop_loss),
+            )
 
         return action, stop_loss
