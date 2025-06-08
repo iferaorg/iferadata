@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 import torch
+import gzip
 from tqdm import tqdm
 
 from .config import BaseInstrumentConfig
@@ -138,7 +139,8 @@ def load_data_tensor(
 
     # Load the tensor from the local file
     file_path = make_instrument_path(source=source, instrument=instrument)
-    tensor = torch.load(str(file_path), map_location=device)
+    with gzip.open(str(file_path), "rb") as f:
+        tensor = torch.load(f, map_location=device) # type: ignore[call-arg]
     tensor = tensor.to(dtype=dtype)
     
     if strip_date_time:

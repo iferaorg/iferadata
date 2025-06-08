@@ -3,10 +3,11 @@ import pathlib as pl
 import yaml
 import datetime as dt
 import time
+import gzip
 from tqdm import tqdm
 from einops import rearrange
 from .url_utils import contract_notice_and_expiry, make_url
-from .s3_utils import download_s3_file, upload_s3_file
+from .s3_utils import download_s3_file, upload_s3_file, check_s3_file_exists
 from .data_loading import load_data
 from .data_processing import process_data
 from .config import ConfigManager
@@ -136,7 +137,9 @@ def process_tensor_file(
     # Save locally
     file_name = f"{symbol}-{contract_code}" if contract_code else symbol
     tensor_file_path = make_path(Source.TENSOR, type, interval, file_name)
-    torch.save(tensor, str(tensor_file_path))
+    
+    with gzip.open(str(tensor_file_path), "wb") as f:
+        torch.save(tensor, f) # type: ignore
 
 
 def process_futures_metadata_raw(symbol: str, contract_codes: list[str]) -> None:
@@ -168,10 +171,21 @@ def process_futures_metadata_raw(symbol: str, contract_codes: list[str]) -> None
     cm = ConfigManager()
     instrument = cm.get_config(broker_name="barchart", symbol=symbol, interval="30m")
     broker_symbol = instrument.broker_symbol
+    file_path = make_path(Source.META, "futures", "dates_raw", symbol)
+
+    s3_key = f"{Source.META.value}/futures/dates_raw/{symbol}.yml"
+
+    if check_s3_file_exists(s3_key):
+        download_s3_file(s3_key, str(file_path))
+        with open(file_path, "r", encoding="utf-8") as fh:
+            dates = yaml.safe_load(fh)
 
     print(f"Fetching contract dates for {symbol} ({broker_symbol})...")
 
     for code in tqdm(contract_codes):
+        if code in dates:
+            continue  # Skip if already processed
+
         full_symbol = f"{broker_symbol}{code}"  # e.g. "GCF10"
         first_notice, expiration = contract_notice_and_expiry(full_symbol)
 
@@ -179,8 +193,6 @@ def process_futures_metadata_raw(symbol: str, contract_codes: list[str]) -> None
             "first_notice_date": first_notice.isoformat() if first_notice else None,
             "expiration_date": expiration.isoformat() if expiration else None,
         }
-
-    file_path = make_path(Source.META, "futures", "dates_raw", symbol)
 
     with open(file_path, "w", encoding="utf-8") as fh:
         yaml.safe_dump(

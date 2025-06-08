@@ -1,6 +1,7 @@
 import re
 import datetime as dt
 from typing import Tuple, Optional
+import time
 
 import requests
 from bs4 import BeautifulSoup
@@ -55,13 +56,15 @@ def _clean_date(text: str) -> Optional[dt.date]:
     return dtparse.parse(date_str, dayfirst=False).date()
 
 
-def contract_notice_and_expiry(symbol: str) -> Tuple[Optional[dt.date], Optional[dt.date]]:
+def contract_notice_and_expiry(symbol: str, max_retries: int = 3) -> Tuple[Optional[dt.date], Optional[dt.date]]:
     """
     Parameters
     ----------
     symbol : str
         Futures contract symbol as it appears in the Barchart URL
         (e.g. ``"CLF11"`` for Crude Oil WTI Jan '11).
+    max_retries : int, optional
+        Maximum number of retries for fetching the URL (default is 3).
 
     Returns
     -------
@@ -69,11 +72,31 @@ def contract_notice_and_expiry(symbol: str) -> Tuple[Optional[dt.date], Optional
     expiration    : datetime.date or None
     """
     url = f"https://www.barchart.com/futures/quotes/{symbol}"
-    resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    # If page not found, return None for both dates
-    if resp.status_code == 404:
+    retries = 0
+    resp = None
+
+    while retries < max_retries:
+        try:
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                break
+        except requests.RequestException as e:
+            if retries == max_retries - 1:
+                raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries.") from e
+        except Exception as e:
+            if retries == max_retries - 1:
+                print(f"Unexpected error fetching {url}: {e}")
+                raise
+        retries += 1
+        if retries < max_retries:
+            time.sleep(1)  # Wait 1 second before retrying
+    else:
+        if resp is None:
+            raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries.")
+        if resp.status_code != 404:
+            print(f"Failed to fetch {url}: HTTP {resp.status_code}")
         return None, None
-    resp.raise_for_status()
+        
 
     soup = BeautifulSoup(resp.text, "html.parser")
 

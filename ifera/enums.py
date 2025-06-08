@@ -46,6 +46,6 @@ class ExpirationRule(Enum):
 extension_map = {
     Source.RAW: ".zip",
     Source.PROCESSED: ".zip",
-    Source.TENSOR: ".pt",
+    Source.TENSOR: ".pt.gz",
     Source.META: ".yml",
 }

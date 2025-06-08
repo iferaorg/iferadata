@@ -212,3 +212,28 @@ def delete_s3_file(key: str) -> None:
         raise RuntimeError(
             f"Error deleting file from S3 (bucket='{settings.S3_BUCKET}', key='{key}')"
         ) from e
+        
+        
+def rename_s3_file(old_key: str, new_key: str) -> None:
+    """
+    Rename a file in S3 by copying it to a new key and deleting the old one.
+    """
+    wrapper = S3ClientSingleton()
+    s3_client = wrapper.client
+
+    try:
+        s3_client.copy_object(
+            Bucket=settings.S3_BUCKET,
+            CopySource={"Bucket": settings.S3_BUCKET, "Key": old_key},
+            Key=new_key,
+        )
+        s3_client.delete_object(Bucket=settings.S3_BUCKET, Key=old_key)
+
+        if wrapper.cache:
+            wrapper.last_modified[new_key] = datetime.datetime.now(tz=datetime.timezone.utc)
+            wrapper.last_modified.pop(old_key, None)
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Error renaming file in S3 (bucket='{settings.S3_BUCKET}', old_key='{old_key}', new_key='{new_key}')"
+        ) from e
