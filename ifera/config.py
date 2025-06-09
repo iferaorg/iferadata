@@ -427,7 +427,9 @@ class ConfigManager:
             )
 
         # Check if we already have this derived config in the cache
-        cache_key = (parent_config.symbol, new_interval, contract_code)
+        cache_interval = new_interval if new_interval else parent_config.interval
+        cache_contract_code = contract_code if contract_code else parent_config.contract_code
+        cache_key = (parent_config.symbol, cache_interval, cache_contract_code)
         if cache_key in self._base_derived_cache:
             return self._base_derived_cache[cache_key]
 
@@ -526,11 +528,13 @@ class ConfigManager:
             )
 
         # Check if we already have this derived config in the cache
+        cache_interval = new_interval if new_interval else parent_config.interval
+        cache_contract_code = contract_code if contract_code else parent_config.contract_code
         cache_key = (
             parent_config.broker_name,
             parent_config.symbol,
-            new_interval,
-            contract_code,
+            cache_interval,
+            cache_contract_code,
         )
 
         if cache_key in self._derived_cache:
