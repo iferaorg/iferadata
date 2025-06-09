@@ -50,6 +50,9 @@ class BaseInstrumentConfig(BaseModel):
     rollover_vol_alpha: Optional[float] = Field(
         None, alias="rolloverVolAlpha", validate_default=True
     )
+    rollover_max_month_delta: Optional[int] = Field(
+        None, alias="rolloverMaxMonthDelta", validate_default=True
+    )
     last_trading_day_rule: Optional[str] = Field(
         None, alias="lastTradeDayRule", validate_default=True
     )

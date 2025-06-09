@@ -15,6 +15,7 @@ templates:
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
     rolloverTime: "15:30:00"
     rolloverVolAlpha: 0.5
+    rolloverMaxMonthDelta: 6
 
 # Instrument-specific configurations
 instruments:

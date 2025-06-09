@@ -480,6 +480,10 @@ def _forced_roll_date(instr, trading_days_ord: set[int]) -> int | None:
     else:
         anchor = min(exp_dt, fnd_dt)  # the “critical” date
 
+    if anchor > datetime.date.fromordinal(max(trading_days_ord)):
+        # If the anchor date is after the last trading day, return None
+        return None
+
     # Step back to the previous trading day actually present in the data
     prev_trade_day = _last_business_day(
         anchor - datetime.timedelta(days=1), trading_days_ord
@@ -490,7 +494,7 @@ def _forced_roll_date(instr, trading_days_ord: set[int]) -> int | None:
 def calculate_rollover(
     instruments: List[BaseInstrumentConfig],
     data: List[torch.Tensor],
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, list[int]]:
     if not instruments:
         raise ValueError("`instruments` may not be empty")
 
@@ -508,6 +512,7 @@ def calculate_rollover(
     alpha_raw = instruments[0].rollover_vol_alpha
     alpha = alpha_raw if alpha_raw is not None else 1.0
     start_ord = instruments[0].start_date.toordinal()
+    max_delta = instruments[0].rollover_max_month_delta if instruments[0].rollover_max_month_delta is not None else 12
 
     # Pre-compute: per contract  ➜  dict( ord_trade_date → (volume<15:30>, open15:30) )
     contract_day_stats: list[dict[int, tuple[float, float]]] = []
@@ -573,6 +578,8 @@ def calculate_rollover(
     first_day = all_days_ord[0]
     vols_first = [stats.get(first_day, (0.0, 0.0))[0] for stats in contract_day_stats]
     current = int(torch.tensor(vols_first).argmax().item())
+    curr_exp = instruments[current].expiration_date
+    curr_year, curr_month = curr_exp.year, curr_exp.month # type: ignore
 
     # -----------------------------------------------------------------------
     for pos, day in enumerate(all_days_ord):
@@ -588,7 +595,14 @@ def calculate_rollover(
         # Look-ahead volumes -------------------------------------------------
         fut_volumes = []
         fut_candidates = []
+        
         for j in range(current + 1, len(instruments)):
+            exp_j = instruments[j].expiration_date
+            if exp_j is None:
+                continue
+            delta_months = (exp_j.year - curr_year) * 12 + (exp_j.month - curr_month)
+            if delta_months < 1 or delta_months > max_delta:
+                continue
             vol_j, open_j = contract_day_stats[j].get(day, (0.0, float("nan")))
             if vol_j > 0:  # contract is trading on this day
                 fut_volumes.append(vol_j)
@@ -614,6 +628,8 @@ def calculate_rollover(
                 ratios[pos] = new_open / cur_open
             active_idx[pos] = target_idx
             current = target_idx
+            curr_exp = instruments[current].expiration_date
+            curr_year, curr_month = curr_exp.year, curr_exp.month # type: ignore
 
-    return ratios, active_idx
+    return ratios, active_idx, all_days_ord
 
