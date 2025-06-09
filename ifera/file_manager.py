@@ -14,24 +14,7 @@ from .enums import Scheme
 from .settings import settings
 from .decorators import singleton
 from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
-
-# Initialize GitHub client (using singleton pattern to avoid multiple instances)
-_github_client = None
-
-
-def get_github_client() -> Github:
-    """Get or create a GitHub client instance."""
-    global _github_client
-    if _github_client is None:
-        # Use token from settings if available, otherwise unauthenticated
-        token = settings.GITHUB_TOKEN
-        if token:
-            _github_client = Github(token)
-        else:
-            # Note: unauthenticated has stricter rate limits
-            _github_client = Github()
-    return _github_client
-
+from .github_utils import check_github_file_exists, get_github_last_modified
 
 # Helper Functions
 
@@ -217,31 +200,6 @@ def partial_substitute_pattern(pattern: str, wildcards: Dict[str, str]) -> str:
     return re.sub(r"\{(\w+)\}", replacer, pattern)
 
 
-def parse_github_url(url: str) -> Tuple[str, str, str]:
-    """Parse a GitHub URL into owner, repo, and path components.
-
-    Format: github://owner/repo/path/to/file.ext
-    """
-    parts = urlparse(url)
-
-    if parts.scheme != "github":
-        raise ValueError(f"Not a GitHub URL: {url}")
-
-    # Split the path, removing leading slash
-    path_parts = parts.path.split("/", 2)
-
-    if len(path_parts) < 3:
-        raise ValueError(
-            f"Invalid GitHub URL format: {url}. Expected github://owner/repo/path/to/file"
-        )
-
-    owner = path_parts[0]
-    repo = path_parts[1]
-    file_path = path_parts[2]
-
-    return owner, repo, file_path
-
-
 class FileOperations:
     """Abstract file operations for different storage systems."""
 
@@ -266,23 +224,7 @@ class FileOperations:
         elif scheme == Scheme.S3:
             result = check_s3_file_exists(parts.path)
         elif scheme == Scheme.GITHUB:
-            try:
-                owner, repo_name, path = parse_github_url(file)
-                g = get_github_client()
-                repo = g.get_repo(f"{owner}/{repo_name}")
-
-                # Try to get the file contents to check existence
-                try:
-                    repo.get_contents(path)
-                    result = True
-                except GithubException as e:
-                    if e.status == 404:  # File not found
-                        result = False
-                    else:
-                        raise
-            except Exception as e:
-                print(f"Error checking GitHub file existence: {e}")
-                return False
+            result = check_github_file_exists(file)
         else:
             raise ValueError(f"Unsupported scheme: {parts.scheme}")
 
@@ -314,25 +256,7 @@ class FileOperations:
         elif scheme == Scheme.S3:
             result = get_s3_last_modified(parts.path)
         elif scheme == Scheme.GITHUB:
-            owner, repo_name, path = parse_github_url(file)
-
-            try:
-                g = get_github_client()
-                repo = g.get_repo(f"{owner}/{repo_name}")
-
-                # Get commit information for the file
-                commits = list(repo.get_commits(path=path))
-                if not commits:
-                    result = None
-                else:
-                    result = commits[0].commit.committer.date
-            except GithubException as e:
-                if e.status == 404:
-                    result = None
-                else:
-                    raise
-            except Exception as e:
-                raise RuntimeError(f"Error getting GitHub file timestamp: {e}")
+            result = get_github_last_modified(file)
         else:
             raise ValueError(f"Unsupported scheme: {parts.scheme}")
 
