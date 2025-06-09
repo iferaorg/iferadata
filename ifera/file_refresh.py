@@ -12,7 +12,7 @@ from .data_loading import load_data
 from .data_processing import process_data
 from .config import ConfigManager
 from .enums import Source, extension_map, Scheme, ExpirationRule
-from .file_utils import make_path
+from .file_utils import make_path, write_tensor_to_gzip
 from .config import ConfigManager
 from .file_manager import FileManager
 from .date_utils import calculate_expiration
@@ -137,9 +137,7 @@ def process_tensor_file(
     # Save locally
     file_name = f"{symbol}-{contract_code}" if contract_code else symbol
     tensor_file_path = make_path(Source.TENSOR, type, interval, file_name)
-    
-    with gzip.open(str(tensor_file_path), "wb") as f:
-        torch.save(tensor, f) # type: ignore
+    write_tensor_to_gzip(str(tensor_file_path), tensor)
 
 
 def process_futures_metadata_raw(symbol: str, contract_codes: list[str]) -> None:

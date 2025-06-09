@@ -3,6 +3,8 @@ File system utilities for the ifera package.
 """
 
 from pathlib import Path
+import torch
+import gzip
 
 from .config import BaseInstrumentConfig
 from .enums import Source, extension_map
@@ -48,3 +50,16 @@ def make_instrument_path(
         file_name,
         remove_file=remove_file,
     )
+
+
+def write_tensor_to_gzip(file_name: str, tensor: torch.Tensor) -> None:
+    """Save a tensor to a gzip-compressed file."""
+    with gzip.open(file_name, "wb") as f:
+        torch.save(tensor, f) # type: ignore
+
+def read_tensor_from_gzip(file_name: str, device: torch.device = torch.device("cpu")) -> torch.Tensor:
+    """Load a tensor from a gzip-compressed file."""
+    with gzip.open(file_name, "rb") as f:
+        return torch.load(f, map_location=device)  # type: ignore[return-value]
+    
+    

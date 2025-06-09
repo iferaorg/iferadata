@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from .config import BaseInstrumentConfig
 from .enums import Source
-from .file_utils import make_instrument_path
+from .file_utils import make_instrument_path, read_tensor_from_gzip
 
 
 def count_lines(file_path: str, is_zip: bool = False) -> int:
@@ -139,8 +139,12 @@ def load_data_tensor(
 
     # Load the tensor from the local file
     file_path = make_instrument_path(source=source, instrument=instrument)
-    with gzip.open(str(file_path), "rb") as f:
-        tensor = torch.load(f, map_location=device) # type: ignore[call-arg]
+    
+    try:
+        tensor = read_tensor_from_gzip(str(file_path), device=device)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(f"Tensor file not found at {file_path}: {e}") from e
+    
     tensor = tensor.to(dtype=dtype)
     
     if strip_date_time:
