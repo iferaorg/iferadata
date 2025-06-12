@@ -1,2 +1,4 @@
 exclude_dirs:
   - tests
+  - test.py
+  - test_tmp.py
