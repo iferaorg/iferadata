@@ -1,0 +1,31 @@
+templates:
+  test_futures:
+    currency: USD
+    type: futures
+    tradingStart: "-06:00:00"
+    tradingEnd: "17:00:00"
+    liquidStart: "03:00:00"
+    liquidEnd: "16:00:00"
+    regularStart: "09:30:00"
+    regularEnd: "16:00:00"
+    removeDates: []
+    intervals: ["30m"]
+    startDate: "2020-01-01"
+    daysOfWeek: [0, 1, 2, 3, 4]
+    rolloverTime: "15:30:00"
+    rolloverVolAlpha: 0.5
+    rolloverMaxMonthDelta: 6
+instruments:
+  CL:
+    template: test_futures
+    symbol: CL
+    description: Light Sweet Crude Oil
+    contractMultiplier: 1000
+    tickSize: 0.01
+    lastTradeDayRule: THREE_BUSINESS_DAYS_BEFORE_25TH_PRIOR_MONTH
+    assetClass: Energy
+    removeDates:
+      - "2020-04-02"
+      - "2020-04-21"
+      - "2020-04-22"
+      - "2020-04-28"

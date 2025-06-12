@@ -24,9 +24,7 @@ def test_make_path_remove_file(tmp_path, monkeypatch):
     existing.write_text("data")
     assert existing.exists()
 
-    path = file_utils.make_path(
-        Source.RAW, "foo", "1h", "bar", remove_file=True
-    )
+    path = file_utils.make_path(Source.RAW, "foo", "1h", "bar", remove_file=True)
     assert path == existing
     assert not path.exists()
 
@@ -34,9 +32,9 @@ def test_make_path_remove_file(tmp_path, monkeypatch):
 def test_make_instrument_path(tmp_path, monkeypatch, base_instrument_config):
     monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
     path = file_utils.make_instrument_path(Source.PROCESSED, base_instrument_config)
-    expected = (
-        Path(tmp_path, Source.PROCESSED.value, "futures", "30m", "ES").with_suffix(".zip")
-    )
+    expected = Path(
+        tmp_path, Source.PROCESSED.value, "futures", "30m", "CL"
+    ).with_suffix(".zip")
     assert path == expected
 
 
