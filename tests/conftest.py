@@ -7,7 +7,6 @@ from unittest.mock import MagicMock
 from ifera import s3_utils, ConfigManager, BaseInstrumentConfig, InstrumentConfig
 
 
-
 @pytest.fixture
 def sample_vector():
     return torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -107,14 +106,17 @@ def mock_s3(monkeypatch):
 # Instrument Configuration
 @pytest.fixture
 def config_manager() -> ConfigManager:
-    return ConfigManager()
+    return ConfigManager(
+        instruments_filename="data/test_instruments.yml",
+        brokers_filename="data/test_brokers.yml",
+    )
+
 
 @pytest.fixture
 def base_instrument_config(config_manager: ConfigManager) -> BaseInstrumentConfig:
-    return config_manager.get_base_instrument_config(symbol="ES", interval="30m")
+    return config_manager.get_base_instrument_config(symbol="CL", interval="30m")
+
 
 @pytest.fixture
 def instrument_config(config_manager: ConfigManager) -> InstrumentConfig:
-    return config_manager.get_config(broker_name="IBKR", symbol="ES", interval="30m")
-
-
+    return config_manager.get_config(broker_name="IBKR", symbol="CL", interval="30m")

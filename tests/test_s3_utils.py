@@ -9,7 +9,7 @@ from ifera.enums import Source
 
 def test_make_s3_key(base_instrument_config):
     key = s3_utils.make_s3_key(Source.RAW, base_instrument_config, zipfile=True)  # type: ignore[arg-type]
-    assert key == "raw/futures/30m/ES.zip"
+    assert key == "raw/futures/30m/CL.zip"
 
 
 def test_download_s3_file(tmp_path, mock_s3, dummy_progress, monkeypatch):
