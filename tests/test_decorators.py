@@ -74,6 +74,7 @@ def test_thread_safe_cache_multi_thread():
 
     @ThreadSafeCache()
     def compute(x: int) -> int:
+        time.sleep(0.05)
         calls["count"] += 1
         return x * 2
 
