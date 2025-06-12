@@ -2,37 +2,6 @@ import pytest
 import torch
 from ifera.series import artr, ema, ema_slow, ffill, rtr, sma
 
-# Fixtures for reusable test data
-
-
-@pytest.fixture
-def sample_vector():
-    # A simple 1D tensor for testing sma and ema functions.
-    return torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
-
-
-@pytest.fixture
-def ohlcv_two_points():
-    # Two time-point OHLCV data (shape: [time, channels]) for testing rtr.
-    # Channels: [open, high, low, close, volume]
-    return torch.tensor(
-        [[10.0, 12.0, 8.0, 10.0, 100.0], [11.0, 13.0, 9.0, 12.0, 150.0]]
-    )
-
-
-@pytest.fixture
-def ohlcv_single_date():
-    # OHLCV data for a single date with 3 time points (shape: [date, time, channels])
-    return torch.tensor(
-        [
-            [
-                [10.0, 12.0, 8.0, 10.0, 100.0],
-                [11.0, 13.0, 9.0, 12.0, 150.0],
-                [12.0, 14.0, 10.0, 13.0, 120.0],
-            ]
-        ]
-    )
-
 
 # Tests for sma
 def test_sma(sample_vector):
