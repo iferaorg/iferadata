@@ -39,6 +39,7 @@ def test_upload_s3_file(tmp_path, mock_s3, dummy_progress):
     result = s3_utils.upload_s3_file(key, str(local_path))
     mock_s3.client.upload_file.assert_called_once()
     assert key in mock_s3.last_modified
+    assert "upload" in mock_s3.cached_prefixes
     assert result == key
 
 
@@ -53,7 +54,22 @@ def test_check_s3_file_exists_list(mock_s3):
     key = "other.csv"
     mock_s3.client.list_objects_v2.return_value = {"Contents": [{"Key": key}]}
     assert s3_utils.check_s3_file_exists(key) is True
-    mock_s3.client.list_objects_v2.assert_called_once()
+    mock_s3.client.list_objects_v2.assert_called_once_with(
+        Bucket=s3_utils.settings.S3_BUCKET, Prefix=""
+    )
+    assert "" in mock_s3.cached_prefixes
+
+
+def test_check_s3_file_exists_cached_prefix(mock_s3):
+    key = "prefix/file.csv"
+    mock_s3.client.list_objects_v2.return_value = {"Contents": [{"Key": key}]}
+    assert s3_utils.check_s3_file_exists(key) is True
+    mock_s3.client.list_objects_v2.assert_called_once_with(
+        Bucket=s3_utils.settings.S3_BUCKET, Prefix="prefix"
+    )
+    mock_s3.client.list_objects_v2.reset_mock()
+    assert s3_utils.check_s3_file_exists(key) is True
+    mock_s3.client.list_objects_v2.assert_not_called()
 
 
 def test_get_s3_last_modified_cache(mock_s3):
