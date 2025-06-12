@@ -1,5 +1,9 @@
 import pytest
 import torch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from ifera import s3_utils
 
 
 @pytest.fixture
@@ -51,3 +55,31 @@ def ohlcv_single_date():
 def ohlcv_single_date_masked(ohlcv_single_date):
     mask = torch.ones(ohlcv_single_date.shape[:-1], dtype=torch.bool)
     return ohlcv_single_date, mask
+
+
+@pytest.fixture
+def dummy_progress(monkeypatch):
+    class DummyProgress:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def update(self, _):
+            pass
+
+        def close(self):
+            pass
+
+    def _factory(*args, **kwargs):
+        return DummyProgress(*args, **kwargs)
+
+    monkeypatch.setattr(s3_utils, "tqdm", _factory)
+    return DummyProgress
+
+
+@pytest.fixture
+def mock_s3(monkeypatch):
+    client = MagicMock()
+    wrapper = SimpleNamespace(client=client, cache=True, last_modified={})
+    monkeypatch.setattr(s3_utils, "S3ClientSingleton", lambda cache=True: wrapper)
+    return wrapper
