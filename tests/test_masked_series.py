@@ -13,68 +13,6 @@ from ifera.masked_series import (
 from ifera.series import artr, ema, rtr, sma  # used for expected values
 
 
-# Fixtures
-@pytest.fixture
-def sample_vector():
-    # A simple 1D tensor for testing SMA and EMA functions.
-    return torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
-
-
-@pytest.fixture
-def sample_vector_masked_all_true(sample_vector):
-    # Create a tensor with a mask where all entries are valid.
-    mask = torch.ones_like(sample_vector, dtype=torch.bool)
-    return sample_vector, mask
-
-
-@pytest.fixture
-def sample_vector_masked_partial():
-    # Create a tensor with a mask where some entries are masked out.
-    # Here, positions 1 and 3 are invalid.
-    data = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
-    mask = torch.tensor([True, False, True, False, True])
-    return data, mask
-
-
-@pytest.fixture
-def ohlcv_two_points():
-    # OHLCV data for testing functions that work on financial data.
-    # Shape: [time, channels] where channels = [open, high, low, close, volume]
-    return torch.tensor(
-        [[10.0, 12.0, 8.0, 10.0, 100.0], [11.0, 13.0, 9.0, 12.0, 150.0]]
-    )
-
-
-@pytest.fixture
-def ohlcv_two_points_masked(ohlcv_two_points):
-    # Wrap the OHLCV tensor as a masked tensor with all entries valid.
-    # Here we add a batch dimension so that the input shape is [1, time, channels]
-    data = ohlcv_two_points.unsqueeze(0)
-    mask = torch.ones(data.shape[:-1], dtype=torch.bool)
-    return data, mask
-
-
-@pytest.fixture
-def ohlcv_single_date():
-    # OHLCV data for a single date with multiple time points.
-    # Shape: [date, time, channels]
-    return torch.tensor(
-        [
-            [
-                [10.0, 12.0, 8.0, 10.0, 100.0],
-                [11.0, 13.0, 9.0, 12.0, 150.0],
-                [12.0, 14.0, 10.0, 13.0, 120.0],
-            ]
-        ]
-    )
-
-
-@pytest.fixture
-def ohlcv_single_date_masked(ohlcv_single_date):
-    mask = torch.ones(ohlcv_single_date.shape[:-1], dtype=torch.bool)
-    return ohlcv_single_date, mask
-
-
 # Tests for helper functions: compress_tensor and decompress_tensor
 def test_compress_decompress():
     # Test that decompressing a compressed tensor recovers the original
