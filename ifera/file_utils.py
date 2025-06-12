@@ -13,13 +13,13 @@ from .settings import settings
 
 def make_path(
     source: Source,
-    type: str,
+    file_type: str,
     interval: str,
     symbol: str,
     remove_file: bool = False,
 ) -> Path:
     """Generate a path to a data file."""
-    path = Path(settings.DATA_FOLDER, source.value, type, interval, symbol)
+    path = Path(settings.DATA_FOLDER, source.value, file_type, interval, symbol)
     path = path.with_suffix(extension_map[source])
 
     try:
@@ -55,11 +55,14 @@ def make_instrument_path(
 def write_tensor_to_gzip(file_name: str, tensor: torch.Tensor) -> None:
     """Save a tensor to a gzip-compressed file."""
     with gzip.open(file_name, "wb") as f:
-        torch.save(tensor, f) # type: ignore
+        torch.save(tensor, f)  # type: ignore
 
-def read_tensor_from_gzip(file_name: str, device: torch.device = torch.device("cpu")) -> torch.Tensor:
+
+def read_tensor_from_gzip(
+    file_name: str, device: torch.device = torch.device("cpu")
+) -> torch.Tensor:
     """Load a tensor from a gzip-compressed file."""
     with gzip.open(file_name, "rb") as f:
-        return torch.load(f, map_location=device)  # type: ignore[return-value]
-    
-    
+        return torch.load(
+            f, map_location=device, weights_only=True
+        )  # type: ignore[return-value]
