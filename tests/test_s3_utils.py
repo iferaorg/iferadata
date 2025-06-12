@@ -7,17 +7,9 @@ from ifera import s3_utils
 from ifera.enums import Source
 
 
-class DummyInstrument:
-    def __init__(self, symbol: str, type_: str, interval: str) -> None:
-        self.file_symbol = symbol
-        self.type = type_
-        self.interval = interval
-
-
-def test_make_s3_key():
-    instr = DummyInstrument("SYM", "fut", "1m")
-    key = s3_utils.make_s3_key(Source.RAW, instr, zipfile=True)  # type: ignore[arg-type]
-    assert key == "raw/fut/1m/SYM.zip"
+def test_make_s3_key(base_instrument_config):
+    key = s3_utils.make_s3_key(Source.RAW, base_instrument_config, zipfile=True)  # type: ignore[arg-type]
+    assert key == "raw/futures/30m/ES.zip"
 
 
 def test_download_s3_file(tmp_path, mock_s3, dummy_progress, monkeypatch):

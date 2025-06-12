@@ -7,13 +7,6 @@ from ifera import file_utils
 from ifera.enums import Source
 
 
-class DummyInstrument:
-    def __init__(self, file_symbol: str, type_: str, interval: str) -> None:
-        self.file_symbol = file_symbol
-        self.type = type_
-        self.interval = interval
-
-
 def test_make_path_creates_directories(tmp_path, monkeypatch):
     monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
     path = file_utils.make_path(Source.TENSOR, "test", "1m", "AAPL")
@@ -38,12 +31,11 @@ def test_make_path_remove_file(tmp_path, monkeypatch):
     assert not path.exists()
 
 
-def test_make_instrument_path(tmp_path, monkeypatch):
+def test_make_instrument_path(tmp_path, monkeypatch, base_instrument_config):
     monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
-    instr = DummyInstrument("ABC1", "fut", "5m")
-    path = file_utils.make_instrument_path(Source.PROCESSED, instr)
+    path = file_utils.make_instrument_path(Source.PROCESSED, base_instrument_config)
     expected = (
-        Path(tmp_path, Source.PROCESSED.value, "fut", "5m", "ABC1").with_suffix(".zip")
+        Path(tmp_path, Source.PROCESSED.value, "futures", "30m", "ES").with_suffix(".zip")
     )
     assert path == expected
 

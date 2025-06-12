@@ -2,7 +2,7 @@
 ifera
 """
 
-from .config import BrokerConfig, ConfigManager, InstrumentConfig
+from .config import BrokerConfig, ConfigManager, InstrumentConfig, BaseInstrumentConfig
 from .enums import Scheme, Source, ExpirationRule
 from .data_loading import load_data, load_data_tensor
 from .data_models import InstrumentData, DataManager

@@ -4,7 +4,8 @@ import torch
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from ifera import s3_utils
+from ifera import s3_utils, ConfigManager, BaseInstrumentConfig, InstrumentConfig
+
 
 
 @pytest.fixture
@@ -101,3 +102,19 @@ def mock_s3(monkeypatch):
     wrapper._populate_cache = _populate_cache
     monkeypatch.setattr(s3_utils, "S3ClientSingleton", lambda cache=True: wrapper)
     return wrapper
+
+
+# Instrument Configuration
+@pytest.fixture
+def config_manager() -> ConfigManager:
+    return ConfigManager()
+
+@pytest.fixture
+def base_instrument_config(config_manager: ConfigManager) -> BaseInstrumentConfig:
+    return config_manager.get_base_instrument_config(symbol="ES", interval="30m")
+
+@pytest.fixture
+def instrument_config(config_manager: ConfigManager) -> InstrumentConfig:
+    return config_manager.get_config(broker_name="IBKR", symbol="ES", interval="30m")
+
+
