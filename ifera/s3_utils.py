@@ -6,6 +6,8 @@ import os
 import datetime
 from typing import List
 
+# pylint: disable=protected-access
+
 import boto3  # type: ignore
 import botocore.exceptions
 from tqdm import tqdm
@@ -17,28 +19,41 @@ from .settings import settings
 
 @singleton
 class S3ClientSingleton:
-    def __init__(self, cache: bool = True):
+    """Singleton wrapper around boto3 S3 client with optional caching."""
+
+    def __init__(self, cache: bool = True) -> None:
         self.client = boto3.client("s3")
         self.cache = cache
 
         if cache:
-            self.last_modified = self.get_all_modified_dates()
+            self.last_modified: dict[str, datetime.datetime] = {}
+            self.cached_prefixes: set[str] = set()
+        else:
+            self.last_modified = {}
+            self.cached_prefixes = set()
 
-    def get_all_modified_dates(self) -> dict[str, datetime.datetime]:
+    def _populate_cache(self, prefix: str) -> None:
+        if prefix in self.cached_prefixes:
+            return
+
         paginator = self.client.get_paginator("list_objects_v2")
-        modified_dates: dict[str, datetime.datetime] = {}
 
-        for page in paginator.paginate(Bucket=settings.S3_BUCKET):
+        for page in paginator.paginate(Bucket=settings.S3_BUCKET, Prefix=prefix):
             for obj in page.get("Contents", []):
-                modified_dates[obj["Key"]] = obj["LastModified"]
+                self.last_modified[obj["Key"]] = obj["LastModified"]
 
-        return modified_dates
+        self.cached_prefixes.add(prefix)
 
 
 def make_s3_key(source: Source, instrument: BaseInstrumentConfig, zipfile: bool) -> str:
     """Build an S3 key for the instrument data file."""
     extension = ".zip" if zipfile else ".csv"
-    return f"{source.value}/{instrument.type}/{instrument.interval}/{instrument.file_symbol}{extension}"
+    return (
+        f"{source.value}/"
+        f"{instrument.type}/"
+        f"{instrument.interval}/"
+        f"{instrument.file_symbol}{extension}"
+    )
 
 
 def download_s3_file(key: str, target_path: str) -> None:
@@ -108,6 +123,8 @@ def upload_s3_file(key: str, local_path: str) -> str:
 
         if wrapper.cache:
             wrapper.last_modified[key] = datetime.datetime.now(tz=datetime.timezone.utc)
+            prefix = key.rsplit("/", 1)[0] if "/" in key else ""
+            wrapper.cached_prefixes.add(prefix)
 
     except Exception as e:
         raise RuntimeError(
@@ -128,6 +145,10 @@ def check_s3_file_exists(key: str) -> bool:
     if wrapper.cache:
         if key in wrapper.last_modified:
             return True
+
+        prefix = key.rsplit("/", 1)[0] if "/" in key else ""
+        wrapper._populate_cache(prefix)
+        return key in wrapper.last_modified
 
     try:
         response = s3_client.list_objects_v2(
@@ -156,8 +177,10 @@ def get_s3_last_modified(key: str) -> datetime.datetime | None:
     if wrapper.cache:
         if key in wrapper.last_modified:
             return wrapper.last_modified[key]
-        else:
-            return None
+
+        prefix = key.rsplit("/", 1)[0] if "/" in key else ""
+        wrapper._populate_cache(prefix)
+        return wrapper.last_modified.get(key)
 
     try:
         response = s3_client.head_object(Bucket=settings.S3_BUCKET, Key=key)
@@ -166,10 +189,9 @@ def get_s3_last_modified(key: str) -> datetime.datetime | None:
         if e.response["Error"]["Code"] == "404":
             # The object does not exist
             return None
-        else:
-            raise RuntimeError(
-                f"Error retrieving S3 metadata for s3://{settings.S3_BUCKET}/{key}"
-            ) from e
+        raise RuntimeError(
+            f"Error retrieving S3 metadata for s3://{settings.S3_BUCKET}/{key}"
+        ) from e
     except Exception as e:
         raise RuntimeError(
             f"Error retrieving S3 metadata for s3://{settings.S3_BUCKET}/{key}"
@@ -184,7 +206,10 @@ def list_s3_objects(prefix: str) -> List[str]:
     s3_client = wrapper.client
 
     if wrapper.cache:
-        keys = [key for key in wrapper.last_modified.keys() if key.startswith(prefix)]
+        wrapper._populate_cache(prefix)
+        keys = [
+            obj_key for obj_key in wrapper.last_modified if obj_key.startswith(prefix)
+        ]
     else:
         keys = []
         paginator = s3_client.get_paginator("list_objects_v2")
@@ -212,8 +237,8 @@ def delete_s3_file(key: str) -> None:
         raise RuntimeError(
             f"Error deleting file from S3 (bucket='{settings.S3_BUCKET}', key='{key}')"
         ) from e
-        
-        
+
+
 def rename_s3_file(old_key: str, new_key: str) -> None:
     """
     Rename a file in S3 by copying it to a new key and deleting the old one.
@@ -230,10 +255,15 @@ def rename_s3_file(old_key: str, new_key: str) -> None:
         s3_client.delete_object(Bucket=settings.S3_BUCKET, Key=old_key)
 
         if wrapper.cache:
-            wrapper.last_modified[new_key] = datetime.datetime.now(tz=datetime.timezone.utc)
+            wrapper.last_modified[new_key] = datetime.datetime.now(
+                tz=datetime.timezone.utc
+            )
             wrapper.last_modified.pop(old_key, None)
+            prefix = new_key.rsplit("/", 1)[0] if "/" in new_key else ""
+            wrapper.cached_prefixes.add(prefix)
 
     except Exception as e:
         raise RuntimeError(
-            f"Error renaming file in S3 (bucket='{settings.S3_BUCKET}', old_key='{old_key}', new_key='{new_key}')"
+            f"Error renaming file in S3 (bucket='{settings.S3_BUCKET}', "
+            f"old_key='{old_key}', new_key='{new_key}')"
         ) from e

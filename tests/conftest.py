@@ -1,3 +1,4 @@
+import datetime
 import pytest
 import torch
 from types import SimpleNamespace
@@ -80,6 +81,23 @@ def dummy_progress(monkeypatch):
 @pytest.fixture
 def mock_s3(monkeypatch):
     client = MagicMock()
-    wrapper = SimpleNamespace(client=client, cache=True, last_modified={})
+    wrapper = SimpleNamespace(
+        client=client,
+        cache=True,
+        last_modified={},
+        cached_prefixes=set(),
+    )
+
+    def _populate_cache(prefix: str) -> None:
+        response = client.list_objects_v2(
+            Bucket=s3_utils.settings.S3_BUCKET, Prefix=prefix
+        )
+        for obj in response.get("Contents", []):
+            wrapper.last_modified[obj["Key"]] = obj.get(
+                "LastModified", datetime.datetime.now(tz=datetime.timezone.utc)
+            )
+        wrapper.cached_prefixes.add(prefix)
+
+    wrapper._populate_cache = _populate_cache
     monkeypatch.setattr(s3_utils, "S3ClientSingleton", lambda cache=True: wrapper)
     return wrapper
