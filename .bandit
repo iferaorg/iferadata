@@ -1,4 +1,0 @@
-[bandit]
-targets: ifera
-recursive: True
-exclude: tests
