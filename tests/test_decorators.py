@@ -1,5 +1,6 @@
 import threading
 import time
+import pytest
 
 from ifera.decorators import singleton, ThreadSafeCache
 
@@ -87,7 +88,9 @@ def test_thread_safe_cache_multi_thread():
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=1)
+        if t.is_alive():
+            pytest.fail("Deadlock detected in ThreadSafeCache")
 
     assert len(results) == 5
     assert all(r == 10 for r in results)
