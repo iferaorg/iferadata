@@ -122,9 +122,9 @@ def upload_s3_file(key: str, local_path: str) -> str:
         progress.close()
 
         if wrapper.cache:
-            wrapper.last_modified[key] = datetime.datetime.now(tz=datetime.timezone.utc)
             prefix = key.rsplit("/", 1)[0] if "/" in key else ""
-            wrapper.cached_prefixes.add(prefix)
+            wrapper._populate_cache(prefix)
+            wrapper.last_modified[key] = datetime.datetime.now(tz=datetime.timezone.utc)
 
     except Exception as e:
         raise RuntimeError(
@@ -255,12 +255,12 @@ def rename_s3_file(old_key: str, new_key: str) -> None:
         s3_client.delete_object(Bucket=settings.S3_BUCKET, Key=old_key)
 
         if wrapper.cache:
+            prefix = new_key.rsplit("/", 1)[0] if "/" in new_key else ""
+            wrapper._populate_cache(prefix)
             wrapper.last_modified[new_key] = datetime.datetime.now(
                 tz=datetime.timezone.utc
             )
             wrapper.last_modified.pop(old_key, None)
-            prefix = new_key.rsplit("/", 1)[0] if "/" in new_key else ""
-            wrapper.cached_prefixes.add(prefix)
 
     except Exception as e:
         raise RuntimeError(
