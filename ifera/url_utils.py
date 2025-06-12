@@ -1,3 +1,5 @@
+"""Utility functions for generating and fetching market-related URLs."""
+
 import re
 import datetime as dt
 from typing import Tuple, Optional
@@ -36,15 +38,18 @@ def _extract_date(label: str, soup: BeautifulSoup) -> Optional[dt.date]:
     Falls back to a regex search through the whole document.
     """
     # 1️⃣ DOM-based search
-    node = soup.find(string=lambda s: s and label in s) # type: ignore
+    node = soup.find(string=lambda s: s and label in s)  # type: ignore
     if node:
         sib = node.parent and node.parent.find_next_sibling()
         if sib and sib.get_text(strip=True):
             return _clean_date(sib.get_text())
 
     # 2️⃣ Regex fall-back (robust to layout changes)
-    m = re.search(rf"{re.escape(label)}\s*([0-9]{{1,2}}/[0-9]{{1,2}}/[0-9]{{2,4}})",
-                  soup.get_text(" ", strip=True), flags=re.I)
+    m = re.search(
+        rf"{re.escape(label)}\s*([0-9]{{1,2}}/[0-9]{{1,2}}/[0-9]{{2,4}})",
+        soup.get_text(" ", strip=True),
+        flags=re.I,
+    )
     return _clean_date(m.group(1)) if m else None
 
 
@@ -56,7 +61,9 @@ def _clean_date(text: str) -> Optional[dt.date]:
     return dtparse.parse(date_str, dayfirst=False).date()
 
 
-def contract_notice_and_expiry(symbol: str, max_retries: int = 3) -> Tuple[Optional[dt.date], Optional[dt.date]]:
+def contract_notice_and_expiry(
+    symbol: str, max_retries: int = 3
+) -> Tuple[Optional[dt.date], Optional[dt.date]]:
     """
     Parameters
     ----------
@@ -77,16 +84,14 @@ def contract_notice_and_expiry(symbol: str, max_retries: int = 3) -> Tuple[Optio
 
     while retries < max_retries:
         try:
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
             if resp.status_code == 200:
                 break
         except requests.RequestException as e:
             if retries == max_retries - 1:
-                raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries.") from e
-        except Exception as e:
-            if retries == max_retries - 1:
-                print(f"Unexpected error fetching {url}: {e}")
-                raise
+                raise RuntimeError(
+                    f"Failed to fetch {url} after {max_retries} retries."
+                ) from e
         retries += 1
         if retries < max_retries:
             time.sleep(1)  # Wait 1 second before retrying
@@ -96,10 +101,9 @@ def contract_notice_and_expiry(symbol: str, max_retries: int = 3) -> Tuple[Optio
         if resp.status_code != 404:
             print(f"Failed to fetch {url}: HTTP {resp.status_code}")
         return None, None
-        
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
     first_notice = _extract_date("First Notice Date", soup)
-    expiration   = _extract_date("Expiration Date", soup)
+    expiration = _extract_date("Expiration Date", soup)
     return first_notice, expiration
