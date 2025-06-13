@@ -5,3 +5,4 @@ data/processed/
 data/tensor/
 data/meta/
 .env
+report/jscpd-report.md
