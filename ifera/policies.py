@@ -486,28 +486,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         entry_price: torch.Tensor,
         batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute actions and stop loss levels for the current state.
-
-        This method always returns an action of 0 (no new trades) and updates
-        stop loss levels based on ARTR calculations across different stages.
-
-        Args:
-            date_idx (torch.Tensor): Batch of date indices.
-            time_idx (torch.Tensor): Batch of time indices.
-            position (torch.Tensor): Current positions (non-zero for existing positions).
-            prev_stop (torch.Tensor): Previous stop loss levels.
-            entry_price (torch.Tensor): Entry prices for the positions.
-            batch_indices (torch.Tensor): Indices of the batch elements.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
-                - action: Always zero tensor.
-                - stop_loss: Updated stop loss levels.
-
-        Raises:
-            ValueError: If the policy state is not initialized or batch size mismatches.
-        """
+        """Compute actions using scaled ARTR policy."""
         # Check if state is initialized
         if self.stage.shape[0] == 0 or batch_indices.max() >= self.stage.shape[0]:
             raise ValueError(
@@ -704,22 +683,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         entry_price: torch.Tensor,
         batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute actions and stop-loss levels based on the current state.
-
-        Args:
-            date_idx (torch.Tensor): Batch of date indices.
-            time_idx (torch.Tensor): Batch of time indices.
-            position (torch.Tensor): Current positions (non-zero).
-            prev_stop (torch.Tensor): Previous stop-loss levels.
-            entry_price (torch.Tensor): Entry prices for positions.
-            batch_indices (torch.Tensor): Indices of batch elements to process.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
-                - action: Always zero (no new positions opened).
-                - stop_loss: Updated stop-loss levels.
-        """
+        """Compute actions using percent gain policy."""
         if self.stage.shape[0] == 0 or batch_indices.max() >= self.stage.shape[0]:
             raise ValueError(
                 "Policy state not initialized or batch indices out of range. Call reset first."
