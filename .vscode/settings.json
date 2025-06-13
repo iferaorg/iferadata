@@ -4,7 +4,7 @@
   "python.testing.pytestEnabled": true,
   "python.analysis.include": [
     "ifera/**",
-    "tests/**",
+    "tests/**"
   ],
   "python.analysis.exclude": [
     "**/*.ipynb*"
