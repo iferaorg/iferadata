@@ -7,6 +7,7 @@ import datetime as dt
 from .settings import settings
 from .decorators import singleton, ThreadSafeCache
 
+
 @singleton
 class GitHubClientSingleton:
     def __init__(self) -> None:

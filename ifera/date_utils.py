@@ -246,7 +246,8 @@ def _rule_last_business_day_prior_month(
 def _rule_third_last_business_day_prior_month(
     year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """Trading terminates on the third-last business day of the month prior to the contract month."""
+    """Trading terminates on the third-last business day of the month prior to
+    the contract month."""
     prev_year, prev_month = prior_month(year, month)
     return third_last_business_day_of_month(
         prev_year, prev_month, country="US", asset_class=asset_class
@@ -280,7 +281,8 @@ def _rule_two_bus_days_prior_third_wed(
 def _rule_three_bus_days_before_25th_prior_month(
     year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """Trading terminates 3 business days before the 25th of the prior month, or 4 if 25th is not a business day."""
+    """Trading terminates 3 business days before the 25th of the prior month,
+    or 4 if 25th is not a business day."""
     prev_year, prev_month = prior_month(year, month)
     d25 = datetime.date(prev_year, prev_month, 25)
     if is_business_day(d25, country="US", asset_class=asset_class):
@@ -292,7 +294,8 @@ def _rule_three_bus_days_before_25th_prior_month(
 def _rule_four_bus_days_before_25th_prior_month(
     year: int, month: int, asset_class: Optional[str] = None
 ) -> datetime.date:
-    """Trading terminates 4 business days before the 25th of the prior month, or 5 if 25th is not a business day."""
+    """Trading terminates 4 business days before the 25th of the prior month,
+    or 5 if 25th is not a business day."""
     prev_year, prev_month = prior_month(year, month)
     d25 = datetime.date(prev_year, prev_month, 25)
     if is_business_day(d25, country="US", asset_class=asset_class):

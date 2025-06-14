@@ -63,6 +63,4 @@ def read_tensor_from_gzip(
 ) -> torch.Tensor:
     """Load a tensor from a gzip-compressed file."""
     with gzip.open(file_name, "rb") as f:
-        return torch.load(
-            f, map_location=device, weights_only=True # type: ignore
-        )
+        return torch.load(f, map_location=device, weights_only=True)  # type: ignore
