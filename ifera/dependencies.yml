@@ -75,7 +75,10 @@ refresh_rules:
       - "file:data/meta/futures/dates/{symbol}.yml"
       - pattern: "file:data/tensor/futures_individual/30m/{symbol}-{contract_code}.pt.gz"
         wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
-    refresh_function: "ifera.file_refresh.calculate_rollover_tensor"
+    refresh_function: 
+      name: "ifera.file_refresh.calculate_rollover_spec"
+      list_args:
+        contract_codes: contract_code
 
   # Raw -> Processed
   - dependent: "file:data/processed/futures_individual/{interval}/{symbol}-{contract_code}.zip"

@@ -8,8 +8,8 @@ from tqdm import tqdm
 from einops import rearrange
 from .url_utils import contract_notice_and_expiry, make_url
 from .s3_utils import download_s3_file, upload_s3_file, check_s3_file_exists
-from .data_loading import load_data
-from .data_processing import process_data
+from .data_loading import load_data, load_data_tensor
+from .data_processing import process_data, calculate_rollover
 from .config import ConfigManager
 from .enums import Source, extension_map, Scheme, ExpirationRule
 from .file_utils import make_path, write_tensor_to_gzip
@@ -283,6 +283,117 @@ def process_futures_metadata(symbol: str) -> None:
             dates,
             fh,
             sort_keys=True,
+            default_flow_style=False,
+            allow_unicode=True,
+        )
+
+
+def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
+
+    dates_path = make_path(Source.META, "futures", "dates", symbol)
+    if not dates_path.exists():
+        raise FileNotFoundError(
+            f"Metadata file for {symbol} not found at {dates_path}. "
+            "Please run process_futures_metadata first."
+        )
+
+    with open(dates_path, "r", encoding="utf-8") as fh:
+        dates = yaml.safe_load(fh)
+
+    cm = ConfigManager()
+    base_instrument = cm.get_base_instrument_config(symbol, "30m")
+
+    contract_tensors = []
+    contract_instruments = []
+
+    for code in contract_codes:
+        if code not in dates:
+            print(f"Warning: No metadata found for {symbol}-{code}. Skipping.")
+            continue
+
+        contract_instrument = cm.create_derived_base_config(
+            base_instrument, contract_code=code
+        )
+
+        if dates[contract_instrument.contract_code]["first_notice_date"] is not None:
+            contract_instrument.first_notice_date = dt.date.fromisoformat(
+                dates[contract_instrument.contract_code]["first_notice_date"]
+            )
+
+        if dates[contract_instrument.contract_code]["expiration_date"] is not None:
+            contract_instrument.expiration_date = dt.date.fromisoformat(
+                dates[contract_instrument.contract_code]["expiration_date"]
+            )
+
+        contract_tensor = load_data_tensor(
+            instrument=contract_instrument,
+            dtype=torch.float64,
+            device=torch.device("cpu"),
+            strip_date_time=False,
+        )
+
+        contract_instruments.append(contract_instrument)
+        contract_tensors.append(contract_tensor)
+
+    # Sort both contract_instruments and contract_tensors by expiration date
+    sorted_indices = sorted(
+        range(len(contract_instruments)),
+        key=lambda k: contract_instruments[k].expiration_date,
+    )
+    contract_instruments_sorted = [contract_instruments[i] for i in sorted_indices]
+    contract_tensors_sorted = [contract_tensors[i] for i in sorted_indices]
+
+    ratios, active_idx, all_dates_ord = calculate_rollover(
+        contract_instruments_sorted, contract_tensors_sorted
+    )
+
+    # Get the indices where rollover occurs (non-NaN values in ratios), plus the first index
+    rollover_indices = torch.nonzero(~ratios.isnan(), as_tuple=True)[0]
+    rollover_indices = torch.cat(
+        (
+            torch.tensor(
+                [0], device=rollover_indices.device, dtype=rollover_indices.dtype
+            ),
+            rollover_indices,
+        ),
+        dim=0,
+    )
+
+    # Calculate the cumulative product of the ratios backwards
+    ratios_tmp = torch.cat(
+        (
+            ratios.nan_to_num(1.0),
+            torch.ones(1, device=ratios.device, dtype=ratios.dtype),
+        ),
+        dim=0,
+    )
+    ratios_tmp = torch.flip(ratios_tmp, dims=[0])
+    ratios_cump = torch.cumprod(ratios_tmp, dim=0)
+    ratios_cump = torch.flip(ratios_cump, dims=[0]).to(torch.float32)
+
+    rollover_spec = []
+
+    for active, pos, ratio in zip(
+        active_idx[rollover_indices].numpy(),
+        rollover_indices.numpy(),
+        ratios_cump[rollover_indices + 1].numpy(),
+    ):
+        contract_code = contract_instruments_sorted[active].contract_code
+        rollover_spec.append(
+            {
+                "start_date": dt.date.fromordinal(all_dates_ord[pos]),
+                "contract_code": contract_code,
+                "multiplier": ratio.item(),
+            }
+        )
+
+    # Save the rollover spec to a YAML file
+    rollover_spec_path = make_path(Source.META, "futures", "rollover", symbol)
+    with open(rollover_spec_path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(
+            rollover_spec,
+            fh,
+            sort_keys=False,
             default_flow_style=False,
             allow_unicode=True,
         )
