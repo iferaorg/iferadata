@@ -8,7 +8,6 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 import torch
-import gzip
 from tqdm import tqdm
 
 from .config import BaseInstrumentConfig

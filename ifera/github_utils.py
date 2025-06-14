@@ -1,8 +1,9 @@
+import datetime as dt
+from typing import Tuple
+from urllib.parse import urlparse
+
 from github import Github
 from github.GithubException import GithubException
-from urllib.parse import urlparse
-from typing import Tuple
-import datetime as dt
 
 from .settings import settings
 from .decorators import singleton, ThreadSafeCache

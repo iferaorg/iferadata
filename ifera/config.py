@@ -2,10 +2,11 @@
 Data models for financial instruments.
 """
 
-import datetime
-import yaml
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import datetime
+import yaml
 
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator

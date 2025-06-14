@@ -3,7 +3,7 @@ Masked tensor operations for financial time series data.
 Provides utility functions for handling missing data in time series using regular tensors with separate masks.
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from einops import rearrange, repeat

@@ -2,9 +2,10 @@
 File system utilities for the ifera package.
 """
 
-from pathlib import Path
-import torch
 import gzip
+from pathlib import Path
+
+import torch
 
 from .config import BaseInstrumentConfig
 from .enums import Source, extension_map

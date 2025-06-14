@@ -1,20 +1,19 @@
-from enum import Enum
+import datetime
+import importlib
 import os
 import re
-import datetime
-from typing import Dict, List, Optional, Tuple, Callable
-import yaml
-import networkx as nx
-from urllib.parse import urlparse
-import importlib
+from enum import Enum
 from functools import lru_cache
-from github import Github
-from github.GithubException import GithubException
-from .enums import Scheme
-from .settings import settings
+from typing import Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
+import networkx as nx
+import yaml
+
 from .decorators import singleton
-from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
+from .enums import Scheme
 from .github_utils import check_github_file_exists, get_github_last_modified
+from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
 
 # Helper Functions
 

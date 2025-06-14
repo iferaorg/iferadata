@@ -1,11 +1,12 @@
-import torch
-import pathlib as pl
-import yaml
 import datetime as dt
+import pathlib as pl
 import time
-import gzip
-from tqdm import tqdm
+
+import torch
+import yaml
 from einops import rearrange
+from tqdm import tqdm
+
 from .url_utils import contract_notice_and_expiry, make_url
 from .s3_utils import download_s3_file, upload_s3_file, check_s3_file_exists
 from .data_loading import load_data, load_data_tensor
