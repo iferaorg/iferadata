@@ -98,8 +98,10 @@ class ThreadSafeCache:
                 return self.cache[key]
 
         # Step 2: Check if there's a lock for this key (read-only)
+        lock = None
         with self.global_rwlock.gen_rlock():
             lock = self.lock_dict.get(key)
+
         if lock is not None:
             # Wait on the parameter-specific lock without holding the global lock
             with lock:
