@@ -139,14 +139,14 @@ def load_data_tensor(
 
     # Load the tensor from the local file
     file_path = make_instrument_path(source=source, instrument=instrument)
-    
+
     try:
         tensor = read_tensor_from_gzip(str(file_path), device=device)
     except FileNotFoundError as e:
         raise FileNotFoundError(f"Tensor file not found at {file_path}: {e}") from e
-    
+
     tensor = tensor.to(dtype=dtype)
-    
+
     if strip_date_time:
         tensor = tensor[:, 4:].clone()  # Skip first 4 columns
 
