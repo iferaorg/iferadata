@@ -322,6 +322,7 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
 
     contract_tensors = []
     contract_instruments = []
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     for code in contract_codes:
         if code not in dates:
@@ -345,7 +346,7 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
         contract_tensor = load_data_tensor(
             instrument=contract_instrument,
             dtype=torch.float64,
-            device=torch.device("cpu"),
+            device=device,
             strip_date_time=False,
         )
 
@@ -391,9 +392,9 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
     rollover_spec = []
 
     for active, pos, ratio in zip(
-        active_idx[rollover_indices].numpy(),
-        rollover_indices.numpy(),
-        ratios_cump[rollover_indices + 1].numpy(),
+        active_idx[rollover_indices].cpu().numpy(),
+        rollover_indices.cpu().numpy(),
+        ratios_cump[rollover_indices + 1].cpu().numpy(),
     ):
         contract_code = contract_instruments_sorted[active].contract_code
         rollover_spec.append(
