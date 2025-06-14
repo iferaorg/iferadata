@@ -34,16 +34,17 @@ def parse_github_url(url: str) -> Tuple[str, str, str]:
     if parts.scheme != "github":
         raise ValueError(f"Not a GitHub URL: {url}")
 
-    owner = parts.netloc
-    path_parts = parts.path.lstrip("/").split("/", 1)
+    # Split the path, removing leading slash
+    path_parts = parts.path.split("/", 2)
 
-    if not owner or len(path_parts) < 2:
+    if len(path_parts) < 3:
         raise ValueError(
             f"Invalid GitHub URL format: {url}. Expected github://owner/repo/path/to/file"
         )
 
-    repo = path_parts[0]
-    file_path = path_parts[1]
+    owner = path_parts[0]
+    repo = path_parts[1]
+    file_path = path_parts[2]
 
     return owner, repo, file_path
 

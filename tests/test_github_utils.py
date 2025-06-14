@@ -13,7 +13,7 @@ from ifera import github_utils
 
 
 def test_parse_github_url_valid():
-    url = "github://owner/repo/path/to/file.txt"
+    url = "github:owner/repo/path/to/file.txt"
     owner, repo, path = github_utils.parse_github_url(url)
     assert owner == "owner"
     assert repo == "repo"
@@ -36,7 +36,7 @@ def test_parse_github_url_invalid_format():
 
 
 def test_check_github_file_exists_true(mock_github):
-    url = "github://owner/repo/file.txt"
+    url = "github:owner/repo/file.txt"
     repo = MagicMock()
     mock_github.github_client.get_repo.return_value = repo
     repo.get_contents.return_value = MagicMock()
@@ -47,7 +47,7 @@ def test_check_github_file_exists_true(mock_github):
 
 
 def test_check_github_file_exists_false(mock_github):
-    url = "github://owner/repo/missing.txt"
+    url = "github:owner/repo/missing.txt"
     repo = MagicMock()
     repo.get_contents.side_effect = GithubException(404, {})
     mock_github.github_client.get_repo.return_value = repo
@@ -58,7 +58,7 @@ def test_check_github_file_exists_false(mock_github):
 
 
 def test_check_github_file_exists_error(mock_github):
-    url = "github://owner/repo/error.txt"
+    url = "github:owner/repo/error.txt"
     repo = MagicMock()
     repo.get_contents.side_effect = GithubException(500, {})
     mock_github.github_client.get_repo.return_value = repo
@@ -73,7 +73,7 @@ def test_check_github_file_exists_error(mock_github):
 
 
 def test_get_github_last_modified(mock_github):
-    url = "github://owner/repo/file.txt"
+    url = "github:owner/repo/file.txt"
     repo = MagicMock()
     commit = MagicMock()
     commit.commit.committer.date = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
@@ -87,7 +87,7 @@ def test_get_github_last_modified(mock_github):
 
 
 def test_get_github_last_modified_not_found(mock_github):
-    url = "github://owner/repo/missing.txt"
+    url = "github:owner/repo/missing.txt"
     repo = MagicMock()
     repo.get_commits.side_effect = GithubException(404, {})
     mock_github.github_client.get_repo.return_value = repo
@@ -97,7 +97,7 @@ def test_get_github_last_modified_not_found(mock_github):
 
 
 def test_get_github_last_modified_no_commits(mock_github):
-    url = "github://owner/repo/empty.txt"
+    url = "github:owner/repo/empty.txt"
     repo = MagicMock()
     repo.get_commits.return_value = []
     mock_github.github_client.get_repo.return_value = repo
