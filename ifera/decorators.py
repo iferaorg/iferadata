@@ -1,7 +1,7 @@
 import threading
 import functools
 import inspect
-from typing import Callable, Optional
+from typing import Optional
 from readerwriterlock import rwlock
 
 

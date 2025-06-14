@@ -1,7 +1,8 @@
 import datetime
+from typing import Optional
+
 import holidays
 import holidays.financial
-from typing import Optional
 from .enums import ExpirationRule
 
 # -----------------------------------------------------------------------------
