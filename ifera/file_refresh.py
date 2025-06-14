@@ -289,6 +289,23 @@ def process_futures_metadata(symbol: str) -> None:
 
 
 def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
+    """Generate a YAML rollover specification for a futures symbol.
+
+    This loads metadata and tensors for each contract, determines when to roll
+    from one contract to the next and calculates the multiplier required to
+    stitch prices together.
+
+    The resulting file is written to ``meta/futures/rollover/{symbol}.yml`` and
+    contains a list of dictionaries with the keys ``"start_date"``,
+    ``"contract_code"`` and ``"multiplier"``.
+
+    Parameters
+    ----------
+    symbol
+        Root futures symbol, e.g. ``"GC"``.
+    contract_codes
+        List of contract codes such as ``["F10", "G10", …]``.
+    """
 
     dates_path = make_path(Source.META, "futures", "dates", symbol)
     if not dates_path.exists():
