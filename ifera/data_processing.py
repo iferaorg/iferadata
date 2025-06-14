@@ -305,26 +305,40 @@ def perform_final_calculations(
     """Perform final calculations for ordinal dates and time seconds."""
     # Handle empty DataFrame case
     if df.empty:
-        return pd.DataFrame(columns=[
-            'open', 'high', 'low', 'close', 'volume',
-            'date', 'time', 'offset_time', 'trade_date',
-            'ord_date', 'time_seconds', 'ord_trade_date', 'offset_time_seconds'
-        ]).astype({
-            'open': df.dtypes['open'],
-            'high': df.dtypes['high'],
-            'low': df.dtypes['low'],
-            'close': df.dtypes['close'],
-            'volume': df.dtypes['volume'],
-            'date': 'datetime64[ns]',
-            'time': 'timedelta64[ns]',
-            'offset_time': 'timedelta64[ns]',
-            'trade_date': 'datetime64[ns]',
-            'ord_date': 'int64',
-            'time_seconds': 'float64',
-            'ord_trade_date': 'int64',
-            'offset_time_seconds': 'float64'
-        })
-    
+        return pd.DataFrame(
+            columns=[
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "date",
+                "time",
+                "offset_time",
+                "trade_date",
+                "ord_date",
+                "time_seconds",
+                "ord_trade_date",
+                "offset_time_seconds",
+            ]
+        ).astype(
+            {
+                "open": df.dtypes["open"],
+                "high": df.dtypes["high"],
+                "low": df.dtypes["low"],
+                "close": df.dtypes["close"],
+                "volume": df.dtypes["volume"],
+                "date": "datetime64[ns]",
+                "time": "timedelta64[ns]",
+                "offset_time": "timedelta64[ns]",
+                "trade_date": "datetime64[ns]",
+                "ord_date": "int64",
+                "time_seconds": "float64",
+                "ord_trade_date": "int64",
+                "offset_time_seconds": "float64",
+            }
+        )
+
     offset_seconds = instrument.trading_start.total_seconds()
     df = df.assign(
         ord_trade_date=df["trade_date"].map(lambda x: x.toordinal()),
@@ -409,12 +423,12 @@ def process_data(
     output_path = make_instrument_path(
         source=Source.PROCESSED, instrument=instrument, remove_file=True
     )
-    
+
     if zipfile:
         if df.empty:
             # Create zip file with empty CSV file containing header
-            with zip_file.ZipFile(str(output_path), 'w', zip_file.ZIP_DEFLATED) as zf:
-                csv_name = output_path.stem + '.csv'
+            with zip_file.ZipFile(str(output_path), "w", zip_file.ZIP_DEFLATED) as zf:
+                csv_name = output_path.stem + ".csv"
                 empty_csv_content = ""
                 zf.writestr(csv_name, empty_csv_content)
         else:
@@ -450,7 +464,7 @@ def _last_business_day(
     # Check if there are any trading days before the given date
     if not trading_days_ord or date_.toordinal() < min(trading_days_ord):
         return date_
-    
+
     cur = date_
     while cur.toordinal() not in trading_days_ord:
         cur -= datetime.timedelta(days=1)
@@ -512,7 +526,11 @@ def calculate_rollover(
     alpha_raw = instruments[0].rollover_vol_alpha
     alpha = alpha_raw if alpha_raw is not None else 1.0
     start_ord = instruments[0].start_date.toordinal()
-    max_delta = instruments[0].rollover_max_month_delta if instruments[0].rollover_max_month_delta is not None else 12
+    max_delta = (
+        instruments[0].rollover_max_month_delta
+        if instruments[0].rollover_max_month_delta is not None
+        else 12
+    )
 
     # Pre-compute: per contract  ➜  dict( ord_trade_date → (volume<15:30>, open15:30) )
     contract_day_stats: list[dict[int, tuple[float, float]]] = []
@@ -527,7 +545,7 @@ def calculate_rollover(
 
             if ord_td < start_ord - 1:
                 continue
-    
+
             times_d = tens[d, :, OFFSET_CH]
             vols_d = tens[d, :, VOL_CH]
 
@@ -560,8 +578,10 @@ def calculate_rollover(
         contract_day_stats.append(stats)
 
     # Build the master calendar ---------------------------------------------
-    all_days_ord_full = sorted({day for stats in contract_day_stats for day in stats.keys()})
-    trading_days_ord = set(all_days_ord_full) 
+    all_days_ord_full = sorted(
+        {day for stats in contract_day_stats for day in stats.keys()}
+    )
+    trading_days_ord = set(all_days_ord_full)
 
     contract_forced_roll: list[int | None] = [
         _forced_roll_date(inst, trading_days_ord) for inst in instruments
@@ -579,7 +599,7 @@ def calculate_rollover(
     vols_first = [stats.get(first_day, (0.0, 0.0))[0] for stats in contract_day_stats]
     current = int(torch.tensor(vols_first).argmax().item())
     curr_exp = instruments[current].expiration_date
-    curr_year, curr_month = curr_exp.year, curr_exp.month # type: ignore
+    curr_year, curr_month = curr_exp.year, curr_exp.month  # type: ignore
 
     # -----------------------------------------------------------------------
     for pos, day in enumerate(all_days_ord):
@@ -595,7 +615,7 @@ def calculate_rollover(
         # Look-ahead volumes -------------------------------------------------
         fut_volumes = []
         fut_candidates = []
-        
+
         for j in range(current + 1, len(instruments)):
             exp_j = instruments[j].expiration_date
             if exp_j is None:
@@ -629,7 +649,6 @@ def calculate_rollover(
             active_idx[pos] = target_idx
             current = target_idx
             curr_exp = instruments[current].expiration_date
-            curr_year, curr_month = curr_exp.year, curr_exp.month # type: ignore
+            curr_year, curr_month = curr_exp.year, curr_exp.month  # type: ignore
 
     return ratios, active_idx, all_days_ord
-
