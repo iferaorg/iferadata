@@ -103,6 +103,19 @@ def mock_s3(monkeypatch):
     return wrapper
 
 
+@pytest.fixture
+def mock_github(monkeypatch):
+    """Provide a mocked GitHub client for offline tests."""
+    from ifera import github_utils
+
+    client = MagicMock()
+    wrapper = SimpleNamespace(github_client=client)
+    monkeypatch.setattr(github_utils, "GitHubClientSingleton", lambda: wrapper)
+    github_utils.check_github_file_exists.cache_clear()
+    github_utils.get_github_last_modified.cache_clear()
+    return wrapper
+
+
 # Instrument Configuration
 @pytest.fixture
 def config_manager() -> ConfigManager:
