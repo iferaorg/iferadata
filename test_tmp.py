@@ -39,8 +39,7 @@ for symbol in symbols:
         continue
     
     print(f"Refreshing individual contracts for {symbol}...")
-    fm.refresh_file(f"file:data/meta/futures/tasks/30m/{symbol}.yml")
-    fm.refresh_file(f"file:data/meta/futures/tasks/1m/{symbol}.yml")
+    fm.refresh_file(f"file:data/meta/futures/rollover/{symbol}.yml")
 
 
 # -----------------------------------------------------------
