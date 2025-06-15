@@ -145,3 +145,15 @@ def file_manager_instance():
     yield fm
     if hasattr(FileManager, "_instance"):
         delattr(FileManager, "_instance")
+
+
+@pytest.fixture
+def file_manager_refresh_instance():
+    from ifera.file_manager import FileManager
+
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
+    fm = FileManager(config_file="../tests/test_refresh_rules.yml")
+    yield fm
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
