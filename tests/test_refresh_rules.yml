@@ -1,0 +1,18 @@
+dependency_rules:
+  - dependent: "file:/tmp/intermediate/{symbol}-{code}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/output/{symbol}.txt"
+    depends_on:
+      - pattern: "file:/tmp/intermediate/{symbol}-{code}.txt"
+        wildcard_expansion: "s3:raw/{symbol}-{code}.txt"
+refresh_rules:
+  - dependent: "file:/tmp/intermediate/{symbol}-{code}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/output/{symbol}.txt"
+    depends_on:
+      - pattern: "file:/tmp/intermediate/{symbol}-{code}.txt"
+        wildcard_expansion: "s3:raw/{symbol}-{code}.txt"
+    refresh_function:
+      name: "tests.helper_module.combine"
+      list_args:
+        codes: code

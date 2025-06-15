@@ -150,3 +150,154 @@ def test_dependencies_max_last_modified(monkeypatch, file_manager_instance):
     fm = file_manager_instance
     result = fm.dependencies_max_last_modified("file:/tmp/processed/ABC.txt")
     assert result == times["file:/tmp/raw/ABC.txt"]
+
+
+def test_build_subgraph(file_manager_instance):
+    fm = file_manager_instance
+    fm.build_subgraph("file:/tmp/processed/ABC.txt", RuleType.DEPENDENCY)
+    graph = fm.dependency_graph
+    assert "file:/tmp/raw/ABC.txt" in graph
+    node = graph.nodes["file:/tmp/processed/ABC.txt"]
+    assert node["wildcards"] == {"symbol": "ABC"}
+    assert graph.has_edge("file:/tmp/processed/ABC.txt", "file:/tmp/raw/ABC.txt")
+    assert "refresh_function" in node
+
+
+def test_is_up_to_date_true(monkeypatch, file_manager_instance):
+    now = dt.datetime(2024, 1, 2, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/raw/ABC.txt": now - dt.timedelta(days=1),
+        "file:/tmp/processed/ABC.txt": now,
+    }
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    fm = file_manager_instance
+    assert fm.is_up_to_date("file:/tmp/processed/ABC.txt") is True
+
+
+def test_is_up_to_date_missing(monkeypatch, file_manager_instance):
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {"file:/tmp/raw/ABC.txt": now}
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    fm = file_manager_instance
+    assert fm.is_up_to_date("file:/tmp/processed/ABC.txt") is False
+
+
+def test_refresh_file_calls_process(monkeypatch, file_manager_instance):
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/raw/ABC.txt": now,
+        "file:/tmp/processed/ABC.txt": now - dt.timedelta(days=1),
+    }
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+        def remove_from_cache(self, _file: str):
+            pass
+
+        def remove(self, file: str, scheme):
+            pass
+
+    process_mock = MagicMock()
+    monkeypatch.setattr("tests.helper_module.process", process_mock)
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
+
+    fm = file_manager_instance
+    fm.refresh_file("file:/tmp/processed/ABC.txt")
+    process_mock.assert_called_once_with(symbol="ABC", extra="value")
+
+
+def test_refresh_stale_file_refresh_branch(monkeypatch, file_manager_refresh_instance):
+    keys = ["raw/CL-AA.txt", "raw/CL-BB.txt"]
+    monkeypatch.setattr("ifera.file_manager.list_s3_objects", lambda prefix: keys)
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/intermediate/CL-AA.txt": now,
+        "file:/tmp/intermediate/CL-BB.txt": now,
+        "file:/tmp/output/CL.txt": None,
+    }
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+        def remove_from_cache(self, _file: str):
+            pass
+
+        def remove(self, file: str, scheme):
+            pass
+
+    combine_mock = MagicMock()
+    monkeypatch.setattr("tests.helper_module.combine", combine_mock)
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
+
+    fm = file_manager_refresh_instance
+    fm.refresh_file("file:/tmp/output/CL.txt")
+    combine_mock.assert_called_once_with(symbol="CL", codes=["AA", "BB"])
+
+
+def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_instance):
+    keys = ["raw/CL-AA.txt"]
+    monkeypatch.setattr("ifera.file_manager.list_s3_objects", lambda prefix: keys)
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/intermediate/CL-AA.txt": now,
+        "file:/tmp/output/CL.txt": None,
+    }
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+        def remove_from_cache(self, _file: str):
+            pass
+
+        def remove(self, file: str, scheme):
+            pass
+
+    fm = file_manager_refresh_instance
+    fm.build_subgraph("file:/tmp/output/CL.txt", RuleType.DEPENDENCY)
+    fm.build_subgraph("file:/tmp/output/CL.txt", RuleType.REFRESH)
+    for dep in fm.refresh_graph.successors("file:/tmp/output/CL.txt"):
+        fm.refresh_graph.nodes[dep]["wildcards"] = {}
+
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
+
+    dummy_fop = DummyFOP(times)
+    with pytest.raises(RuntimeError):
+        fm._refresh_stale_file(
+            "file:/tmp/output/CL.txt",
+            False,
+            {},
+            dummy_fop,
+            [],
+        )
