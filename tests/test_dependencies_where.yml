@@ -1,0 +1,15 @@
+dependency_rules:
+  - dependent: "file:/tmp/{type}/{interval}/{symbol}.txt"
+    where:
+      - type: "foo"
+      - interval: ["1m", "5m"]
+    depends_on:
+      - "file:/tmp/raw/foo/{symbol}.txt"
+    refresh_function: "tests.helper_module.process"
+  - dependent: "file:/tmp/{type}/{interval}/{symbol}.txt"
+    where:
+      - type: "bar"
+    depends_on:
+      - "file:/tmp/raw/bar/{symbol}.txt"
+    refresh_function: "tests.helper_module.process"
+refresh_rules: []
