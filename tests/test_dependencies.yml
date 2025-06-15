@@ -1,0 +1,11 @@
+dependency_rules:
+  - dependent: "file:/tmp/processed/{symbol}.txt"
+    depends_on:
+      - "file:/tmp/raw/{symbol}.txt"
+    refresh_function:
+      name: "tests.helper_module.process"
+      additional_args:
+        extra: "value"
+  - dependent: "file:/tmp/raw/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
+refresh_rules: []
