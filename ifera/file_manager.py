@@ -200,6 +200,32 @@ def partial_substitute_pattern(pattern: str, wildcards: Dict[str, str]) -> str:
     return re.sub(r"\{(\w+)\}", replacer, pattern)
 
 
+def _where_matches(where_clause, wildcards: dict) -> bool:
+    """Return True if provided wildcards satisfy the where clause."""
+    if not where_clause:
+        return True
+
+    conditions: dict = {}
+    if isinstance(where_clause, dict):
+        conditions = where_clause
+    elif isinstance(where_clause, list):
+        for item in where_clause:
+            if isinstance(item, dict):
+                conditions.update(item)
+
+    for key, allowed in conditions.items():
+        value = wildcards.get(key)
+        if value is None:
+            return False
+        if isinstance(allowed, list):
+            if value not in allowed:
+                return False
+        else:
+            if value != allowed:
+                return False
+    return True
+
+
 class FileOperations:
     """Abstract file operations for different storage systems."""
 
@@ -393,7 +419,7 @@ class FileManager:
         for rule in rules:
             wildcards = match_pattern(rule["dependent"], file)
 
-            if wildcards:
+            if wildcards and _where_matches(rule.get("where"), wildcards):
                 graph.add_node(file, wildcards=wildcards)
 
                 if rule.get("refresh_function"):

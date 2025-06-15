@@ -331,3 +331,18 @@ def test_build_list_args(monkeypatch, file_manager_refresh_instance):
     spec = {"codes": "code"}
     result = fm._build_list_args(file, RuleType.REFRESH, spec)
     assert result == {"codes": ["AA", "BB"]}
+
+
+def test_where_clause_selects_rule(file_manager_where_instance):
+    fm = file_manager_where_instance
+    deps = fm.get_dependencies("file:/tmp/foo/1m/AAA.txt")
+    assert deps == ["file:/tmp/raw/foo/AAA.txt"]
+    deps = fm.get_dependencies("file:/tmp/bar/3m/AAA.txt")
+    assert deps == ["file:/tmp/raw/bar/AAA.txt"]
+
+
+def test_where_clause_no_match(file_manager_where_instance):
+    fm = file_manager_where_instance
+    fm.build_subgraph("file:/tmp/foo/2m/AAA.txt", RuleType.DEPENDENCY)
+    graph = fm.dependency_graph
+    assert list(graph.successors("file:/tmp/foo/2m/AAA.txt")) == []
