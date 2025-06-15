@@ -125,7 +125,8 @@ def expand_dependency_wildcards(
 
     if not matching_deps:
         print(
-            f"Warning: No matching files found for wildcard expansion with pattern {substituted_expansion}"
+            "Warning: No matching files found for wildcard expansion with pattern "
+            f"{substituted_expansion}"
         )
 
     return matching_deps
@@ -367,7 +368,9 @@ class FileManager:
                 expanded_files = expand_dependency_wildcards(dep, wildcards)
                 if not expanded_files:
                     print(
-                        f"Warning: Skipping dependency {dep.get('pattern', '')} for {parent_node} as no expansion matches were found."
+                        "Warning: Skipping dependency "
+                        f"{dep.get('pattern', '')} for {parent_node} as no "
+                        "expansion matches were found."
                     )
                 for dep_file in expanded_files:
                     self.build_subgraph(dep_file, rule_type)
@@ -489,14 +492,15 @@ class FileManager:
             self.build_subgraph(file, RuleType.REFRESH)
             self._refresh_stale_file(file, reset, cache, fop, temp_files)
 
-    def _refresh_stale_file(
+    def _select_refresh_node(
         self,
         file: str,
         reset: bool,
         cache: Dict[str, bool],
         fop: FileOperations,
         temp_files: List[str],
-    ) -> None:
+    ) -> tuple[str | dict | None, RuleType, dict]:
+        """Return the refresh rule node and its type for the given file."""
         node_data = self.dependency_graph.nodes[file]
         refresh_func_node = node_data.get("refresh_function")
 
@@ -504,33 +508,28 @@ class FileManager:
             self._is_up_to_date(dep, cache, fop)
             for dep in self.dependency_graph.successors(file)
         ):
-            func_node = refresh_func_node
-            rule_type = RuleType.DEPENDENCY
-        else:
-            for dep in self.refresh_graph.successors(file):
-                self.build_subgraph(dep, RuleType.DEPENDENCY)
-                if reset or not self._is_up_to_date(dep, cache, fop):
-                    self._refresh_stale_file(dep, reset, cache, fop, temp_files)
+            return refresh_func_node, RuleType.DEPENDENCY, node_data
 
-            node_data = self.refresh_graph.nodes[file]
-            func_node = node_data.get("refresh_function")
-            rule_type = RuleType.REFRESH
+        for dep in self.refresh_graph.successors(file):
+            self.build_subgraph(dep, RuleType.DEPENDENCY)
+            if reset or not self._is_up_to_date(dep, cache, fop):
+                self._refresh_stale_file(dep, reset, cache, fop, temp_files)
 
-        if not func_node:
-            return
+        node_data = self.refresh_graph.nodes[file]
+        return node_data.get("refresh_function"), RuleType.REFRESH, node_data
 
-        # -------------------------------------------------
-        # 1.  Pull out “static” information from the rule
-        # -------------------------------------------------
+    @staticmethod
+    def _parse_refresh_rule(func_node: str | dict, file: str) -> tuple[str, dict, dict]:
+        """Extract function information from a refresh rule."""
         func_str: str | None = None
-        additional_arguments = {}
-        list_args_spec = {}
+        additional_arguments: dict = {}
+        list_args_spec: dict = {}
 
         if isinstance(func_node, str):
             func_str = func_node
         elif isinstance(func_node, dict):
             func_str = func_node["name"]
-            additional_arguments = dict(func_node.get("additional_args", {}))  # copy
+            additional_arguments = dict(func_node.get("additional_args", {}))
             list_args_spec = func_node.get("list_args", {})
         else:
             raise ValueError(f"Invalid process function for file {file}")
@@ -538,30 +537,38 @@ class FileManager:
         if not func_str:
             raise ValueError(f"No process function defined for file {file}")
 
-        # -------------------------------------------------
-        # 2.  Build *dynamic* list-type arguments (list_args)
-        # -------------------------------------------------
-        if list_args_spec:  # Only present on a few rules
-            for arg_name, wildcard_key in list_args_spec.items():
-                values: list[str] = []
-                graph = self.get_graph(rule_type)
-                for dep in graph.successors(file):
-                    dep_wc = graph.nodes[dep].get("wildcards", {})
-                    val = dep_wc.get(wildcard_key)
-                    if val is not None and val not in values:  # keep order, avoid dups
-                        values.append(val)
+        return func_str, additional_arguments, list_args_spec
 
-                if not values:
-                    raise RuntimeError(
-                        f"Could not build list argument '{arg_name}' for '{file}'; "
-                        f"none of the direct dependencies expose wildcard '{wildcard_key}'."
-                    )
+    def _build_list_args(
+        self, file: str, rule_type: RuleType, list_args_spec: dict
+    ) -> dict:
+        """Construct list-type arguments based on rule specifications."""
+        additional_arguments: dict[str, list[str]] = {}
+        if not list_args_spec:
+            return additional_arguments
 
-                additional_arguments[arg_name] = values
+        for arg_name, wildcard_key in list_args_spec.items():
+            values: list[str] = []
+            graph = self.get_graph(rule_type)
+            for dep in graph.successors(file):
+                dep_wc = graph.nodes[dep].get("wildcards", {})
+                val = dep_wc.get(wildcard_key)
+                if val is not None and val not in values:
+                    values.append(val)
 
-        # -------------------------------------------------
-        # 3.  Normal execution path continues as before
-        # -------------------------------------------------
+            if not values:
+                raise RuntimeError(
+                    f"Could not build list argument '{arg_name}' for '{file}'; "
+                    f"none of the direct dependencies expose wildcard '{wildcard_key}'."
+                )
+
+            additional_arguments[arg_name] = values
+
+        return additional_arguments
+
+    @staticmethod
+    def _ensure_temp_file(file: str, temp_files: list[str]) -> None:
+        """Add file to temporary list if it needs to be created."""
         parts = urlparse(file)
         scheme = Scheme(parts.scheme)
         if (
@@ -570,6 +577,30 @@ class FileManager:
             and file not in temp_files
         ):
             temp_files.append(file)
+
+    def _refresh_stale_file(
+        self,
+        file: str,
+        reset: bool,
+        cache: Dict[str, bool],
+        fop: FileOperations,
+        temp_files: List[str],
+    ) -> None:
+        func_node, rule_type, node_data = self._select_refresh_node(
+            file, reset, cache, fop, temp_files
+        )
+
+        if not func_node:
+            return
+
+        func_str, additional_arguments, list_args_spec = self._parse_refresh_rule(
+            func_node, file
+        )
+        additional_arguments.update(
+            self._build_list_args(file, rule_type, list_args_spec)
+        )
+
+        self._ensure_temp_file(file, temp_files)
 
         process_func = import_function(func_str)
         wildcards = node_data.get("wildcards", {})
