@@ -1,0 +1,152 @@
+import datetime as dt
+import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from ifera.file_manager import (
+    FileManager,
+    FileOperations,
+    RuleType,
+    expand_dependency_wildcards,
+    get_literal_prefix,
+    import_function,
+    match_pattern,
+    partial_substitute_pattern,
+    pattern_to_regex,
+    pattern_to_regex_custom,
+    substitute_pattern,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helper function tests
+# ---------------------------------------------------------------------------
+
+
+def test_pattern_to_regex_custom():
+    regex, names = pattern_to_regex_custom("path/{name}/{date:\\d{8}}.txt")
+    assert names == ["name", "date"]
+    assert regex == "^path/(.+?)/(\\d{8)\\}\\.txt$"
+
+
+def test_get_literal_prefix():
+    assert get_literal_prefix("foo/{bar}/baz") == "foo/"
+    assert get_literal_prefix("foo/bar") == "foo/bar"
+
+
+def test_pattern_to_regex():
+    regex, names = pattern_to_regex("/foo/{bar}/baz-{qux}.txt")
+    assert regex == r"^/foo/(.+?)/baz\-(.+?)\.txt$"
+    assert names == ["bar", "qux"]
+
+
+def test_match_pattern():
+    pattern = "file:/data/{source}/{symbol}.csv"
+    file = "file:/data/raw/XYZ.csv"
+    assert match_pattern(pattern, file) == {"source": "raw", "symbol": "XYZ"}
+    assert match_pattern(pattern, "s3:/data/raw/XYZ.csv") is None
+
+
+def test_substitute_pattern():
+    assert (
+        substitute_pattern("file:{symbol}.txt", {"symbol": "AAPL"}) == "file:AAPL.txt"
+    )
+    with pytest.raises(ValueError):
+        substitute_pattern("file:{symbol}.txt", {"other": "x"})
+
+
+def test_partial_substitute_pattern():
+    result = partial_substitute_pattern("s3:{bucket}/{name}", {"bucket": "b"})
+    assert result == "s3:b/{name}"
+
+
+def test_expand_dependency_wildcards(monkeypatch):
+    dep_entry = {
+        "pattern": "s3:tensor/data/{symbol}-{code}.pt",
+        "wildcard_expansion": "s3:raw/data/{symbol}-{code:[A-Z]{2}}.zip",
+    }
+    objects = [
+        "raw/data/CL-AA.zip",
+        "raw/data/CL-BB.zip",
+        "raw/data/CL-cc.zip",
+    ]
+    mock = MagicMock(return_value=objects)
+    monkeypatch.setattr("ifera.file_manager.list_s3_objects", mock)
+    result = expand_dependency_wildcards(dep_entry, {"symbol": "CL"})
+    mock.assert_called_once_with("raw/data/CL-")
+    assert result == []
+
+
+# ---------------------------------------------------------------------------
+# FileOperations tests
+# ---------------------------------------------------------------------------
+
+
+def test_file_operations_exists_cache(monkeypatch):
+    fop = FileOperations()
+    file = "file:/tmp/foo.txt"
+    mock_exists = MagicMock(return_value=True)
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", mock_exists)
+    assert fop.exists(file) is True
+    assert mock_exists.call_count == 1
+    assert fop.exists(file) is True
+    assert mock_exists.call_count == 1
+    fop.exists_cache.clear()
+    fop.mtime_cache[file] = None
+    assert fop.exists(file) is False
+
+
+def test_file_operations_get_mtime(monkeypatch):
+    fop = FileOperations()
+    file = "file:/tmp/foo.txt"
+    ts = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: True)
+    mock_getmtime = MagicMock(return_value=ts.timestamp())
+    monkeypatch.setattr("ifera.file_manager.os.path.getmtime", mock_getmtime)
+    assert fop.get_mtime(file) == ts
+    assert fop.get_mtime(file) == ts
+    assert mock_getmtime.call_count == 1
+    with pytest.raises(ValueError):
+        fop.get_mtime("ftp:/invalid")
+
+
+def test_import_function():
+    func = import_function("math.sqrt")
+    assert func(9) == 3
+    with pytest.raises(ImportError):
+        import_function("math.nope")
+
+
+# ---------------------------------------------------------------------------
+# FileManager graph tests
+# ---------------------------------------------------------------------------
+
+
+def test_file_manager_get_dependencies(file_manager_instance):
+    fm = file_manager_instance
+    deps = fm.get_dependencies("file:/tmp/processed/ABC.txt")
+    assert deps == ["file:/tmp/raw/ABC.txt"]
+
+
+def test_file_manager_get_node_params(file_manager_instance):
+    fm = file_manager_instance
+    params = fm.get_node_params(RuleType.DEPENDENCY, "file:/tmp/processed/ABC.txt")
+    assert params == {"symbol": "ABC", "extra": "value"}
+
+
+def test_dependencies_max_last_modified(monkeypatch, file_manager_instance):
+    times = {"file:/tmp/raw/ABC.txt": dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)}
+
+    class DummyFOP:
+        def __init__(self) -> None:
+            pass
+
+        def get_mtime(self, file: str):
+            return times.get(file)
+
+    monkeypatch.setattr("ifera.file_manager.FileOperations", DummyFOP)
+    fm = file_manager_instance
+    result = fm.dependencies_max_last_modified("file:/tmp/processed/ABC.txt")
+    assert result == times["file:/tmp/raw/ABC.txt"]
