@@ -301,3 +301,33 @@ def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_in
             dummy_fop,
             [],
         )
+
+
+def test_parse_refresh_rule():
+    fm = FileManager(config_file="../tests/test_dependencies.yml")
+    func, args, spec = fm._parse_refresh_rule("tests.helper_module.process", "f")
+    assert func == "tests.helper_module.process"
+    assert args == {}
+    assert spec == {}
+
+    func_dict = {
+        "name": "tests.helper_module.combine",
+        "additional_args": {"a": 1},
+        "list_args": {"codes": "code"},
+    }
+    func, args, spec = fm._parse_refresh_rule(func_dict, "f")
+    assert func == "tests.helper_module.combine"
+    assert args == {"a": 1}
+    assert spec == {"codes": "code"}
+
+
+def test_build_list_args(monkeypatch, file_manager_refresh_instance):
+    keys = ["raw/CL-AA.txt", "raw/CL-BB.txt"]
+    monkeypatch.setattr("ifera.file_manager.list_s3_objects", lambda prefix: keys)
+    fm = file_manager_refresh_instance
+    file = "file:/tmp/output/CL.txt"
+    fm.build_subgraph(file, RuleType.DEPENDENCY)
+    fm.build_subgraph(file, RuleType.REFRESH)
+    spec = {"codes": "code"}
+    result = fm._build_list_args(file, RuleType.REFRESH, spec)
+    assert result == {"codes": ["AA", "BB"]}
