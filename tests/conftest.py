@@ -111,8 +111,8 @@ def mock_github(monkeypatch):
     client = MagicMock()
     wrapper = SimpleNamespace(github_client=client)
     monkeypatch.setattr(github_utils, "GitHubClientSingleton", lambda: wrapper)
-    github_utils.check_github_file_exists.cache_clear() # type: ignore
-    github_utils.get_github_last_modified.cache_clear() # type: ignore
+    github_utils.check_github_file_exists.cache_clear()  # type: ignore
+    github_utils.get_github_last_modified.cache_clear()  # type: ignore
     return wrapper
 
 
@@ -133,3 +133,15 @@ def base_instrument_config(config_manager: ConfigManager) -> BaseInstrumentConfi
 @pytest.fixture
 def instrument_config(config_manager: ConfigManager) -> InstrumentConfig:
     return config_manager.get_config(broker_name="IBKR", symbol="CL", interval="30m")
+
+
+@pytest.fixture
+def file_manager_instance():
+    from ifera.file_manager import FileManager
+
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
+    fm = FileManager(config_file="../tests/test_dependencies.yml")
+    yield fm
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
