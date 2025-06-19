@@ -14,6 +14,7 @@ from .decorators import singleton
 from .enums import Scheme
 from .github_utils import check_github_file_exists, get_github_last_modified
 from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
+from .settings import settings
 
 # Helper Functions
 
@@ -246,7 +247,10 @@ class FileOperations:
         scheme = Scheme(parts.scheme)
 
         if scheme == Scheme.FILE:
-            result = os.path.exists(parts.path)
+            path = parts.path
+            if not os.path.isabs(path):
+                path = os.path.join(settings.DATA_FOLDER, path)
+            result = os.path.exists(path)
         elif scheme == Scheme.S3:
             result = check_s3_file_exists(parts.path)
         elif scheme == Scheme.GITHUB:
@@ -273,6 +277,8 @@ class FileOperations:
 
         if scheme == Scheme.FILE:
             path = parts.path
+            if not os.path.isabs(path):
+                path = os.path.join(settings.DATA_FOLDER, path)
             if not os.path.exists(path):
                 result = None
             else:
@@ -305,8 +311,11 @@ class FileOperations:
             raise ValueError(f"Unsupported scheme: {parts.scheme}")
 
         if scheme == Scheme.FILE and scheme_filter == Scheme.FILE:
-            if os.path.exists(parts.path):
-                os.remove(parts.path)
+            path = parts.path
+            if not os.path.isabs(path):
+                path = os.path.join(settings.DATA_FOLDER, path)
+            if os.path.exists(path):
+                os.remove(path)
         elif scheme == Scheme.S3 and scheme_filter == Scheme.S3:
             raise NotImplementedError("S3 deletion not implemented")
         else:
@@ -599,7 +608,11 @@ class FileManager:
         scheme = Scheme(parts.scheme)
         if (
             scheme == Scheme.FILE
-            and not os.path.exists(parts.path)
+            and not os.path.exists(
+                os.path.join(settings.DATA_FOLDER, parts.path)
+                if not os.path.isabs(parts.path)
+                else parts.path
+            )
             and file not in temp_files
         ):
             temp_files.append(file)
