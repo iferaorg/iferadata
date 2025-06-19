@@ -1,12 +1,12 @@
 dependency_rules:
   # Task - refresh futures individual
-  - dependent: "file:data/meta/futures/tasks/{interval}/{symbol}.yml"
+  - dependent: "file:meta/futures/tasks/{interval}/{symbol}.yml"
     depends_on:
       - pattern: "s3:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
         wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
 
   # Download
-  - dependent: "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
+  - dependent: "file:{source}/{type}/{interval}/{symbol}.{ext}"
     depends_on:
       - "s3:{source}/{type}/{interval}/{symbol}.{ext}"
     refresh_function: "ifera.file_refresh.download_file"
@@ -48,32 +48,32 @@ refresh_rules:
   # Upload
   - dependent: "s3:{source}/{type}/{interval}/{symbol}.{ext}"
     depends_on:
-      - "file:data/{source}/{type}/{interval}/{symbol}.{ext}"
+      - "file:{source}/{type}/{interval}/{symbol}.{ext}"
     refresh_function: "ifera.file_refresh.upload_file"
 
   # Fake file for metadata
-  - dependent: "file:data/meta/futures_individual/30m/{symbol}-{contract_code}.zip"
+  - dependent: "file:meta/futures_individual/30m/{symbol}-{contract_code}.zip"
 
   # Metadata
-  - dependent: "file:data/meta/futures/dates_raw/{symbol}.yml"
+  - dependent: "file:meta/futures/dates_raw/{symbol}.yml"
     depends_on:
-      - pattern: "file:data/meta/futures_individual/30m/{symbol}-{contract_code}.zip"
+      - pattern: "file:meta/futures_individual/30m/{symbol}-{contract_code}.zip"
         wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
     refresh_function:
       name: "ifera.file_refresh.process_futures_metadata_raw"
       list_args:
         contract_codes: contract_code
 
-  - dependent: "file:data/meta/futures/dates/{symbol}.yml"
+  - dependent: "file:meta/futures/dates/{symbol}.yml"
     depends_on:
-      - "file:data/meta/futures/dates_raw/{symbol}.yml"
+      - "file:meta/futures/dates_raw/{symbol}.yml"
     refresh_function:
       name: "ifera.file_refresh.process_futures_metadata"
 
-  - dependent: "file:data/meta/futures/rollover/{symbol}.yml"
+  - dependent: "file:meta/futures/rollover/{symbol}.yml"
     depends_on:
-      - "file:data/meta/futures/dates/{symbol}.yml"
-      - pattern: "file:data/tensor/futures_individual/30m/{symbol}-{contract_code}.pt.gz"
+      - "file:meta/futures/dates/{symbol}.yml"
+      - pattern: "file:tensor/futures_individual/30m/{symbol}-{contract_code}.pt.gz"
         wildcard_expansion: "s3:raw/futures_individual/30m/{symbol}-{contract_code}.zip"
     refresh_function: 
       name: "ifera.file_refresh.calculate_rollover_spec"
@@ -81,29 +81,29 @@ refresh_rules:
         contract_codes: contract_code
 
   # Raw -> Processed
-  - dependent: "file:data/processed/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+  - dependent: "file:processed/futures_individual/{interval}/{symbol}-{contract_code}.zip"
     depends_on:
-      - "file:data/raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+      - "file:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
     refresh_function:
       name: "ifera.file_refresh.process_raw_file"
       additional_args:
         type: "futures_individual"
 
-  - dependent: "file:data/processed/{type}/{interval}/{symbol}.zip"
+  - dependent: "file:processed/{type}/{interval}/{symbol}.zip"
     depends_on:
-      - "file:data/raw/{type}/{interval}/{symbol}.zip"
+      - "file:raw/{type}/{interval}/{symbol}.zip"
     refresh_function: "ifera.file_refresh.process_raw_file"
 
   # Processed -> Tensor
-  - dependent: "file:data/tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
+  - dependent: "file:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
     depends_on:
-      - "file:data/processed/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+      - "file:processed/futures_individual/{interval}/{symbol}-{contract_code}.zip"
     refresh_function:
       name: "ifera.file_refresh.process_tensor_file"
       additional_args:
         type: "futures_individual"
   
-  - dependent: "file:data/tensor/{type}/{interval}/{symbol}.pt.gz"
+  - dependent: "file:tensor/{type}/{interval}/{symbol}.pt.gz"
     depends_on:
-      - "file:data/processed/{type}/{interval}/{symbol}.zip"
+      - "file:processed/{type}/{interval}/{symbol}.zip"
     refresh_function: "ifera.file_refresh.process_tensor_file"

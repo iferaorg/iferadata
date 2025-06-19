@@ -10,7 +10,6 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dtparse
 
 from .enums import Scheme, Source, extension_map
-from .file_utils import make_path
 
 
 def make_url(
@@ -22,8 +21,8 @@ def make_url(
 ) -> str:
     """Generate a URL to a data file."""
     if scheme == Scheme.FILE:
-        path = make_path(source, instrument_type, interval, symbol)
-        return f"{scheme.value}:{path}"
+        file_name = f"{symbol}{extension_map[source]}"
+        return f"{scheme.value}:{source.value}/{instrument_type}/{interval}/{file_name}"
 
     file_name = f"{symbol}{extension_map[source]}"
 
