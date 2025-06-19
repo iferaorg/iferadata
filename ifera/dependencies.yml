@@ -106,12 +106,12 @@ refresh_rules:
     refresh_function: "ifera.file_refresh.process_raw_file"
 
   # Special tensors
-  - dependent: "file:data/tensor/futures_backadjusted/{interval}/{symbol}.pt.gz"
+  - dependent: "file:tensor/futures_backadjusted/{interval}/{symbol}.pt.gz"
     where:
       interval: ["1m", "30m"]
     depends_on:
-      - "file:data/meta/futures/rollover/{symbol}.yml"
-      - pattern: "file:data/tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
+      - "file:meta/futures/rollover/{symbol}.yml"
+      - pattern: "file:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
         wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
     refresh_function:
       name: "ifera.file_refresh.process_futures_backadjusted_tensor"
