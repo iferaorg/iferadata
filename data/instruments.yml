@@ -14,7 +14,7 @@ templates:
     startDate: "2009-10-01"
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
     rolloverTime: "15:30:00"
-    rolloverVolAlpha: 0.5
+    rolloverVolAlpha: 1.0
     rolloverMaxMonthDelta: 6
 
 # Instrument-specific configurations
