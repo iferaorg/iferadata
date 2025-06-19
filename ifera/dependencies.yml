@@ -39,8 +39,19 @@ dependency_rules:
       - "github:iferaorg/iferadata/data/instruments.yml"
       - "s3:raw/{type}/{interval}/{symbol}.zip"
 
+  # Special tensors
+  - dependent: "s3:tensor/futures_backadjusted/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["1m", "30m"]
+    depends_on:
+      - "s3:meta/futures/rollover/{symbol}.yml"
+      - pattern: "s3:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
+        wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+
   # Processed -> Tensor
   - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["1m", "30m"]
     depends_on:
       - "s3:processed/{type}/{interval}/{symbol}.zip"
 
@@ -94,6 +105,17 @@ refresh_rules:
       - "file:data/raw/{type}/{interval}/{symbol}.zip"
     refresh_function: "ifera.file_refresh.process_raw_file"
 
+  # Special tensors
+  - dependent: "file:data/tensor/futures_backadjusted/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["1m", "30m"]
+    depends_on:
+      - "file:data/meta/futures/rollover/{symbol}.yml"
+      - pattern: "file:data/tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
+        wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+    refresh_function:
+      name: "ifera.file_refresh.process_futures_backadjusted_tensor"
+
   # Processed -> Tensor
   - dependent: "file:data/tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
     depends_on:
@@ -104,6 +126,8 @@ refresh_rules:
         type: "futures_individual"
   
   - dependent: "file:data/tensor/{type}/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["1m", "30m"]
     depends_on:
       - "file:data/processed/{type}/{interval}/{symbol}.zip"
     refresh_function: "ifera.file_refresh.process_tensor_file"
