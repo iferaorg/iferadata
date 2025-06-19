@@ -457,7 +457,8 @@ def process_futures_backadjusted_tensor(
 
     segments: list[torch.Tensor] = []
 
-    for idx, entry in enumerate(rollover_spec):
+    print(f"Processing back-adjusted tensor for {symbol}...")
+    for idx, entry in tqdm(enumerate(rollover_spec)):
         code = entry["contract_code"]
         if contract_codes is not None and code not in contract_codes:
             continue

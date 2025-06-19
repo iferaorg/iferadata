@@ -25,21 +25,21 @@ import datetime as dt
 # ifera.calculate_expiration(contract_instrument.contract_code, ifera.ExpirationRule(contract_instrument.last_trading_day_rule))
 
 # -----------------------------------------------------------
-# fm = ifera.FileManager()
-# cm = ifera.ConfigManager()
+fm = ifera.FileManager()
+cm = ifera.ConfigManager()
 
-# broker = cm.get_broker_config("IBKR")
-# symbols = broker.instruments.keys()
+broker = cm.get_broker_config("IBKR")
+symbols = broker.instruments.keys()
 
 
-# for symbol in symbols:
-#     iconfig = cm.get_base_instrument_config(symbol, "30m")
+for symbol in symbols:
+    iconfig = cm.get_base_instrument_config(symbol, "30m")
     
-#     if iconfig.type != "futures":
-#         continue
+    if iconfig.type != "futures":
+        continue
     
-#     print(f"Refreshing individual contracts for {symbol}...")
-#     fm.refresh_file(f"file:data/meta/futures/rollover/{symbol}.yml")
+    print(f"Refreshing backadjusted tensors for {symbol}...")
+    fm.refresh_file(f"s3:tensor/futures_backadjusted/30m/{symbol}.pt.gz")
 
 
 # -----------------------------------------------------------
@@ -192,69 +192,69 @@ import datetime as dt
 #     print(f"Expiration mismatches saved to {mismatches_file}")
 
 # -----------------------------------------------------------
-symbol = "AD"
+# symbol = "AD"
 
-fm = ifera.FileManager()
-url = f"file:data/meta/futures/rollover/{symbol}.yml"
-fm.build_subgraph(url, ifera.RuleType.REFRESH)
-cm = ifera.ConfigManager()
+# fm = ifera.FileManager()
+# url = f"file:data/meta/futures/rollover/{symbol}.yml"
+# fm.build_subgraph(url, ifera.RuleType.REFRESH)
+# cm = ifera.ConfigManager()
 
-base_instrument = cm.get_base_instrument_config(symbol,"30m")
-contract_instruments = []
-contract_tensors = []
+# base_instrument = cm.get_base_instrument_config(symbol,"30m")
+# contract_instruments = []
+# contract_tensors = []
 
-get_params_time = 0
-get_tensor_time = 0
+# get_params_time = 0
+# get_tensor_time = 0
 
-# Load data/meta/futures/dates/GC.yml
-fm.refresh_file(f"file:data/meta/futures/dates/{symbol}.yml")
-with open(f"data/meta/futures/dates/{symbol}.yml", "r") as f:
-    dates = yaml.safe_load(f)
+# # Load data/meta/futures/dates/GC.yml
+# fm.refresh_file(f"file:data/meta/futures/dates/{symbol}.yml")
+# with open(f"data/meta/futures/dates/{symbol}.yml", "r") as f:
+#     dates = yaml.safe_load(f)
 
-for dep in fm.refresh_graph.successors(url):
-    if not dep.startswith("file:data/tensor/futures_individual/30m/"):
-        continue
+# for dep in fm.refresh_graph.successors(url):
+#     if not dep.startswith("file:data/tensor/futures_individual/30m/"):
+#         continue
     
-    fm.refresh_file(dep)
-    params = fm.get_node_params(ifera.RuleType.REFRESH, dep)
+#     fm.refresh_file(dep)
+#     params = fm.get_node_params(ifera.RuleType.REFRESH, dep)
 
-    contract_instrument = cm.create_derived_base_config(
-        base_instrument,
-        contract_code=params["contract_code"],
-    )
-    if dates[contract_instrument.contract_code]["first_notice_date"] is not None:
-        contract_instrument.first_notice_date = dt.date.fromisoformat(dates[contract_instrument.contract_code]["first_notice_date"])
+#     contract_instrument = cm.create_derived_base_config(
+#         base_instrument,
+#         contract_code=params["contract_code"],
+#     )
+#     if dates[contract_instrument.contract_code]["first_notice_date"] is not None:
+#         contract_instrument.first_notice_date = dt.date.fromisoformat(dates[contract_instrument.contract_code]["first_notice_date"])
 
-    if dates[contract_instrument.contract_code]["expiration_date"] is not None:
-        contract_instrument.expiration_date = dt.date.fromisoformat(dates[contract_instrument.contract_code]["expiration_date"])
+#     if dates[contract_instrument.contract_code]["expiration_date"] is not None:
+#         contract_instrument.expiration_date = dt.date.fromisoformat(dates[contract_instrument.contract_code]["expiration_date"])
 
-    contract_tensor = ifera.load_data_tensor(
-        instrument=contract_instrument,
-        dtype=torch.float64,
-        device=torch.device("cuda:0"),
-        strip_date_time=False,
-    )
-    contract_tensors.append(contract_tensor)
-    contract_instruments.append(contract_instrument)
+#     contract_tensor = ifera.load_data_tensor(
+#         instrument=contract_instrument,
+#         dtype=torch.float64,
+#         device=torch.device("cuda:0"),
+#         strip_date_time=False,
+#     )
+#     contract_tensors.append(contract_tensor)
+#     contract_instruments.append(contract_instrument)
 
-# min_dates = foreach_map(lambda x: x[:, 2].min().to(torch.int64).item(), contract_tensors)
-# max_dates = foreach_map(lambda x: x[:, 2].max().to(torch.int64).item(), contract_tensors)
+# # min_dates = foreach_map(lambda x: x[:, 2].min().to(torch.int64).item(), contract_tensors)
+# # max_dates = foreach_map(lambda x: x[:, 2].max().to(torch.int64).item(), contract_tensors)
 
-# Sort both contract_instruments and contract_tensors by expiration date
-sorted_indices = sorted(range(len(contract_instruments)), key=lambda k: contract_instruments[k].expiration_date)
-contract_instruments_sorted = [contract_instruments[i] for i in sorted_indices]
-contract_tensors_sorted = [contract_tensors[i] for i in sorted_indices]
+# # Sort both contract_instruments and contract_tensors by expiration date
+# sorted_indices = sorted(range(len(contract_instruments)), key=lambda k: contract_instruments[k].expiration_date)
+# contract_instruments_sorted = [contract_instruments[i] for i in sorted_indices]
+# contract_tensors_sorted = [contract_tensors[i] for i in sorted_indices]
 
-ratios, active_idx, all_dates_ord = ifera.calculate_rollover(contract_instruments_sorted, contract_tensors_sorted)
-# ratios = ratios.nan_to_num(1.0)
+# ratios, active_idx, all_dates_ord = ifera.calculate_rollover(contract_instruments_sorted, contract_tensors_sorted)
+# # ratios = ratios.nan_to_num(1.0)
 
-# # Calculate the cumulative product of the ratios backwards
-# ratios = torch.flip(ratios, dims=[0])
-# ratios = torch.cumprod(ratios, dim=0)
-# ratios = torch.flip(ratios, dims=[0])
-# print(ratios.shape, ratios.dtype)
+# # # Calculate the cumulative product of the ratios backwards
+# # ratios = torch.flip(ratios, dims=[0])
+# # ratios = torch.cumprod(ratios, dim=0)
+# # ratios = torch.flip(ratios, dims=[0])
+# # print(ratios.shape, ratios.dtype)
 
-# print(np.array2string(ratios.cpu().numpy(),
-#     formatter={'float_kind': lambda x: f"{x:.4f}"}))
-# print(np.array2string(active_idx.cpu().numpy(),
-#     formatter={'int_kind': lambda x: f"{x}"}))
+# # print(np.array2string(ratios.cpu().numpy(),
+# #     formatter={'float_kind': lambda x: f"{x:.4f}"}))
+# # print(np.array2string(active_idx.cpu().numpy(),
+# #     formatter={'int_kind': lambda x: f"{x}"}))
