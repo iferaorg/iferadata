@@ -1,8 +1,8 @@
 import datetime
 from typing import Optional
 
-import holidays
-import holidays.financial
+from holidays import financial_holidays
+from holidays.financial import ny_stock_exchange
 from .enums import ExpirationRule
 
 # -----------------------------------------------------------------------------
@@ -35,10 +35,10 @@ FUTURES_MONTH_CODES = {
 # -----------------------------------------------------------------------------
 
 # US market holidays:
-US_HOLIDAYS = holidays.financial.ny_stock_exchange.NewYorkStockExchange()
+US_HOLIDAYS = ny_stock_exchange.NewYorkStockExchange()
 
 # UK (England) public holidays:
-UK_HOLIDAYS = holidays.financial_holidays("UK", subdiv="ENG")
+UK_HOLIDAYS = financial_holidays("UK", subdiv="ENG")
 
 # -----------------------------------------------------------------------------
 # 4. ADDITIONAL HOLIDAY CHECKS
