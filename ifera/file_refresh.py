@@ -1,3 +1,5 @@
+"""Utility functions for refreshing and processing local data files."""
+
 import datetime as dt
 import pathlib as pl
 import time
@@ -14,7 +16,6 @@ from .data_processing import process_data, calculate_rollover
 from .config import ConfigManager
 from .enums import Source, extension_map, Scheme, ExpirationRule
 from .file_utils import make_path, write_tensor_to_gzip
-from .config import ConfigManager
 from .file_manager import FileManager
 from .date_utils import calculate_expiration
 
@@ -416,3 +417,102 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
             default_flow_style=False,
             allow_unicode=True,
         )
+
+
+def process_futures_backadjusted_tensor(
+    symbol: str, interval: str, contract_codes: list[str] | None = None
+) -> None:
+    """Create a back-adjusted futures tensor based on a rollover specification.
+
+    Parameters
+    ----------
+    symbol : str
+        Root futures symbol.
+    interval : str
+        Interval of the desired tensor (e.g. ``"30m"``).
+    contract_codes : list[str] | None, optional
+        List of contract codes. This argument is optional as the required
+        contracts can be inferred from the rollover specification.
+    """
+    rollover_spec_path = make_path(Source.META, "futures", "rollover", symbol)
+    if not rollover_spec_path.exists():
+        raise FileNotFoundError(
+            f"Rollover specification for {symbol} not found at {rollover_spec_path}."
+        )
+
+    with open(rollover_spec_path, "r", encoding="utf-8") as fh:
+        rollover_spec = yaml.safe_load(fh)
+
+    if not isinstance(rollover_spec, list) or not rollover_spec:
+        raise ValueError("Rollover specification is empty or malformed")
+
+    cm = ConfigManager()
+    base_instrument = cm.get_base_instrument_config(symbol, interval)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    trade_date_col = 2
+    offset_col = 3
+    price_slice = slice(4, 8)
+    rollover_offset = base_instrument.rollover_offset
+
+    segments: list[torch.Tensor] = []
+
+    for idx, entry in enumerate(rollover_spec):
+        code = entry["contract_code"]
+        if contract_codes is not None and code not in contract_codes:
+            continue
+        multiplier = float(entry["multiplier"])
+        start_ord = dt.date.fromisoformat(str(entry["start_date"])).toordinal()
+
+        contract_instrument = cm.create_derived_base_config(
+            base_instrument, contract_code=code
+        )
+        tens = load_data_tensor(
+            instrument=contract_instrument,
+            dtype=torch.float32,
+            device=device,
+            strip_date_time=False,
+        )
+        tens = rearrange(tens, "d t c -> (d t) c")
+        trade_date = tens[:, trade_date_col]
+        offset_time = tens[:, offset_col]
+
+        if idx == 0:
+            start_mask = trade_date >= start_ord
+        else:
+            start_mask = (trade_date > start_ord) | (
+                (trade_date == start_ord) & (offset_time >= rollover_offset)
+            )
+
+        if idx + 1 < len(rollover_spec):
+            next_start_ord = dt.date.fromisoformat(
+                str(rollover_spec[idx + 1]["start_date"])
+            ).toordinal()
+            end_mask = (trade_date < next_start_ord) | (
+                (trade_date == next_start_ord) & (offset_time < rollover_offset)
+            )
+            mask = start_mask & end_mask
+        else:
+            mask = start_mask
+
+        segment = tens[mask].clone()
+        if segment.numel() == 0:
+            continue
+        segment[:, price_slice] *= multiplier
+        segments.append(segment)
+
+    if not segments:
+        raise ValueError(f"No data found for symbol {symbol}")
+
+    combined = torch.cat(segments, dim=0)
+    steps = base_instrument.total_steps
+    if combined.shape[0] % steps != 0:
+        raise RuntimeError(
+            "Combined tensor length is not divisible by instrument steps"
+        )
+    result = rearrange(combined, "(d t) c -> d t c", t=steps)
+
+    tensor_file_path = make_path(
+        Source.TENSOR, "futures_backadjusted", interval, symbol
+    )
+    write_tensor_to_gzip(str(tensor_file_path), result)
