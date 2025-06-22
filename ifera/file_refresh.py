@@ -499,6 +499,17 @@ def process_futures_backadjusted_tensor(
         segment = tens[mask].clone()
         if segment.numel() == 0:
             continue
+
+        if (
+            idx > 0
+            and idx + 1 < len(rollover_spec)
+            and segment.shape[0] % base_instrument.total_steps != 0
+        ):
+            raise RuntimeError(
+                f"Segment for {code} has length {segment.shape[0]} "
+                f"which is not divisible by total steps {base_instrument.total_steps}."
+            )
+
         segment[:, price_slice] *= multiplier
         segments.append(segment)
 

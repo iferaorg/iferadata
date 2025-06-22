@@ -56,6 +56,16 @@ def make_s3_key(source: Source, instrument: BaseInstrumentConfig, zipfile: bool)
     )
 
 
+def _key_prefix(key: str) -> str:
+    """
+    Extract the prefix from an S3 key.
+    The prefix is everything up to the last '/' in the key.
+    """
+    if "/" in key:
+        return key.rsplit("/", 1)[0] + "/"
+    return ""
+
+
 def download_s3_file(key: str, target_path: str) -> None:
     """
     Download a file from S3 to the specified local target path with a progress bar.
@@ -122,8 +132,7 @@ def upload_s3_file(key: str, local_path: str) -> str:
         progress.close()
 
         if wrapper.cache:
-            prefix = key.rsplit("/", 1)[0] if "/" in key else ""
-            wrapper._populate_cache(prefix)
+            wrapper._populate_cache(_key_prefix(key))
             wrapper.last_modified[key] = datetime.datetime.now(tz=datetime.timezone.utc)
 
     except Exception as e:
@@ -146,8 +155,7 @@ def check_s3_file_exists(key: str) -> bool:
         if key in wrapper.last_modified:
             return True
 
-        prefix = key.rsplit("/", 1)[0] if "/" in key else ""
-        wrapper._populate_cache(prefix)
+        wrapper._populate_cache(_key_prefix(key))
         return key in wrapper.last_modified
 
     try:
@@ -178,8 +186,7 @@ def get_s3_last_modified(key: str) -> datetime.datetime | None:
         if key in wrapper.last_modified:
             return wrapper.last_modified[key]
 
-        prefix = key.rsplit("/", 1)[0] if "/" in key else ""
-        wrapper._populate_cache(prefix)
+        wrapper._populate_cache(_key_prefix(key))
         return wrapper.last_modified.get(key)
 
     try:
@@ -255,8 +262,7 @@ def rename_s3_file(old_key: str, new_key: str) -> None:
         s3_client.delete_object(Bucket=settings.S3_BUCKET, Key=old_key)
 
         if wrapper.cache:
-            prefix = new_key.rsplit("/", 1)[0] if "/" in new_key else ""
-            wrapper._populate_cache(prefix)
+            wrapper._populate_cache(_key_prefix(new_key))
             wrapper.last_modified[new_key] = datetime.datetime.now(
                 tz=datetime.timezone.utc
             )
