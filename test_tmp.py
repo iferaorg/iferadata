@@ -7,6 +7,7 @@ import yaml
 import os
 import datetime as dt
 
+
 # dm = ifera.DataManager()
 # cm = ifera.ConfigManager()
 # parent_instrument = cm.get_base_instrument_config("TN:1m")
@@ -39,7 +40,9 @@ for symbol in symbols:
         continue
     
     print(f"Refreshing backadjusted tensors for {symbol}...")
-    fm.refresh_file(f"s3:tensor/futures_backadjusted/30m/{symbol}.pt.gz")
+    # fm.refresh_file(f"s3:tensor/futures_backadjusted/30m/{symbol}.pt.gz")
+    # ifera.delete_s3_file(f"meta/futures/rollover/{symbol}.yml")
+    fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
 
 
 # -----------------------------------------------------------
