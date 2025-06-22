@@ -61,23 +61,61 @@ def get_literal_prefix(pattern: str) -> str:
 def expand_dependency_wildcards(
     dependency_entry: dict, known_wildcards: dict
 ) -> List[str]:
-    """
-    Expand a dependency that requires wildcard expansion.
+    """Expand a dependency that requires wildcard expansion."""
 
-    The dependency_entry should have keys:
-      - "pattern": a dependency pattern (which may include missing wildcards)
-      - "wildcard_expansion": a pattern (typically an S3 URL) used to discover
-         the missing wildcard values. This pattern can specify constraints
-         (e.g. {contract_code:[A-Z][0-9][0-9]}).
-
-    Returns a list of fully substituted dependency file paths.
-    """
     try:
         dep_pattern = dependency_entry["pattern"]
-        expansion_pattern = dependency_entry["wildcard_expansion"]
     except KeyError as e:
         print(f"Error: Missing key in dependency expansion rule: {e}")
         return []
+
+    if "expansion_function" in dependency_entry:
+        func_node = dependency_entry["expansion_function"]
+        try:
+            func_str, add_args, _ = FileManager._parse_refresh_rule(
+                func_node, dep_pattern
+            )
+            func = import_function(func_str)
+        except Exception as e:  # noqa: BLE001
+            print(f"Error parsing expansion function for {dep_pattern}: {e}")
+            return []
+
+        args = dict(known_wildcards)
+        args.update(add_args)
+
+        try:
+            results = func(**args)
+        except Exception as e:  # noqa: BLE001
+            print(f"Error executing expansion function for {dep_pattern}: {e}")
+            return []
+
+        if not isinstance(results, list):
+            print("Warning: expansion function should return a list of dictionaries.")
+            return []
+
+        expanded = []
+        for item in results:
+            if not isinstance(item, dict):
+                print("Warning: expansion function result items must be dictionaries.")
+                continue
+            new_wildcards = dict(known_wildcards)
+            new_wildcards.update(item)
+            try:
+                dep_file = substitute_pattern(dep_pattern, new_wildcards)
+                expanded.append(dep_file)
+            except ValueError as e:
+                print(f"Error substituting in dependency pattern: {e}")
+                continue
+
+        return expanded
+
+    if "wildcard_expansion" not in dependency_entry:
+        print(
+            f"Error: Missing 'wildcard_expansion' or 'expansion_function' in dependency rule for {dep_pattern}"
+        )
+        return []
+
+    expansion_pattern = dependency_entry["wildcard_expansion"]
 
     # Substitute known wildcards into the expansion_pattern.
     try:

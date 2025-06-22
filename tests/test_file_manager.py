@@ -79,6 +79,18 @@ def test_expand_dependency_wildcards(monkeypatch):
     assert result == []
 
 
+def test_expand_dependency_wildcards_function():
+    dep_entry = {
+        "pattern": "s3:tensor/data/{symbol}-{code}.pt",
+        "expansion_function": "tests.helper_module.expand_codes",
+    }
+    result = expand_dependency_wildcards(dep_entry, {"symbol": "CL"})
+    assert result == [
+        "s3:tensor/data/CL-AA.pt",
+        "s3:tensor/data/CL-BB.pt",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # FileOperations tests
 # ---------------------------------------------------------------------------
@@ -257,6 +269,40 @@ def test_refresh_stale_file_refresh_branch(monkeypatch, file_manager_refresh_ins
     monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
 
     fm = file_manager_refresh_instance
+    fm.refresh_file("file:/tmp/output/CL.txt")
+    combine_mock.assert_called_once_with(symbol="CL", codes=["AA", "BB"])
+
+
+def test_refresh_stale_file_refresh_branch_expansion_function(
+    monkeypatch, file_manager_expand_function_instance
+):
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/intermediate/CL-AA.txt": now,
+        "file:/tmp/intermediate/CL-BB.txt": now,
+        "file:/tmp/output/CL.txt": None,
+    }
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+        def remove_from_cache(self, _file: str):
+            pass
+
+        def remove(self, file: str, scheme):
+            pass
+
+    combine_mock = MagicMock()
+    import_function.cache_clear()
+    monkeypatch.setattr("tests.helper_module.combine", combine_mock)
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
+
+    fm = file_manager_expand_function_instance
     fm.refresh_file("file:/tmp/output/CL.txt")
     combine_mock.assert_called_once_with(symbol="CL", codes=["AA", "BB"])
 

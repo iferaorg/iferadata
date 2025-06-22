@@ -111,8 +111,8 @@ def mock_github(monkeypatch):
     client = MagicMock()
     wrapper = SimpleNamespace(github_client=client)
     monkeypatch.setattr(github_utils, "GitHubClientSingleton", lambda: wrapper)
-    github_utils.check_github_file_exists.cache_clear() # type: ignore
-    github_utils.get_github_last_modified.cache_clear() # type: ignore
+    github_utils.check_github_file_exists.cache_clear()  # type: ignore
+    github_utils.get_github_last_modified.cache_clear()  # type: ignore
     return wrapper
 
 
@@ -166,6 +166,18 @@ def file_manager_where_instance():
     if hasattr(FileManager, "_instance"):
         delattr(FileManager, "_instance")
     fm = FileManager(config_file="../tests/test_dependencies_where.yml")
+    yield fm
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
+
+
+@pytest.fixture
+def file_manager_expand_function_instance():
+    from ifera.file_manager import FileManager
+
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
+    fm = FileManager(config_file="../tests/test_refresh_rules_func.yml")
     yield fm
     if hasattr(FileManager, "_instance"):
         delattr(FileManager, "_instance")
