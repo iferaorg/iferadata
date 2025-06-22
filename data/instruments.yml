@@ -15,6 +15,7 @@ templates:
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
     rolloverTime: "15:30:00"
     rolloverVolAlpha: 1.0
+    rolloverMaxDays: 15
     tradedMonths: "HMUZ"
 
 # Instrument-specific configurations
