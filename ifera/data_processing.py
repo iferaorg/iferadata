@@ -482,9 +482,16 @@ def _forced_roll_date(instr, trading_days_ord: set[int]) -> int | None:
     exp_dt = instr.expiration_date
     fnd_dt = instr.first_notice_date
 
+    max_dt_ord = None
+    max_dt = None
+
+    if len(trading_days_ord) > 0:
+        max_dt_ord = max(trading_days_ord)
+        max_dt = datetime.date.fromordinal(max_dt_ord)
+
     # Nothing to enforce
     if exp_dt is None and fnd_dt is None:
-        return None
+        return max_dt_ord
 
     # Choose the earlier of the two that exist
     if exp_dt is None:
@@ -494,9 +501,8 @@ def _forced_roll_date(instr, trading_days_ord: set[int]) -> int | None:
     else:
         anchor = min(exp_dt, fnd_dt)  # the “critical” date
 
-    if anchor > datetime.date.fromordinal(max(trading_days_ord)):
-        # If the anchor date is after the last trading day, return None
-        return None
+    if max_dt is not None and anchor > max_dt:
+        return max_dt_ord
 
     # Step back to the previous trading day actually present in the data
     prev_trade_day = _last_business_day(
@@ -581,11 +587,12 @@ def calculate_rollover(
     all_days_ord_full = sorted(
         {day for stats in contract_day_stats for day in stats.keys()}
     )
-    trading_days_ord = set(all_days_ord_full)
 
-    contract_forced_roll: list[int | None] = [
-        _forced_roll_date(inst, trading_days_ord) for inst in instruments
-    ]
+    contract_forced_roll: list[int | None] = []
+
+    for inst, tens in zip(instruments, data):
+        inst_trading_days_ord = tens[:, 0, ORD_TRD_CH].unique().int().tolist()
+        contract_forced_roll.append(_forced_roll_date(inst, set(inst_trading_days_ord)))
 
     all_days_ord = [d for d in all_days_ord_full if d >= start_ord]
     n_days = len(all_days_ord)
@@ -616,7 +623,7 @@ def calculate_rollover(
         fut_volumes = []
         fut_candidates = []
 
-        for j in range(current + 1, len(instruments)):
+        for j in range(current + 1, min(current + max_delta + 1, len(instruments))):
             exp_j = instruments[j].expiration_date
             if exp_j is None:
                 continue

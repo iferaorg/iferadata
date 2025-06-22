@@ -15,7 +15,7 @@ templates:
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
     rolloverTime: "15:30:00"
     rolloverVolAlpha: 1.0
-    rolloverMaxMonthDelta: 6
+    tradedMonths: "HMUZ"
 
 # Instrument-specific configurations
 instruments:
@@ -43,6 +43,7 @@ instruments:
     tickSize: 0.01
     lastTradeDayRule: THREE_BUSINESS_DAYS_BEFORE_25TH_PRIOR_MONTH
     assetClass: Energy
+    tradedMonths: "FGHJKMNQUVXZ"
   GC:
     template: us_futures
     symbol: GC
@@ -52,6 +53,7 @@ instruments:
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Metals
+    tradedMonths: "GJMQZ"
   YM:
     template: us_futures
     symbol: YM
@@ -101,6 +103,7 @@ instruments:
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Metals
+    tradedMonths: "HKNUZ"
   BP:
     template: us_futures
     symbol: BP
@@ -118,6 +121,7 @@ instruments:
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH 
     assetClass: Metals
+    tradedMonths: "HKNUZ"
   TY:
     template: us_futures
     symbol: TY
@@ -152,6 +156,7 @@ instruments:
     tickSize: 0.001
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Energy
+    tradedMonths: "FGHJKMNQUVXZ"
   US:
     template: us_futures
     symbol: US
@@ -169,6 +174,7 @@ instruments:
     tickSize: 0.0001
     lastTradeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Energy
+    tradedMonths: "FGHJKMNQUVXZ"
   SF:
     template: us_futures
     symbol: SF
@@ -204,6 +210,7 @@ instruments:
     tickSize: 0.0001
     lastTradeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Energy
+    tradedMonths: "FGHJKMNQUVXZ"
   NE:
     template: us_futures
     symbol: NE
@@ -228,6 +235,7 @@ instruments:
     tickSize: 0.025
     lastTradeDayRule: FOUR_BUSINESS_DAYS_BEFORE_25TH_PRIOR_MONTH
     assetClass: Energy
+    tradedMonths: "FGHJKMNQUVXZ"
   MGC:
     template: us_futures
     symbol: MGC
@@ -237,6 +245,7 @@ instruments:
     startDate: "2011-04-04"
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
     assetClass: Metals
+    tradedMonths: "GJMQZ"
   S:
     template: us_futures
     symbol: S
@@ -246,6 +255,7 @@ instruments:
     lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Agriculture
+    tradedMonths: "FHKNX"
   TU:
     template: us_futures
     symbol: TU
@@ -289,6 +299,7 @@ instruments:
     lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Agriculture
+    tradedMonths: "HKNUZ"
   ME:
     template: us_futures
     symbol: ME
@@ -306,6 +317,7 @@ instruments:
     lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Agriculture
+    tradedMonths: "HKNUZ"
   TN:
     template: us_futures
     symbol: TN
@@ -325,6 +337,7 @@ instruments:
     lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Agriculture
+    tradedMonths: "FHKNZ"
   BZ:
     template: us_futures
     symbol: BZ
@@ -334,6 +347,7 @@ instruments:
     startDate: "2013-05-06"
     lastTradeDayRule: FEB_LONDON_SPECIAL_RULE
     assetClass: Energy
+    tradedMonths: "FGHJKMNQUVXZ"
   M6A:
     template: us_futures
     symbol: M6A
@@ -352,6 +366,7 @@ instruments:
     lastTradeDayRule: BUSINESS_DAY_PRIOR_15TH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Agriculture
+    tradedMonths: "FHKNZ"
   VX:
     template: us_futures
     symbol: VX
@@ -359,6 +374,7 @@ instruments:
     contractMultiplier: 1000
     tickSize: 0.05
     assetClass: Equities
+    tradedMonths: "FGHJKMNQUVXZ"
   PA:
     template: us_futures
     symbol: PA
@@ -376,6 +392,7 @@ instruments:
     tickSize: 0.00025
     lastTradeDayRule: TENTH_BUSINESS_DAY_CONTRACT_MONTH
     assetClass: Agriculture
+    tradedMonths: "GJMNQVZ"
   LE:
     template: us_futures
     symbol: LE
@@ -385,6 +402,7 @@ instruments:
     lastTradeDayRule: LAST_BUSINESS_DAY_CONTRACT_MONTH
     firstNoticeDayRule: FIRST_BUSINESS_DAY_AFTER_FIRST_FRIDAY
     assetClass: Agriculture
+    tradedMonths: "GJMQVZ"
   GF:
     template: us_futures
     symbol: GF
@@ -393,6 +411,7 @@ instruments:
     tickSize: 0.00025
     lastTradeDayRule: LAST_THURSDAY_SPECIAL_RULE
     assetClass: Agriculture
+    tradedMonths: "FHJKQUVX"
   IBM:
     symbol: IBM
     description: IBM
