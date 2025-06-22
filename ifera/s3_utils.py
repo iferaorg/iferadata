@@ -62,7 +62,7 @@ def _key_prefix(key: str) -> str:
     The prefix is everything up to the last '/' in the key.
     """
     if "/" in key:
-        return key.rsplit("/", 1)[0] + "/"
+        return key.rsplit("/", 1)[0]
     return ""
 
 

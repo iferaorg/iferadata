@@ -532,11 +532,20 @@ def calculate_rollover(
     alpha_raw = instruments[0].rollover_vol_alpha
     alpha = alpha_raw if alpha_raw is not None else 1.0
     start_ord = instruments[0].start_date.toordinal()
-    max_delta = (
-        instruments[0].rollover_max_month_delta
-        if instruments[0].rollover_max_month_delta is not None
-        else 12
-    )
+
+    traded_months = instruments[0].traded_months
+
+    if traded_months is not None:
+        filtered = [
+            (inst, tens)
+            for inst, tens in zip(instruments, data)
+            if inst.contract_code is None or inst.contract_code[0] in traded_months
+        ]
+        if not filtered:
+            raise ValueError("No contracts match traded_months")
+        instruments, data = zip(*filtered)
+        instruments = list(instruments)
+        data = list(data)
 
     # Pre-compute: per contract  ➜  dict( ord_trade_date → (volume<15:30>, open15:30) )
     contract_day_stats: list[dict[int, tuple[float, float]]] = []
@@ -605,8 +614,6 @@ def calculate_rollover(
     first_day = all_days_ord[0]
     vols_first = [stats.get(first_day, (0.0, 0.0))[0] for stats in contract_day_stats]
     current = int(torch.tensor(vols_first).argmax().item())
-    curr_exp = instruments[current].expiration_date
-    curr_year, curr_month = curr_exp.year, curr_exp.month  # type: ignore
 
     # -----------------------------------------------------------------------
     for pos, day in enumerate(all_days_ord):
@@ -619,34 +626,32 @@ def calculate_rollover(
         forced_date = contract_forced_roll[current]
         forced = forced_date is not None and day >= forced_date
 
-        # Look-ahead volumes -------------------------------------------------
-        fut_volumes = []
-        fut_candidates = []
-
-        for j in range(current + 1, min(current + max_delta + 1, len(instruments))):
-            exp_j = instruments[j].expiration_date
-            if exp_j is None:
-                continue
-            delta_months = (exp_j.year - curr_year) * 12 + (exp_j.month - curr_month)
-            if delta_months < 1 or delta_months > max_delta:
-                continue
-            vol_j, open_j = contract_day_stats[j].get(day, (0.0, float("nan")))
-            if vol_j > 0:  # contract is trading on this day
-                fut_volumes.append(vol_j)
-                fut_candidates.append((j, open_j, vol_j))
+        # Look-ahead volume: next contract only -----------------------------
+        next_idx = current + 1 if current + 1 < len(instruments) else None
+        next_vol = 0.0
+        if next_idx is not None:
+            next_vol, _ = contract_day_stats[next_idx].get(day, (0.0, float("nan")))
 
         # Decide to roll -----------------------------------------------------
         should_roll = False
         target_idx = current
-        if forced and fut_candidates:
-            should_roll = True
-            # pick highest volume among futures
-            target_idx = max(fut_candidates, key=lambda t: t[2])[0]
-        elif fut_candidates:
-            max_future_vol = max(fut_volumes)
-            if cur_vol * alpha < max_future_vol:  # liquidity roll
+
+        if next_idx is not None:
+            if forced:
                 should_roll = True
-                target_idx = max(fut_candidates, key=lambda t: t[2])[0]
+                target_idx = next_idx
+            else:
+                within_window = True
+                if (
+                    forced_date is not None
+                    and instruments[current].rollover_max_days is not None
+                ):
+                    within_window = (forced_date - day) <= instruments[
+                        current
+                    ].rollover_max_days
+                if within_window and cur_vol * alpha < next_vol:
+                    should_roll = True
+                    target_idx = next_idx
 
         # Execute roll (record the ratio) -----------------------------------
         if should_roll and target_idx != current:
@@ -655,7 +660,5 @@ def calculate_rollover(
                 ratios[pos] = new_open / cur_open
             active_idx[pos] = target_idx
             current = target_idx
-            curr_exp = instruments[current].expiration_date
-            curr_year, curr_month = curr_exp.year, curr_exp.month  # type: ignore
 
     return ratios, active_idx, all_days_ord
