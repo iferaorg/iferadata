@@ -1,0 +1,28 @@
+dependency_rules:
+  - dependent: "file:/tmp/meta/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/intermediate/{symbol}-{code}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/output/{symbol}.txt"
+    depends_on:
+      - pattern: "file:/tmp/intermediate/{symbol}-{code}.txt"
+        expansion_function:
+          name: "tests.helper_module.expand_codes"
+          depends_on:
+            - "file:/tmp/meta/{symbol}.txt"
+refresh_rules:
+  - dependent: "file:/tmp/meta/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/intermediate/{symbol}-{code}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/output/{symbol}.txt"
+    depends_on:
+      - pattern: "file:/tmp/intermediate/{symbol}-{code}.txt"
+        expansion_function:
+          name: "tests.helper_module.expand_codes"
+          depends_on:
+            - "file:/tmp/meta/{symbol}.txt"
+    refresh_function:
+      name: "tests.helper_module.combine"
+      list_args:
+        codes: code
