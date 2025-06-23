@@ -59,7 +59,7 @@ def get_literal_prefix(pattern: str) -> str:
 
 
 def expand_dependency_wildcards(
-    dependency_entry: dict, known_wildcards: dict
+    dependency_entry: dict, known_wildcards: dict, fm: Optional["FileManager"] = None
 ) -> List[str]:
     """Expand a dependency that requires wildcard expansion."""
 
@@ -72,7 +72,7 @@ def expand_dependency_wildcards(
     if "expansion_function" in dependency_entry:
         func_node = dependency_entry["expansion_function"]
         try:
-            func_str, add_args, _ = FileManager._parse_refresh_rule(
+            func_str, add_args, _, func_deps = FileManager._parse_refresh_rule(
                 func_node, dep_pattern
             )
             func = import_function(func_str)
@@ -82,6 +82,16 @@ def expand_dependency_wildcards(
 
         args = dict(known_wildcards)
         args.update(add_args)
+
+        if fm and func_deps:
+            fm._refresh_function_dependencies(
+                func_deps,
+                known_wildcards,
+                False,
+                {},
+                FileOperations(),
+                [],
+            )
 
         try:
             results = func(**args)
@@ -438,7 +448,7 @@ class FileManager:
                     )
             elif isinstance(dep, dict):
                 # Process dependency with wildcard expansion.
-                expanded_files = expand_dependency_wildcards(dep, wildcards)
+                expanded_files = expand_dependency_wildcards(dep, wildcards, self)
                 if not expanded_files:
                     print(
                         "Warning: Skipping dependency "
@@ -592,11 +602,14 @@ class FileManager:
         return node_data.get("refresh_function"), RuleType.REFRESH, node_data
 
     @staticmethod
-    def _parse_refresh_rule(func_node: str | dict, file: str) -> tuple[str, dict, dict]:
+    def _parse_refresh_rule(
+        func_node: str | dict, file: str
+    ) -> tuple[str, dict, dict, list[str]]:
         """Extract function information from a refresh rule."""
         func_str: str | None = None
         additional_arguments: dict = {}
         list_args_spec: dict = {}
+        depends_on: list[str] = []
 
         if isinstance(func_node, str):
             func_str = func_node
@@ -604,13 +617,18 @@ class FileManager:
             func_str = func_node["name"]
             additional_arguments = dict(func_node.get("additional_args", {}))
             list_args_spec = func_node.get("list_args", {})
+            depends = func_node.get("depends_on", [])
+            if isinstance(depends, list):
+                depends_on = depends
+            else:
+                raise ValueError(f"Invalid depends_on for file {file}")
         else:
             raise ValueError(f"Invalid process function for file {file}")
 
         if not func_str:
             raise ValueError(f"No process function defined for file {file}")
 
-        return func_str, additional_arguments, list_args_spec
+        return func_str, additional_arguments, list_args_spec, depends_on
 
     def _build_list_args(
         self, file: str, rule_type: RuleType, list_args_spec: dict
@@ -655,6 +673,30 @@ class FileManager:
         ):
             temp_files.append(file)
 
+    def _refresh_function_dependencies(
+        self,
+        dependencies: list[str],
+        wildcards: dict,
+        reset: bool,
+        cache: Dict[str, bool],
+        fop: FileOperations,
+        temp_files: List[str],
+    ) -> None:
+        """Refresh dependencies required by a function node."""
+
+        for dep in dependencies:
+            try:
+                dep_file = substitute_pattern(dep, wildcards)
+            except ValueError as e:
+                print(f"Warning: {e} when processing function dependency {dep}")
+                continue
+
+            self.build_subgraph(dep_file, RuleType.DEPENDENCY)
+            self._refresh_file(dep_file, reset, cache, fop, temp_files)
+            if dep_file not in cache:
+                self.build_subgraph(dep_file, RuleType.REFRESH)
+                self._refresh_stale_file(dep_file, reset, cache, fop, temp_files)
+
     def _refresh_stale_file(
         self,
         file: str,
@@ -670,8 +712,8 @@ class FileManager:
         if not func_node:
             return
 
-        func_str, additional_arguments, list_args_spec = self._parse_refresh_rule(
-            func_node, file
+        func_str, additional_arguments, list_args_spec, func_deps = (
+            self._parse_refresh_rule(func_node, file)
         )
         additional_arguments.update(
             self._build_list_args(file, rule_type, list_args_spec)
@@ -679,8 +721,14 @@ class FileManager:
 
         self._ensure_temp_file(file, temp_files)
 
-        process_func = import_function(func_str)
         wildcards = node_data.get("wildcards", {})
+
+        if func_deps:
+            self._refresh_function_dependencies(
+                func_deps, wildcards, reset, cache, fop, temp_files
+            )
+
+        process_func = import_function(func_str)
         process_func(**wildcards, **additional_arguments)
 
         cache[file] = True

@@ -181,3 +181,15 @@ def file_manager_expand_function_instance():
     yield fm
     if hasattr(FileManager, "_instance"):
         delattr(FileManager, "_instance")
+
+
+@pytest.fixture
+def file_manager_func_depends_instance():
+    from ifera.file_manager import FileManager
+
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")
+    fm = FileManager(config_file="../tests/test_refresh_rules_func_depends.yml")
+    yield fm
+    if hasattr(FileManager, "_instance"):
+        delattr(FileManager, "_instance")

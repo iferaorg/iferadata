@@ -307,6 +307,46 @@ def test_refresh_stale_file_refresh_branch_expansion_function(
     combine_mock.assert_called_once_with(symbol="CL", codes=["AA", "BB"])
 
 
+def test_expansion_function_with_dependencies(
+    monkeypatch, file_manager_func_depends_instance
+):
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/meta/CL.txt": None,
+        "file:/tmp/intermediate/CL-AA.txt": now,
+        "file:/tmp/intermediate/CL-BB.txt": now,
+        "file:/tmp/output/CL.txt": None,
+    }
+
+    class DummyFOP:
+        def __init__(self, t):
+            self.t = t
+
+        def get_mtime(self, file: str):
+            return self.t.get(file)
+
+        def remove_from_cache(self, _file: str):
+            pass
+
+        def remove(self, file: str, scheme):
+            pass
+
+    fetch_mock = MagicMock()
+    combine_mock = MagicMock()
+    import_function.cache_clear()
+    monkeypatch.setattr("tests.helper_module.fetch", fetch_mock)
+    monkeypatch.setattr("tests.helper_module.combine", combine_mock)
+    monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
+
+    fm = file_manager_func_depends_instance
+    fm.refresh_file("file:/tmp/output/CL.txt")
+
+    assert fetch_mock.call_count >= 1
+    fetch_mock.assert_called_with(symbol="CL")
+    combine_mock.assert_called_once_with(symbol="CL", codes=["AA", "BB"])
+
+
 def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_instance):
     keys = ["raw/CL-AA.txt"]
     monkeypatch.setattr("ifera.file_manager.list_s3_objects", lambda prefix: keys)
@@ -351,20 +391,22 @@ def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_in
 
 def test_parse_refresh_rule():
     fm = FileManager(config_file="../tests/test_dependencies.yml")
-    func, args, spec = fm._parse_refresh_rule("tests.helper_module.process", "f")
+    func, args, spec, deps = fm._parse_refresh_rule("tests.helper_module.process", "f")
     assert func == "tests.helper_module.process"
     assert args == {}
     assert spec == {}
+    assert deps == []
 
     func_dict = {
         "name": "tests.helper_module.combine",
         "additional_args": {"a": 1},
         "list_args": {"codes": "code"},
     }
-    func, args, spec = fm._parse_refresh_rule(func_dict, "f")
+    func, args, spec, deps = fm._parse_refresh_rule(func_dict, "f")
     assert func == "tests.helper_module.combine"
     assert args == {"a": 1}
     assert spec == {"codes": "code"}
+    assert deps == []
 
 
 def test_build_list_args(monkeypatch, file_manager_refresh_instance):
