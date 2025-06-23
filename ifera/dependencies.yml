@@ -112,7 +112,7 @@ refresh_rules:
     depends_on:
       - "file:meta/futures/rollover/{symbol}.yml"
       - pattern: "file:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
-        wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+        expansion_function: "ifera.file_refresh.contract_codes_for_backadjust"
     refresh_function:
       name: "ifera.file_refresh.process_futures_backadjusted_tensor"
 

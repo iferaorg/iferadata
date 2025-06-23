@@ -419,6 +419,26 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
         )
 
 
+def contract_codes_for_backadjust(symbol: str, interval: str) -> list[dict]:
+    """Return contract code substitutions for backadjusted tensors."""
+
+    _ = interval
+    path = make_path(Source.META, "futures", "rollover", symbol)
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as fh:
+        spec = yaml.safe_load(fh)
+    if not isinstance(spec, list):
+        return []
+    result = []
+    for entry in spec:
+        code = entry.get("contract_code")
+        if code is not None:
+            result.append({"contract_code": str(code)})
+    return result
+
+
+
 def process_futures_backadjusted_tensor(
     symbol: str, interval: str, contract_codes: list[str] | None = None
 ) -> None:
