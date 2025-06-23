@@ -534,13 +534,15 @@ def calculate_rollover(
     start_ord = instruments[0].start_date.toordinal()
 
     traded_months = instruments[0].traded_months
+    index_map = list(range(len(instruments)))
 
     if traded_months is not None:
-        filtered = [
-            (inst, tens)
-            for inst, tens in zip(instruments, data)
-            if inst.contract_code is None or inst.contract_code[0] in traded_months
-        ]
+        filtered: list[tuple[BaseInstrumentConfig, torch.Tensor]] = []
+        index_map = []
+        for idx, (inst, tens) in enumerate(zip(instruments, data)):
+            if inst.contract_code is None or inst.contract_code[0] in traded_months:
+                filtered.append((inst, tens))
+                index_map.append(idx)
         if not filtered:
             raise ValueError("No contracts match traded_months")
         instruments, data = zip(*filtered)  # type: ignore
@@ -656,5 +658,9 @@ def calculate_rollover(
                 ratios[pos] = new_open / cur_open
             active_idx[pos] = target_idx
             current = target_idx
+
+    if traded_months is not None:
+        map_tensor = torch.tensor(index_map, dtype=torch.int64, device=device)
+        active_idx = map_tensor[active_idx]
 
     return ratios, active_idx, all_days_ord
