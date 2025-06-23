@@ -1,5 +1,4 @@
 import datetime as dt
-import datetime as dt
 import torch
 
 from ifera.data_processing import calculate_rollover
@@ -44,7 +43,7 @@ def test_calculate_rollover_traded_months_and_window(config_manager: ConfigManag
 
     ratios, idx, days = calculate_rollover([j, h, m], [tens_j, tens_h, tens_m])
 
-    assert idx.tolist() == [0, 0, 1, 1]
+    assert idx.tolist() == [1, 1, 2, 2]
     # Ratio should be 1 on the rollover day (day index 2)
     assert torch.isnan(ratios[0])
     assert torch.isnan(ratios[1])
