@@ -543,7 +543,7 @@ def calculate_rollover(
         ]
         if not filtered:
             raise ValueError("No contracts match traded_months")
-        instruments, data = zip(*filtered)
+        instruments, data = zip(*filtered)  # type: ignore
         instruments = list(instruments)
         data = list(data)
 
@@ -642,13 +642,9 @@ def calculate_rollover(
                 target_idx = next_idx
             else:
                 within_window = True
-                if (
-                    forced_date is not None
-                    and instruments[current].rollover_max_days is not None
-                ):
-                    within_window = (forced_date - day) <= instruments[
-                        current
-                    ].rollover_max_days
+                rollover_max_days = instruments[current].rollover_max_days
+                if forced_date is not None and rollover_max_days is not None:
+                    within_window = (forced_date - day) <= rollover_max_days
                 if within_window and cur_vol * alpha < next_vol:
                     should_roll = True
                     target_idx = next_idx

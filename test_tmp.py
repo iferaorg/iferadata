@@ -40,9 +40,9 @@ for symbol in symbols:
         continue
     
     print(f"Refreshing backadjusted tensors for {symbol}...")
-    # fm.refresh_file(f"s3:tensor/futures_backadjusted/30m/{symbol}.pt.gz")
+    fm.refresh_file(f"s3:tensor/futures_backadjusted/30m/{symbol}.pt.gz")
     # ifera.delete_s3_file(f"meta/futures/rollover/{symbol}.yml")
-    fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
+    # fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
 
 
 # -----------------------------------------------------------
