@@ -605,6 +605,8 @@ def calculate_rollover(
         inst_trading_days_ord = tens[:, 0, ORD_TRD_CH].unique().int().tolist()
         contract_forced_roll.append(_forced_roll_date(inst, set(inst_trading_days_ord)))
 
+    data = None  # free memory
+    filtered = None
     all_days_ord = [d for d in all_days_ord_full if d >= start_ord]
     n_days = len(all_days_ord)
 
@@ -638,7 +640,7 @@ def calculate_rollover(
         should_roll = False
         target_idx = current
 
-        if next_idx is not None:
+        if next_idx is not None and day in contract_day_stats[next_idx]:
             if forced:
                 should_roll = True
                 target_idx = next_idx

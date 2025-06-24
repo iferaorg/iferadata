@@ -44,6 +44,10 @@ for symbol in symbols:
     # ifera.delete_s3_file(f"meta/futures/rollover/{symbol}.yml")
     # fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
 
+# ifera.delete_s3_file(f"meta/futures/rollover/EU.yml")
+# fm.refresh_file(f"file:meta/futures/rollover/EU.yml")
+
+
 
 # -----------------------------------------------------------
 

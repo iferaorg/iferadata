@@ -6,6 +6,15 @@ dependency_rules:
         wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
 
   # Download
+  - dependent: "file:meta/{type}/{interval}/{symbol}.{ext}"
+    depends_on:
+      - "s3:meta/{type}/{interval}/{symbol}.{ext}"
+    refresh_function:
+      name: "ifera.file_refresh.download_file"
+      additional_args:
+        source: "meta"
+    no_cleanup: true
+
   - dependent: "file:{source}/{type}/{interval}/{symbol}.{ext}"
     depends_on:
       - "s3:{source}/{type}/{interval}/{symbol}.{ext}"
@@ -46,7 +55,10 @@ dependency_rules:
     depends_on:
       - "s3:meta/futures/rollover/{symbol}.yml"
       - pattern: "s3:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
-        wildcard_expansion: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+        expansion_function:
+          name: "ifera.file_refresh.contract_codes_for_backadjust"
+          depends_on:
+            - "file:meta/futures/rollover/{symbol}.yml"
 
   # Processed -> Tensor
   - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt.gz"

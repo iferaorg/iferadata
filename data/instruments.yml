@@ -245,6 +245,7 @@ instruments:
     tickSize: 0.1
     startDate: "2011-04-04"
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
+    firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Metals
     tradedMonths: "GJMQZ"
   S:

@@ -481,6 +481,8 @@ class FileManager:
 
                 if rule.get("refresh_function"):
                     graph.nodes[file]["refresh_function"] = rule["refresh_function"]
+                
+                graph.nodes[file]["no_cleanup"] = rule.get("no_cleanup", False)
 
                 if rule.get("depends_on"):
                     self.add_dependencies(
@@ -657,8 +659,7 @@ class FileManager:
 
         return additional_arguments
 
-    @staticmethod
-    def _ensure_temp_file(file: str, temp_files: list[str]) -> None:
+    def _ensure_temp_file(self, file: str, temp_files: list[str]) -> None:
         """Add file to temporary list if it needs to be created."""
         parts = urlparse(file)
         scheme = Scheme(parts.scheme)
@@ -671,7 +672,12 @@ class FileManager:
             )
             and file not in temp_files
         ):
-            temp_files.append(file)
+            no_cleanup = False
+            if file in self.dependency_graph:
+                node_data = self.dependency_graph.nodes[file]
+                no_cleanup = node_data.get("no_cleanup", False)
+            if not no_cleanup:
+                temp_files.append(file)
 
     def _refresh_function_dependencies(
         self,
