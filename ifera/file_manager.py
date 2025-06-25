@@ -5,6 +5,7 @@ import re
 from enum import Enum
 from functools import lru_cache
 from typing import Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import networkx as nx
@@ -84,7 +85,9 @@ def expand_dependency_wildcards(
         args.update(add_args)
 
         if fm and func_deps:
-            fm._refresh_function_dependencies(func_deps, known_wildcards, False)
+            fm._refresh_function_dependencies(
+                func_deps, known_wildcards, False, FileManagerContext()
+            )
 
         try:
             results = func(**args)
@@ -363,6 +366,15 @@ class FileOperations:
             raise ValueError(f"Unsupported scheme: {parts.scheme}")
 
 
+@dataclass
+class FileManagerContext:
+    """Context object carrying state for recursive refresh operations."""
+
+    cache: Dict[str, bool] = field(default_factory=dict)
+    fop: FileOperations = field(default_factory=lambda: FileOperations())
+    temp_files: List[str] = field(default_factory=list)
+
+
 @lru_cache(maxsize=100)
 def import_function(func_str: str) -> Callable:
     """Import a function from a string (e.g., 'module.function')."""
@@ -494,32 +506,30 @@ class FileManager:
         if file not in self.dependency_graph:
             raise ValueError(f"File {file} not found in dependency graph")
 
-        fop = FileOperations()
-        return self._is_up_to_date(file, {}, fop)
+        context = FileManagerContext()
+        return self._is_up_to_date(file, context)
 
-    def _is_up_to_date(
-        self, file: str, cache: Dict[str, bool], fop: FileOperations
-    ) -> bool:
+    def _is_up_to_date(self, file: str, ctx: FileManagerContext) -> bool:
         """Recursively check if a file and its dependencies are up-to-date."""
-        if file in cache:
-            return cache[file]
+        if file in ctx.cache:
+            return ctx.cache[file]
 
         result = True
 
         # Check if the file exists
         try:
-            mtime = fop.get_mtime(file)
+            mtime = ctx.fop.get_mtime(file)
 
             if mtime is None:
                 result = False
             else:
                 # Check all dependencies
                 for dep in self.dependency_graph.successors(file):
-                    if not self._is_up_to_date(dep, cache, fop):
+                    if not self._is_up_to_date(dep, ctx):
                         result = False
                         break
 
-                    dep_mtime = fop.get_mtime(dep)
+                    dep_mtime = ctx.fop.get_mtime(dep)
 
                     # Check if the file is newer than its dependencies
                     if dep_mtime is None or mtime <= dep_mtime:
@@ -529,7 +539,7 @@ class FileManager:
             print(f"Error checking if {file} is up to date: {e}")
             result = False
 
-        cache[file] = result
+        ctx.cache[file] = result
         return result
 
     def refresh_file(self, file: str, reset: bool = False) -> None:
@@ -539,59 +549,53 @@ class FileManager:
         if file not in self.dependency_graph:
             raise ValueError(f"File {file} not found in dependency graph")
 
-        fop = FileOperations()
-        temp_files = []
+        context = FileManagerContext()
         try:
-            self._refresh_file(file, reset, {}, fop, temp_files)
+            self._refresh_file(file, reset, context)
         finally:
-            # Remove temporary files
-            for temp_file in temp_files:
+            for temp_file in context.temp_files:
                 if temp_file != file:
-                    fop.remove(temp_file, Scheme.FILE)
+                    context.fop.remove(temp_file, Scheme.FILE)
 
     def _refresh_file(
         self,
         file: str,
         reset: bool,
-        cache: Dict[str, bool],
-        fop: FileOperations,
-        temp_files: List[str],
+        ctx: FileManagerContext,
     ) -> None:
         """Recursively refresh dependencies, then the file if needed."""
         has_successors = False
 
         # First refresh all dependencies
         for dep in self.dependency_graph.successors(file):
-            self._refresh_file(dep, reset, cache, fop, temp_files)
+            self._refresh_file(dep, reset, ctx)
             has_successors = True
 
         # Then check if this file needs refreshing
-        if has_successors and (reset or not self._is_up_to_date(file, cache, fop)):
+        if has_successors and (reset or not self._is_up_to_date(file, ctx)):
             self.build_subgraph(file, RuleType.REFRESH)
-            self._refresh_stale_file(file, reset, cache, fop, temp_files)
+            self._refresh_stale_file(file, reset, ctx)
 
     def _select_refresh_node(
         self,
         file: str,
         reset: bool,
-        cache: Dict[str, bool],
-        fop: FileOperations,
-        temp_files: List[str],
+        ctx: FileManagerContext,
     ) -> tuple[str | dict | None, RuleType, dict]:
         """Return the refresh rule node and its type for the given file."""
         node_data = self.dependency_graph.nodes[file]
         refresh_func_node = node_data.get("refresh_function")
 
         if refresh_func_node and all(
-            self._is_up_to_date(dep, cache, fop)
+            self._is_up_to_date(dep, ctx)
             for dep in self.dependency_graph.successors(file)
         ):
             return refresh_func_node, RuleType.DEPENDENCY, node_data
 
         for dep in self.refresh_graph.successors(file):
             self.build_subgraph(dep, RuleType.DEPENDENCY)
-            if reset or not self._is_up_to_date(dep, cache, fop):
-                self._refresh_stale_file(dep, reset, cache, fop, temp_files)
+            if reset or not self._is_up_to_date(dep, ctx):
+                self._refresh_stale_file(dep, reset, ctx)
 
         node_data = self.refresh_graph.nodes[file]
         return node_data.get("refresh_function"), RuleType.REFRESH, node_data
@@ -673,7 +677,11 @@ class FileManager:
                 temp_files.append(file)
 
     def _refresh_function_dependencies(
-        self, dependencies: list[str], wildcards: dict, reset: bool
+        self,
+        dependencies: list[str],
+        wildcards: dict,
+        reset: bool,
+        ctx: FileManagerContext,
     ) -> None:
         """Refresh dependencies required by a function node."""
 
@@ -684,19 +692,19 @@ class FileManager:
                 print(f"Warning: {e} when processing function dependency {dep}")
                 continue
 
-            self.refresh_file(dep_file, reset)
+            self.build_subgraph(dep_file, RuleType.DEPENDENCY)
+            self._refresh_file(dep_file, reset, ctx)
+            if dep_file not in ctx.cache:
+                self.build_subgraph(dep_file, RuleType.REFRESH)
+                self._refresh_stale_file(dep_file, reset, ctx)
 
     def _refresh_stale_file(
         self,
         file: str,
         reset: bool,
-        cache: Dict[str, bool],
-        fop: FileOperations,
-        temp_files: List[str],
+        ctx: FileManagerContext,
     ) -> None:
-        func_node, rule_type, node_data = self._select_refresh_node(
-            file, reset, cache, fop, temp_files
-        )
+        func_node, rule_type, node_data = self._select_refresh_node(file, reset, ctx)
 
         if not func_node:
             return
@@ -708,18 +716,18 @@ class FileManager:
             self._build_list_args(file, rule_type, list_args_spec)
         )
 
-        self._ensure_temp_file(file, temp_files)
+        self._ensure_temp_file(file, ctx.temp_files)
 
         wildcards = node_data.get("wildcards", {})
 
         if func_deps:
-            self._refresh_function_dependencies(func_deps, wildcards, reset)
+            self._refresh_function_dependencies(func_deps, wildcards, reset, ctx)
 
         process_func = import_function(func_str)
         process_func(**wildcards, **additional_arguments)
 
-        cache[file] = True
-        fop.remove_from_cache(file)
+        ctx.cache[file] = True
+        ctx.fop.remove_from_cache(file)
 
     def get_dependencies(self, file: str) -> List[str]:
         """Get all dependencies for a file."""
