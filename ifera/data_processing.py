@@ -605,8 +605,8 @@ def calculate_rollover(
         inst_trading_days_ord = tens[:, 0, ORD_TRD_CH].unique().int().tolist()
         contract_forced_roll.append(_forced_roll_date(inst, set(inst_trading_days_ord)))
 
-    data = None  # free memory
-    filtered = None
+    data = []  # free memory
+    filtered = []
     all_days_ord = [d for d in all_days_ord_full if d >= start_ord]
     n_days = len(all_days_ord)
 
@@ -622,6 +622,11 @@ def calculate_rollover(
     # -----------------------------------------------------------------------
     for pos, day in enumerate(all_days_ord):
         active_idx[pos] = current
+
+        if pos == n_days - 1:
+            # Last day, no need to roll
+            ratios[pos] = float("nan")
+            continue
 
         # Volume today for active contract (0 if not trading any more)
         cur_vol, cur_open = contract_day_stats[current].get(day, (0.0, float("nan")))

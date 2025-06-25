@@ -84,14 +84,7 @@ def expand_dependency_wildcards(
         args.update(add_args)
 
         if fm and func_deps:
-            fm._refresh_function_dependencies(
-                func_deps,
-                known_wildcards,
-                False,
-                {},
-                FileOperations(),
-                [],
-            )
+            fm._refresh_function_dependencies(func_deps, known_wildcards, False)
 
         try:
             results = func(**args)
@@ -481,7 +474,7 @@ class FileManager:
 
                 if rule.get("refresh_function"):
                     graph.nodes[file]["refresh_function"] = rule["refresh_function"]
-                
+
                 graph.nodes[file]["no_cleanup"] = rule.get("no_cleanup", False)
 
                 if rule.get("depends_on"):
@@ -680,13 +673,7 @@ class FileManager:
                 temp_files.append(file)
 
     def _refresh_function_dependencies(
-        self,
-        dependencies: list[str],
-        wildcards: dict,
-        reset: bool,
-        cache: Dict[str, bool],
-        fop: FileOperations,
-        temp_files: List[str],
+        self, dependencies: list[str], wildcards: dict, reset: bool
     ) -> None:
         """Refresh dependencies required by a function node."""
 
@@ -697,11 +684,7 @@ class FileManager:
                 print(f"Warning: {e} when processing function dependency {dep}")
                 continue
 
-            self.build_subgraph(dep_file, RuleType.DEPENDENCY)
-            self._refresh_file(dep_file, reset, cache, fop, temp_files)
-            if dep_file not in cache:
-                self.build_subgraph(dep_file, RuleType.REFRESH)
-                self._refresh_stale_file(dep_file, reset, cache, fop, temp_files)
+            self.refresh_file(dep_file, reset)
 
     def _refresh_stale_file(
         self,
@@ -730,9 +713,7 @@ class FileManager:
         wildcards = node_data.get("wildcards", {})
 
         if func_deps:
-            self._refresh_function_dependencies(
-                func_deps, wildcards, reset, cache, fop, temp_files
-            )
+            self._refresh_function_dependencies(func_deps, wildcards, reset)
 
         process_func = import_function(func_str)
         process_func(**wildcards, **additional_arguments)
