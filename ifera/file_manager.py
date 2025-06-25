@@ -59,124 +59,6 @@ def get_literal_prefix(pattern: str) -> str:
         return pattern[:index]
 
 
-def expand_dependency_wildcards(
-    dependency_entry: dict, known_wildcards: dict, fm: Optional["FileManager"] = None
-) -> List[str]:
-    """Expand a dependency that requires wildcard expansion."""
-
-    try:
-        dep_pattern = dependency_entry["pattern"]
-    except KeyError as e:
-        print(f"Error: Missing key in dependency expansion rule: {e}")
-        return []
-
-    if "expansion_function" in dependency_entry:
-        func_node = dependency_entry["expansion_function"]
-        try:
-            func_str, add_args, _, func_deps = FileManager._parse_refresh_rule(
-                func_node, dep_pattern
-            )
-            func = import_function(func_str)
-        except Exception as e:  # noqa: BLE001
-            print(f"Error parsing expansion function for {dep_pattern}: {e}")
-            return []
-
-        args = dict(known_wildcards)
-        args.update(add_args)
-
-        if fm and func_deps:
-            fm._refresh_function_dependencies(
-                func_deps, known_wildcards, False, FileManagerContext()
-            )
-
-        try:
-            results = func(**args)
-        except Exception as e:  # noqa: BLE001
-            print(f"Error executing expansion function for {dep_pattern}: {e}")
-            return []
-
-        if not isinstance(results, list):
-            print("Warning: expansion function should return a list of dictionaries.")
-            return []
-
-        expanded = []
-        for item in results:
-            if not isinstance(item, dict):
-                print("Warning: expansion function result items must be dictionaries.")
-                continue
-            new_wildcards = dict(known_wildcards)
-            new_wildcards.update(item)
-            try:
-                dep_file = substitute_pattern(dep_pattern, new_wildcards)
-                expanded.append(dep_file)
-            except ValueError as e:
-                print(f"Error substituting in dependency pattern: {e}")
-                continue
-
-        return expanded
-
-    if "wildcard_expansion" not in dependency_entry:
-        print(
-            f"Error: Missing 'wildcard_expansion' or 'expansion_function' in dependency rule for {dep_pattern}"
-        )
-        return []
-
-    expansion_pattern = dependency_entry["wildcard_expansion"]
-
-    # Substitute known wildcards into the expansion_pattern.
-    try:
-        substituted_expansion = partial_substitute_pattern(
-            expansion_pattern, known_wildcards
-        )
-    except ValueError as e:
-        print(f"Error in substitution for expansion pattern: {e}")
-        return []
-
-    # Parse the substituted URL
-    parsed_url = urlparse(substituted_expansion)
-
-    if parsed_url.scheme != "s3":
-        print("Warning: Wildcard expansion currently only implemented for S3 schemes.")
-        return []
-
-    # Remove leading slash from path (if any) to form an S3 key
-    s3_path_pattern = parsed_url.path.lstrip("/")
-
-    # Build a regex from the s3_path_pattern with constraints
-    regex_str, missing_wildcards = pattern_to_regex_custom(s3_path_pattern)
-
-    # Use the literal prefix (up to the first placeholder) to list S3 objects
-    prefix = get_literal_prefix(s3_path_pattern)
-    object_keys = list_s3_objects(prefix)
-
-    matching_deps = []
-    pattern_re = re.compile(regex_str)
-
-    for key in object_keys:
-        m = pattern_re.match(key)
-        if m:
-            captured_values = m.groups()
-            # Merge known wildcards with the newly extracted ones from the expansion.
-            new_wildcards = dict(known_wildcards)
-
-            for name, value in zip(missing_wildcards, captured_values):
-                new_wildcards[name] = value
-            try:
-                dep_file = substitute_pattern(dep_pattern, new_wildcards)
-                matching_deps.append(dep_file)
-            except ValueError as e:
-                print(f"Error substituting in dependency pattern: {e}")
-                continue
-
-    if not matching_deps:
-        print(
-            "Warning: No matching files found for wildcard expansion with pattern "
-            f"{substituted_expansion}"
-        )
-
-    return matching_deps
-
-
 def pattern_to_regex(pattern_path: str) -> Tuple[str, List[str]]:
     """
     Convert a pattern path to a regex and extract wildcard names.
@@ -438,14 +320,16 @@ class FileManager:
         dependencies: List[str | dict],
         wildcards,
         rule_type: RuleType,
+        ctx: Optional[FileManagerContext] = None,
     ) -> None:
         graph = self.get_graph(rule_type)
+        ctx = ctx or FileManagerContext()
 
         for dep in dependencies:
             if isinstance(dep, str):
                 try:
                     dep_file = substitute_pattern(dep, wildcards)
-                    self.build_subgraph(dep_file, rule_type)
+                    self.build_subgraph(dep_file, rule_type, ctx)
                     graph.add_edge(parent_node, dep_file)
                 except ValueError as e:
                     print(
@@ -453,7 +337,7 @@ class FileManager:
                     )
             elif isinstance(dep, dict):
                 # Process dependency with wildcard expansion.
-                expanded_files = expand_dependency_wildcards(dep, wildcards, self)
+                expanded_files = self._expand_dependency_wildcards(dep, wildcards, ctx)
                 if not expanded_files:
                     print(
                         "Warning: Skipping dependency "
@@ -461,16 +345,19 @@ class FileManager:
                         "expansion matches were found."
                     )
                 for dep_file in expanded_files:
-                    self.build_subgraph(dep_file, rule_type)
+                    self.build_subgraph(dep_file, rule_type, ctx)
                     graph.add_edge(parent_node, dep_file)
             else:
                 print(
                     f"Warning: Unexpected dependency type {dep} for file {parent_node}"
                 )
 
-    def build_subgraph(self, file: str, rule_type: RuleType) -> None:
+    def build_subgraph(
+        self, file: str, rule_type: RuleType, ctx: Optional[FileManagerContext] = None
+    ) -> None:
         """Recursively build the graph for a file and its dependencies."""
         graph = self.get_graph(rule_type)
+        ctx = ctx or FileManagerContext()
 
         if file in graph:
             return
@@ -495,18 +382,19 @@ class FileManager:
                         rule["depends_on"],
                         wildcards,
                         rule_type,
+                        ctx,
                     )
 
                 break
 
     def is_up_to_date(self, file: str) -> bool:
         """Check if a file is up-to-date, building its subgraph if needed."""
-        self.build_subgraph(file, RuleType.DEPENDENCY)
+        context = FileManagerContext()
+        self.build_subgraph(file, RuleType.DEPENDENCY, context)
 
         if file not in self.dependency_graph:
             raise ValueError(f"File {file} not found in dependency graph")
 
-        context = FileManagerContext()
         return self._is_up_to_date(file, context)
 
     def _is_up_to_date(self, file: str, ctx: FileManagerContext) -> bool:
@@ -544,12 +432,11 @@ class FileManager:
 
     def refresh_file(self, file: str, reset: bool = False) -> None:
         """Refresh a file if stale or missing, building its subgraph if needed."""
-        self.build_subgraph(file, RuleType.DEPENDENCY)
+        context = FileManagerContext()
+        self.build_subgraph(file, RuleType.DEPENDENCY, context)
 
         if file not in self.dependency_graph:
             raise ValueError(f"File {file} not found in dependency graph")
-
-        context = FileManagerContext()
         try:
             self._refresh_file(file, reset, context)
         finally:
@@ -573,7 +460,7 @@ class FileManager:
 
         # Then check if this file needs refreshing
         if has_successors and (reset or not self._is_up_to_date(file, ctx)):
-            self.build_subgraph(file, RuleType.REFRESH)
+            self.build_subgraph(file, RuleType.REFRESH, ctx)
             self._refresh_stale_file(file, reset, ctx)
 
     def _select_refresh_node(
@@ -593,7 +480,7 @@ class FileManager:
             return refresh_func_node, RuleType.DEPENDENCY, node_data
 
         for dep in self.refresh_graph.successors(file):
-            self.build_subgraph(dep, RuleType.DEPENDENCY)
+            self.build_subgraph(dep, RuleType.DEPENDENCY, ctx)
             if reset or not self._is_up_to_date(dep, ctx):
                 self._refresh_stale_file(dep, reset, ctx)
 
@@ -676,6 +563,124 @@ class FileManager:
             if not no_cleanup:
                 temp_files.append(file)
 
+    def _expand_dependency_wildcards(
+        self, dependency_entry: dict, known_wildcards: dict, ctx: FileManagerContext
+    ) -> List[str]:
+        """Expand a dependency that requires wildcard expansion."""
+
+        try:
+            dep_pattern = dependency_entry["pattern"]
+        except KeyError as e:
+            print(f"Error: Missing key in dependency expansion rule: {e}")
+            return []
+
+        if "expansion_function" in dependency_entry:
+            func_node = dependency_entry["expansion_function"]
+            try:
+                func_str, add_args, _, func_deps = self._parse_refresh_rule(
+                    func_node, dep_pattern
+                )
+                func = import_function(func_str)
+            except Exception as e:  # noqa: BLE001
+                print(f"Error parsing expansion function for {dep_pattern}: {e}")
+                return []
+
+            args = dict(known_wildcards)
+            args.update(add_args)
+
+            if func_deps:
+                self._refresh_function_dependencies(
+                    func_deps, known_wildcards, False, ctx
+                )
+
+            try:
+                results = func(**args)
+            except Exception as e:  # noqa: BLE001
+                print(f"Error executing expansion function for {dep_pattern}: {e}")
+                return []
+
+            if not isinstance(results, list):
+                print(
+                    "Warning: expansion function should return a list of dictionaries."
+                )
+                return []
+
+            expanded = []
+            for item in results:
+                if not isinstance(item, dict):
+                    print(
+                        "Warning: expansion function result items must be dictionaries."
+                    )
+                    continue
+                new_wildcards = dict(known_wildcards)
+                new_wildcards.update(item)
+                try:
+                    dep_file = substitute_pattern(dep_pattern, new_wildcards)
+                    expanded.append(dep_file)
+                except ValueError as e:
+                    print(f"Error substituting in dependency pattern: {e}")
+                    continue
+
+            return expanded
+
+        if "wildcard_expansion" not in dependency_entry:
+            print(
+                "Error: Missing 'wildcard_expansion' or 'expansion_function' "
+                f"in dependency rule for {dep_pattern}"
+            )
+            return []
+
+        expansion_pattern = dependency_entry["wildcard_expansion"]
+
+        try:
+            substituted_expansion = partial_substitute_pattern(
+                expansion_pattern, known_wildcards
+            )
+        except ValueError as e:
+            print(f"Error in substitution for expansion pattern: {e}")
+            return []
+
+        parsed_url = urlparse(substituted_expansion)
+
+        if parsed_url.scheme != "s3":
+            print(
+                "Warning: Wildcard expansion currently only implemented for S3 schemes."
+            )
+            return []
+
+        s3_path_pattern = parsed_url.path.lstrip("/")
+
+        regex_str, missing_wildcards = pattern_to_regex_custom(s3_path_pattern)
+
+        prefix = get_literal_prefix(s3_path_pattern)
+        object_keys = list_s3_objects(prefix)
+
+        matching_deps = []
+        pattern_re = re.compile(regex_str)
+
+        for key in object_keys:
+            m = pattern_re.match(key)
+            if m:
+                captured_values = m.groups()
+                new_wildcards = dict(known_wildcards)
+
+                for name, value in zip(missing_wildcards, captured_values):
+                    new_wildcards[name] = value
+                try:
+                    dep_file = substitute_pattern(dep_pattern, new_wildcards)
+                    matching_deps.append(dep_file)
+                except ValueError as e:
+                    print(f"Error substituting in dependency pattern: {e}")
+                    continue
+
+        if not matching_deps:
+            print(
+                "Warning: No matching files found for wildcard expansion with pattern "
+                f"{substituted_expansion}"
+            )
+
+        return matching_deps
+
     def _refresh_function_dependencies(
         self,
         dependencies: list[str],
@@ -692,10 +697,10 @@ class FileManager:
                 print(f"Warning: {e} when processing function dependency {dep}")
                 continue
 
-            self.build_subgraph(dep_file, RuleType.DEPENDENCY)
+            self.build_subgraph(dep_file, RuleType.DEPENDENCY, ctx)
             self._refresh_file(dep_file, reset, ctx)
             if dep_file not in ctx.cache:
-                self.build_subgraph(dep_file, RuleType.REFRESH)
+                self.build_subgraph(dep_file, RuleType.REFRESH, ctx)
                 self._refresh_stale_file(dep_file, reset, ctx)
 
     def _refresh_stale_file(
@@ -731,13 +736,13 @@ class FileManager:
 
     def get_dependencies(self, file: str) -> List[str]:
         """Get all dependencies for a file."""
-        self.build_subgraph(file, RuleType.DEPENDENCY)
+        self.build_subgraph(file, RuleType.DEPENDENCY, FileManagerContext())
         return list(self.dependency_graph.successors(file))
 
     def get_node_params(self, rule_type: RuleType, file: str) -> dict:
         """Get parameters for a node in the graph."""
         graph = self.get_graph(rule_type)
-        self.build_subgraph(file, rule_type)
+        self.build_subgraph(file, rule_type, FileManagerContext())
 
         if file not in graph:
             raise ValueError(f"File {file} not found in {rule_type.value} graph")
@@ -759,7 +764,7 @@ class FileManager:
         scheme_filter: Optional[Scheme] = None,
     ) -> datetime.datetime | None:
         """Get the maximum last modified time of all dependencies."""
-        self.build_subgraph(file, rule_type)
+        self.build_subgraph(file, rule_type, FileManagerContext())
         graph = self.get_graph(rule_type)
 
         if file not in graph:

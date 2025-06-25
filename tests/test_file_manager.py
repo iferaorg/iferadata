@@ -10,7 +10,6 @@ from ifera.file_manager import (
     FileOperations,
     FileManagerContext,
     RuleType,
-    expand_dependency_wildcards,
     get_literal_prefix,
     import_function,
     match_pattern,
@@ -75,7 +74,9 @@ def test_expand_dependency_wildcards(monkeypatch):
     ]
     mock = MagicMock(return_value=objects)
     monkeypatch.setattr("ifera.file_manager.list_s3_objects", mock)
-    result = expand_dependency_wildcards(dep_entry, {"symbol": "CL"})
+    fm = FileManager(config_file="../tests/test_dependencies.yml")
+    ctx = FileManagerContext()
+    result = fm._expand_dependency_wildcards(dep_entry, {"symbol": "CL"}, ctx)
     mock.assert_called_once_with("raw/data/CL-")
     assert result == []
 
@@ -85,7 +86,9 @@ def test_expand_dependency_wildcards_function():
         "pattern": "s3:tensor/data/{symbol}-{code}.pt",
         "expansion_function": "tests.helper_module.expand_codes",
     }
-    result = expand_dependency_wildcards(dep_entry, {"symbol": "CL"})
+    fm = FileManager(config_file="../tests/test_dependencies.yml")
+    ctx = FileManagerContext()
+    result = fm._expand_dependency_wildcards(dep_entry, {"symbol": "CL"}, ctx)
     assert result == [
         "s3:tensor/data/CL-AA.pt",
         "s3:tensor/data/CL-BB.pt",
