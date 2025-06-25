@@ -8,6 +8,7 @@ import pytest
 from ifera.file_manager import (
     FileManager,
     FileOperations,
+    FileManagerContext,
     RuleType,
     expand_dependency_wildcards,
     get_literal_prefix,
@@ -379,14 +380,9 @@ def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_in
     monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
 
     dummy_fop = DummyFOP(times)
+    ctx = FileManagerContext(cache={}, fop=dummy_fop, temp_files=[])
     with pytest.raises(RuntimeError):
-        fm._refresh_stale_file(
-            "file:/tmp/output/CL.txt",
-            False,
-            {},
-            dummy_fop,
-            [],
-        )
+        fm._refresh_stale_file("file:/tmp/output/CL.txt", False, ctx)
 
 
 def test_parse_refresh_rule():
