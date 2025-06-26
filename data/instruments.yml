@@ -193,6 +193,7 @@ instruments:
     lastTradeDayRule: THIRD_LAST_BUSINESS_DAY_CONTRACT_MONTH
     firstNoticeDayRule: LAST_BUSINESS_DAY_PRIOR_MONTH
     assetClass: Metals
+    tradedMonths: "FJNV"
   UB:
     template: us_futures
     symbol: UB
