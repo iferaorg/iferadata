@@ -438,7 +438,6 @@ def contract_codes_for_backadjust(symbol: str, interval: str) -> list[dict]:
     return result
 
 
-
 def process_futures_backadjusted_tensor(
     symbol: str, interval: str, contract_codes: list[str] | None = None
 ) -> None:
@@ -545,6 +544,6 @@ def process_futures_backadjusted_tensor(
     result = rearrange(combined, "(d t) c -> d t c", t=steps)
 
     tensor_file_path = make_path(
-        Source.TENSOR, "futures_backadjusted", interval, symbol
+        Source.TENSOR_BACKADJUSTED, "futures", interval, symbol
     )
     write_tensor_to_gzip(str(tensor_file_path), result)

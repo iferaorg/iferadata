@@ -17,6 +17,19 @@ def test_make_path_creates_directories(tmp_path, monkeypatch):
     assert path.parent.is_dir()
 
 
+def test_make_path_tensor_backadjusted(tmp_path, monkeypatch):
+    monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
+    path = file_utils.make_path(Source.TENSOR_BACKADJUSTED, "futures", "1m", "AAPL")
+    expected = Path(
+        tmp_path,
+        Source.TENSOR_BACKADJUSTED.value,
+        "futures",
+        "1m",
+        "AAPL",
+    ).with_suffix(".pt.gz")
+    assert path == expected
+
+
 def test_make_path_remove_file(tmp_path, monkeypatch):
     monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
     existing = Path(tmp_path, Source.RAW.value, "foo", "1h", "bar").with_suffix(".zip")

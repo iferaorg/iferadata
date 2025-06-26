@@ -8,6 +8,14 @@ def test_make_url_file_scheme(tmp_path, monkeypatch):
     assert url == "file:tensor/fut/1m/SYM.pt.gz"
 
 
+def test_make_url_tensor_backadjusted(tmp_path, monkeypatch):
+    monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
+    url = url_utils.make_url(
+        Scheme.FILE, Source.TENSOR_BACKADJUSTED, "futures", "1m", "SYM"
+    )
+    assert url == "file:tensor_backadjusted/futures/1m/SYM.pt.gz"
+
+
 def test_make_url_other_scheme():
     url = url_utils.make_url(Scheme.S3, Source.RAW, "data", "1d", "ABC")
     assert url == "s3:raw/data/1d/ABC.zip"
