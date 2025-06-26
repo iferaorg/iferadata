@@ -49,7 +49,7 @@ dependency_rules:
       - "s3:raw/{type}/{interval}/{symbol}.zip"
 
   # Special tensors
-  - dependent: "s3:tensor/futures_backadjusted/{interval}/{symbol}.pt.gz"
+  - dependent: "s3:tensor_backadjusted/futures/{interval}/{symbol}.pt.gz"
     where:
       interval: ["1m", "30m"]
     depends_on:
@@ -118,7 +118,7 @@ refresh_rules:
     refresh_function: "ifera.file_refresh.process_raw_file"
 
   # Special tensors
-  - dependent: "file:tensor/futures_backadjusted/{interval}/{symbol}.pt.gz"
+  - dependent: "file:tensor_backadjusted/futures/{interval}/{symbol}.pt.gz"
     where:
       interval: ["1m", "30m"]
     depends_on:

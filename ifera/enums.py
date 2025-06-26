@@ -15,6 +15,7 @@ class Source(Enum):
     RAW = "raw"
     PROCESSED = "processed"
     TENSOR = "tensor"
+    TENSOR_BACKADJUSTED = "tensor_backadjusted"
     META = "meta"
 
 
@@ -47,5 +48,6 @@ extension_map = {
     Source.RAW: ".zip",
     Source.PROCESSED: ".zip",
     Source.TENSOR: ".pt.gz",
+    Source.TENSOR_BACKADJUSTED: ".pt.gz",
     Source.META: ".yml",
 }

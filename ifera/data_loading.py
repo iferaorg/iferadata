@@ -130,12 +130,11 @@ def load_data_tensor(
     dtype: torch.dtype = torch.float32,
     device: Optional[torch.device] = None,
     strip_date_time: bool = True,
+    source: Source = Source.TENSOR,
 ) -> torch.Tensor:
     """Load processed data as a PyTorch tensor using dependency-based file refreshing."""
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    source = Source.TENSOR
-
     # Load the tensor from the local file
     file_path = make_instrument_path(source=source, instrument=instrument)
 
