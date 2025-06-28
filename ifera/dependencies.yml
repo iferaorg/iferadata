@@ -67,6 +67,12 @@ dependency_rules:
     depends_on:
       - "s3:processed/{type}/{interval}/{symbol}.zip"
 
+  - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["2m", "3m", "5m", "10m", "15m", "20m"]
+    depends_on:
+      - "s3:tensor/{type}/1m/{symbol}.pt.gz"
+
 refresh_rules:
   # Upload
   - dependent: "s3:{source}/{type}/{interval}/{symbol}.{ext}"
