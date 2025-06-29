@@ -288,6 +288,25 @@ class ConfigManager:
         ):
             self._load_data()
 
+    def _find_parent_interval(
+        self, allowed_intervals: List[str], interval: str
+    ) -> Optional[str]:
+        """Return the best parent interval from allowed_intervals for the requested one."""
+        requested_td = pd.to_timedelta(interval)
+        candidates: List[Tuple[pd.Timedelta, str]] = []
+        for allowed in allowed_intervals:
+            allowed_td = pd.to_timedelta(allowed)
+            if (
+                allowed_td < requested_td
+                and requested_td.total_seconds() % allowed_td.total_seconds() == 0
+            ):
+                candidates.append((allowed_td, allowed))
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda x: x[0])[1]
+
     def get_base_instrument_config(
         self, symbol: str, interval: str
     ) -> BaseInstrumentConfig:
@@ -315,13 +334,21 @@ class ConfigManager:
         else:
             combined_dict = instrument_dict
 
-        # Check if the interval is allowed
+        # Check if the interval is allowed or can be derived from an allowed interval
         allowed_intervals = combined_dict.get("intervals", [])
         if interval not in allowed_intervals:
-            raise ValueError(
-                f"Interval '{interval}' not allowed for instrument '{symbol}'. "
-                f"Allowed intervals: {allowed_intervals}"
+            parent_interval = self._find_parent_interval(allowed_intervals, interval)
+            if parent_interval is None:
+                raise ValueError(
+                    f"Interval '{interval}' not allowed for instrument '{symbol}'. "
+                    f"Allowed intervals: {allowed_intervals}"
+                )
+            parent_config = self.get_base_instrument_config(symbol, parent_interval)
+            config = self.create_derived_base_config(
+                parent_config=parent_config, new_interval=interval
             )
+            self._base_config_cache[cache_key] = config
+            return config
 
         # Remove 'intervals' as it's not part of BaseInstrumentConfig
         combined_dict.pop("intervals", None)
