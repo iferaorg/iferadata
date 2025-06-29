@@ -6,7 +6,8 @@ import time
 
 import torch
 import yaml
-from einops import rearrange
+import pandas as pd
+from einops import rearrange, repeat
 from tqdm import tqdm
 
 from .url_utils import contract_notice_and_expiry, make_url
@@ -15,7 +16,7 @@ from .data_loading import load_data, load_data_tensor
 from .data_processing import process_data, calculate_rollover
 from .config import ConfigManager
 from .enums import Source, extension_map, Scheme, ExpirationRule
-from .file_utils import make_path, write_tensor_to_gzip
+from .file_utils import make_path, write_tensor_to_gzip, read_tensor_from_gzip
 from .file_manager import FileManager
 from .date_utils import calculate_expiration
 
@@ -547,3 +548,56 @@ def process_futures_backadjusted_tensor(
         Source.TENSOR_BACKADJUSTED, "futures", interval, symbol
     )
     write_tensor_to_gzip(str(tensor_file_path), result)
+
+
+def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
+    source: str,
+    type: str,
+    interval: str,
+    symbol: str,
+    parent_interval: str,
+) -> None:
+    """Aggregate a tensor from a parent interval tensor."""
+
+    source_enum = Source(source)
+
+    parent_path = make_path(source_enum, type, parent_interval, symbol)
+    parent_tensor = read_tensor_from_gzip(str(parent_path))
+
+    parent_steps = parent_tensor.shape[1]
+
+    child_delta = pd.to_timedelta(interval)
+    parent_delta = pd.to_timedelta(parent_interval)
+
+    if child_delta % parent_delta != pd.Timedelta(0):
+        raise ValueError("Child interval must be multiple of parent interval")
+
+    multiplier = int(child_delta / parent_delta)
+
+    if parent_steps % multiplier != 0:
+        padding = (parent_steps // multiplier + 1) * multiplier - parent_steps
+        padding_data = torch.zeros(
+            (parent_tensor.shape[0], parent_tensor.shape[2]),
+            dtype=parent_tensor.dtype,
+            device=parent_tensor.device,
+        )
+        padding_data[:, 0:4] = parent_tensor[:, -1, 3, None]
+        padding_data = repeat(padding_data, "d c -> d g c", g=padding)
+        parent_tensor = torch.cat([parent_tensor, padding_data], dim=1)
+
+    parent_tensor = rearrange(parent_tensor, "d (g n) c -> d g c n", n=multiplier)
+
+    result = torch.zeros(
+        (parent_tensor.shape[0], parent_tensor.shape[1], parent_tensor.shape[2]),
+        dtype=parent_tensor.dtype,
+        device=parent_tensor.device,
+    )
+
+    result[:, :, 0] = parent_tensor[:, :, 0, 0]
+    result[:, :, 1] = parent_tensor[:, :, 1].max(dim=-1).values
+    result[:, :, 2] = parent_tensor[:, :, 2].min(dim=-1).values
+    result[:, :, 3] = parent_tensor[:, :, 3, -1]
+    result[:, :, 4] = parent_tensor[:, :, 4].sum(dim=-1)
+
+    target_path = make_path(source_enum, type, interval, symbol, remove_file=True)
+    write_tensor_to_gzip(str(target_path), result)
