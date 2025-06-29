@@ -162,5 +162,8 @@ refresh_rules:
       source: ["tensor", "tensor_backadjusted"]
     depends_on:
       - "file:{source}/{type}/1m/{symbol}.pt.gz"
-    refresh_function: "ifera.file_refresh.aggregate_from_parent_tensor"
+    refresh_function:
+      name: "ifera.file_refresh.aggregate_from_parent_tensor"
+      additional_args:
+        parent_interval: "1m"
 
