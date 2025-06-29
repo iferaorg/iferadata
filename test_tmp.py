@@ -8,13 +8,13 @@ import os
 import datetime as dt
 
 
-# dm = ifera.DataManager()
-# cm = ifera.ConfigManager()
-# parent_instrument = cm.get_base_instrument_config("TN:1m")
-# instrument = cm.create_derived_base_config(parent_instrument, "5m")
-# device=torch.device("cuda:0")
+dm = ifera.DataManager()
+cm = ifera.ConfigManager()
+instrument = cm.get_base_instrument_config("TN", "5m")
+device=torch.device("cuda:0")
 
-# idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device)
+idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device, backadjust=True)
+idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device, backadjust=True)
 
 # idata.data.shape
 
@@ -26,21 +26,21 @@ import datetime as dt
 # ifera.calculate_expiration(contract_instrument.contract_code, ifera.ExpirationRule(contract_instrument.last_trading_day_rule))
 
 # -----------------------------------------------------------
-fm = ifera.FileManager()
-cm = ifera.ConfigManager()
+# fm = ifera.FileManager()
+# cm = ifera.ConfigManager()
 
-broker = cm.get_broker_config("IBKR")
-symbols = broker.instruments.keys()
+# broker = cm.get_broker_config("IBKR")
+# symbols = broker.instruments.keys()
 
 
-for symbol in symbols:
-    iconfig = cm.get_base_instrument_config(symbol, "30m")
+# for symbol in symbols:
+#     iconfig = cm.get_base_instrument_config(symbol, "30m")
     
-    if iconfig.type != "futures":
-        continue
+#     if iconfig.type != "futures":
+#         continue
     
-    print(f"Refreshing backadjusted tensors for {symbol}...")
-    fm.refresh_file(f"s3:tensor_backadjusted/futures/1m/{symbol}.pt.gz")
+#     print(f"Refreshing backadjusted tensors for {symbol}...")
+#     fm.refresh_file(f"s3:tensor_backadjusted/futures/1m/{symbol}.pt.gz")
     # ifera.delete_s3_file(f"meta/futures/rollover/{symbol}.yml")
     # fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
 

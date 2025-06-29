@@ -12,10 +12,12 @@ import networkx as nx
 import yaml
 
 from .decorators import singleton
-from .enums import Scheme
+from .enums import Scheme, Source
 from .github_utils import check_github_file_exists, get_github_last_modified
 from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
 from .settings import settings
+from .url_utils import make_instrument_url
+from .config import BaseInstrumentConfig
 
 # Helper Functions
 
@@ -787,3 +789,17 @@ class FileManager:
                     max_mtime = mtime
 
         return max_mtime
+
+
+def refresh_instrument_file(
+    instrument: BaseInstrumentConfig,
+    scheme: Scheme,
+    source: Source,
+    reset: bool = False,
+) -> None:
+    """
+    Refresh the data file for a specific instrument.
+    """
+    fm = FileManager()
+    url = make_instrument_url(scheme, source, instrument)
+    fm.refresh_file(url, reset)

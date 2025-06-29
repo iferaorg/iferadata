@@ -19,7 +19,9 @@ from einops import repeat, rearrange
 from .config import BaseInstrumentConfig
 from .data_loading import load_data_tensor
 from .masked_series import masked_artr
-from .decorators import singleton
+from .decorators import singleton, ThreadSafeCache
+from .file_manager import refresh_instrument_file
+from .enums import Scheme, Source
 
 
 class InstrumentData:
@@ -51,6 +53,7 @@ class InstrumentData:
         dtype: torch.dtype = torch.float32,
         device: Optional[torch.device] = None,
         sentinel: Optional[object] = None,
+        backadjust: bool = False,
     ) -> None:
         if sentinel is not DataManager()._sentinel:
             raise PermissionError(
@@ -68,7 +71,11 @@ class InstrumentData:
                 else torch.device("cpu")
             )
         )
-        self._data: None | torch.Tensor = None
+        self.backadjust = backadjust
+        self.source = Source.TENSOR_BACKADJUSTED if self.backadjust else Source.TENSOR
+
+        self._load_data()
+
         self._chunk_size = 0
         # Store ARTR data and mask separately
         self._artr_data: None | torch.Tensor = None
@@ -76,63 +83,25 @@ class InstrumentData:
         self._alpha = 1.0 / 14
         self._acrossday = True
 
+    def _load_data(self) -> None:
+        """Load data tensor from the file."""
+        refresh_instrument_file(
+            instrument=self.instrument,
+            scheme=Scheme.FILE,
+            source=self.source,
+            reset=False,
+        )
+        self._data = load_data_tensor(
+            self.instrument,
+            dtype=self.dtype,
+            device=self.device,
+            source=self.source,
+        )
+
     @property
     def data(self) -> torch.Tensor:
         """Read-only property that lazily loads data on first access."""
-        if self._data is None:
-            if self.instrument.parent_config is not None:
-                multiplier = int(
-                    self.instrument.time_step // self.instrument.parent_config.time_step
-                )
-
-                manager = DataManager()
-                parent_data = manager.get_instrument_data(
-                    self.instrument.parent_config,
-                    self.dtype,
-                    self.device,
-                ).data
-                self._data = self._aggregate_from_parent(parent_data, multiplier)
-            else:
-                self._data = load_data_tensor(
-                    self.instrument,
-                    dtype=self.dtype,
-                    device=self.device,
-                )
         return self._data
-
-    # TODO: Handle time steps larger than 1 day
-    def _aggregate_from_parent(
-        self, parent_data: torch.Tensor, multiplier: int
-    ) -> torch.Tensor:
-        """Aggregate data from parent data."""
-        parent_steps = parent_data.shape[1]
-
-        if parent_steps % multiplier != 0:
-            padding = (parent_steps // multiplier + 1) * multiplier - parent_steps
-            padding_data = torch.zeros(
-                (parent_data.shape[0], parent_data.shape[2]),
-                dtype=parent_data.dtype,
-                device=parent_data.device,
-            )
-            padding_data[:, 0:4] = parent_data[
-                :, -1, 3, None
-            ]  # Open, High, Low, Close <- Last Close
-            padding_data = repeat(padding_data, "d c -> d g c", g=padding)
-            parent_data = torch.cat([parent_data, padding_data], dim=1)
-
-        parent_data = rearrange(parent_data, "d (g n) c -> d g c n", n=multiplier)
-        result = torch.zeros(
-            (parent_data.shape[0], self.instrument.total_steps, parent_data.shape[2]),
-            dtype=parent_data.dtype,
-            device=parent_data.device,
-        )
-        result[:, :, 0] = parent_data[:, :, 0, 0]  # Open
-        result[:, :, 1] = parent_data[:, :, 1].max(dim=-1).values  # High
-        result[:, :, 2] = parent_data[:, :, 2].min(dim=-1).values  # Low
-        result[:, :, 3] = parent_data[:, :, 3, -1]  # Close
-        result[:, :, 4] = parent_data[:, :, 4].sum(dim=-1)  # Volume
-
-        return result
 
     @property
     def artr_alpha(self) -> float:
@@ -310,16 +279,15 @@ class DataManager:
     """
 
     def __init__(self):
-        # Cache for InstrumentData instances
-        # Key: (broker_name, instrument_symbol, interval, zipfile, dtype, device_type)
-        self._data_cache: Dict[Tuple[str, str, torch.dtype, str], InstrumentData] = {}
         self._sentinel = object()
 
+    @ThreadSafeCache
     def get_instrument_data(
         self,
         instrument_config: BaseInstrumentConfig,
         dtype: torch.dtype = torch.float32,
         device: Optional[torch.device] = None,
+        backadjust: bool = False,
     ) -> InstrumentData:
         """
         Get an InstrumentData instance for the specified configuration.
@@ -330,6 +298,7 @@ class DataManager:
             zipfile: Whether the data is stored in a zip file
             dtype: Data type for the tensor
             device: Device to store and process the data on
+            backadjust: Whether to use backadjusted data
 
         Returns:
             An InstrumentData instance
@@ -342,28 +311,17 @@ class DataManager:
                 else torch.device("cpu")
             )
 
-        # Create cache key
-        cache_key = (
-            instrument_config.symbol,
-            instrument_config.interval,
-            dtype,
-            device.type,
-        )
-
-        # Check if we have a cached instance
-        if cache_key in self._data_cache:
-            return self._data_cache[cache_key]
-
         # Create a new instance and cache it
         data = InstrumentData(
             instrument=instrument_config,
             dtype=dtype,
             device=device,
             sentinel=self._sentinel,
+            backadjust=backadjust,
         )
-        self._data_cache[cache_key] = data
+
         return data
 
     def clear_cache(self):
         """Clear the entire data cache."""
-        self._data_cache.clear()
+        self.get_instrument_data.cache_clear()  # type: ignore

@@ -74,6 +74,12 @@ class ThreadSafeCache:
             functools.update_wrapper(self, func)
             self.signature = inspect.signature(func)
 
+    def __get__(self, instance, owner=None):
+        """Bind instance methods to ensure 'self' is passed correctly."""
+        if instance is None:
+            return self
+        return functools.partial(self.__call__, instance)
+
     def __call__(self, *args, **kwargs):
         """
         Call the cached function with arguments, managing locks and cache.

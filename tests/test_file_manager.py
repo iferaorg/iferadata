@@ -383,7 +383,7 @@ def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_in
     monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
 
     dummy_fop = DummyFOP(times)
-    ctx = FileManagerContext(cache={}, fop=dummy_fop, temp_files=[])
+    ctx = FileManagerContext(cache={}, fop=dummy_fop, temp_files=[])  # type: ignore
     with pytest.raises(RuntimeError):
         fm._refresh_stale_file("file:/tmp/output/CL.txt", False, ctx)
 

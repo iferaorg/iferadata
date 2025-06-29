@@ -32,9 +32,7 @@ def make_url(
 
 
 def make_instrument_url(
-    scheme: Scheme,
-    source: Source,
-    instrument: BaseInstrumentConfig
+    scheme: Scheme, source: Source, instrument: BaseInstrumentConfig
 ) -> str:
     """
     Generate a URL to a data file for a specific instrument.
