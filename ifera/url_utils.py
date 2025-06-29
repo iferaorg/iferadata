@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from dateutil import parser as dtparse
 
 from .enums import Scheme, Source, extension_map
+from .config import BaseInstrumentConfig
 
 
 def make_url(
@@ -28,6 +29,37 @@ def make_url(
 
     url = f"{scheme.value}:{source.value}/{instrument_type}/{interval}/{file_name}"
     return url
+
+
+def make_instrument_url(
+    scheme: Scheme,
+    source: Source,
+    instrument: BaseInstrumentConfig
+) -> str:
+    """
+    Generate a URL to a data file for a specific instrument.
+
+    Parameters
+    ----------
+    scheme : Scheme
+        The scheme to use (e.g., FILE, HTTP).
+    source : Source
+        The source of the data (e.g., Barchart, Quandl).
+    instrument : BaseInstrumentConfig
+        The instrument configuration containing type, interval, and symbol.
+
+    Returns
+    -------
+    str
+        The generated URL.
+    """
+    return make_url(
+        scheme,
+        source,
+        instrument.type,
+        instrument.interval,
+        instrument.symbol,
+    )
 
 
 def _extract_date(label: str, soup: BeautifulSoup) -> Optional[dt.date]:
