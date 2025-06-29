@@ -67,11 +67,13 @@ dependency_rules:
     depends_on:
       - "s3:processed/{type}/{interval}/{symbol}.zip"
 
-  - dependent: "s3:tensor/{type}/{interval}/{symbol}.pt.gz"
+  # Derived tensors
+  - dependent: "s3:{source}/{type}/{interval}/{symbol}.pt.gz"
     where:
       interval: ["2m", "3m", "5m", "10m", "15m", "20m"]
+      source: ["tensor", "tensor_backadjusted"]
     depends_on:
-      - "s3:tensor/{type}/1m/{symbol}.pt.gz"
+      - "s3:{source}/{type}/1m/{symbol}.pt.gz"
 
 refresh_rules:
   # Upload
@@ -153,9 +155,12 @@ refresh_rules:
       - "file:processed/{type}/{interval}/{symbol}.zip"
     refresh_function: "ifera.file_refresh.process_tensor_file"
 
-  - dependent: "file:tensor/{type}/{interval}/{symbol}.pt.gz"
+  # Derived tensors
+  - dependent: "file:{source}/{type}/{interval}/{symbol}.pt.gz"
     where:
       interval: ["2m", "3m", "5m", "10m", "15m", "20m"]
+      source: ["tensor", "tensor_backadjusted"]
     depends_on:
-      - "file:tensor/{type}/1m/{symbol}.pt.gz"
+      - "file:{source}/{type}/1m/{symbol}.pt.gz"
     refresh_function: "ifera.file_refresh.aggregate_from_parent_tensor"
+
