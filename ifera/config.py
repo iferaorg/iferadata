@@ -79,7 +79,8 @@ class BaseInstrumentConfig(BaseModel):
 
     parent_config: Optional["BaseInstrumentConfig"] = Field(None, exclude=True)
 
-    __hash__ = lambda self: id(self)  # type: ignore
+    def __hash__(self):
+        return id(self)
 
     @property
     def file_symbol(self) -> str:
