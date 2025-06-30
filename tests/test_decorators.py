@@ -96,3 +96,26 @@ def test_thread_safe_cache_multi_thread():
     assert len(results) == 5
     assert all(r == 10 for r in results)
     assert calls["count"] == 1
+
+
+def test_thread_safe_cache_on_method():
+    class MyClass:
+        def __init__(self, factor: int) -> None:
+            self.factor = factor
+            self.calls = 0
+
+        @ThreadSafeCache()
+        def multiply(self, x: int) -> int:
+            self.calls += 1
+            return x * self.factor
+
+    obj1 = MyClass(2)
+    obj2 = MyClass(3)
+
+    assert obj1.multiply(5) == 10
+    assert obj1.multiply(5) == 10
+    assert obj1.calls == 1
+
+    assert obj2.multiply(5) == 15
+    assert obj2.multiply(5) == 15
+    assert obj2.calls == 1

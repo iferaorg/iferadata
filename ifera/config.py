@@ -79,6 +79,9 @@ class BaseInstrumentConfig(BaseModel):
 
     parent_config: Optional["BaseInstrumentConfig"] = Field(None, exclude=True)
 
+    def __hash__(self):
+        return id(self)
+
     @property
     def file_symbol(self) -> str:
         """Return the file name component based on presence of contract_code."""
