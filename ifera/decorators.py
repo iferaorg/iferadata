@@ -67,7 +67,7 @@ class ThreadSafeCache(Generic[P, R]):
             maxsize (Optional[int]): Maximum size of the cache.
             ignore_self (bool): Whether to ignore 'self' in class methods.
         """
-        self.func = func
+        self.func: Optional[Callable[P, R]] = func
         self.maxsize = maxsize
         self.ignore_self = ignore_self
         self.cache = {}
@@ -135,7 +135,10 @@ class ThreadSafeCache(Generic[P, R]):
                     return cast(R, self.cache[key])
 
             # Compute the result
-            result = self.func(*args, **kwargs)
+            if self.func is None:
+                raise RuntimeError("Function to cache must be provided.")
+            func = cast(Callable[..., R], self.func)
+            result = func(*args, **kwargs)
 
             # Store in cache (write operation)
             with self.global_rwlock.gen_wlock():
