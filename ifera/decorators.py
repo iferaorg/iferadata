@@ -1,7 +1,7 @@
 import threading
 import functools
 import inspect
-from typing import Optional
+from typing import Any, Callable, Optional, TypeVar, Generic, ParamSpec, cast
 from readerwriterlock import rwlock
 
 
@@ -38,10 +38,15 @@ def singleton(cls):
     return cls
 
 
-class ThreadSafeCache:
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+class ThreadSafeCache(Generic[P, R]):
     """
-    A thread-safe caching decorator optimized for read-heavy scenarios, compatible with class methods.
-    Uses a reader-writer lock for global synchronization and parameter-specific locks for computation.
+    A thread-safe caching decorator optimized for read-heavy scenarios.
+    Compatible with class methods and uses a reader-writer lock for global
+    synchronization, along with parameter-specific locks for computation.
     Normalizes arguments to handle positional and keyword arguments uniformly.
 
     Args:
@@ -50,8 +55,11 @@ class ThreadSafeCache:
     """
 
     def __init__(
-        self, func=None, maxsize: Optional[int] = None, ignore_self: bool = False
-    ):
+        self,
+        func: Callable[P, R] | None = None,
+        maxsize: Optional[int] = None,
+        ignore_self: bool = False,
+    ) -> None:
         """
         Initialize the ThreadSafeCache decorator.
         Args:
@@ -74,20 +82,20 @@ class ThreadSafeCache:
             functools.update_wrapper(self, func)
             self.signature = inspect.signature(func)
 
-    def __get__(self, instance, owner=None):
+    def __get__(self, instance: Any, owner: Optional[type] = None) -> Callable[P, R]:
         """Bind instance methods to ensure 'self' is passed correctly."""
         if instance is None:
-            return self
-        return functools.partial(self.__call__, instance)
+            return cast(Callable[P, R], self)
+        return cast(Callable[P, R], functools.partial(self.__call__, instance))
 
-    def __call__(self, *args, **kwargs):
-        """
-        Call the cached function with arguments, managing locks and cache.
-        """
-        # Decorator used with params: return a new instance bound to the function
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        """Call the cached function with arguments, managing locks and cache."""
         if self.func is None and len(args) == 1 and callable(args[0]) and not kwargs:
-            return ThreadSafeCache(
-                args[0], maxsize=self.maxsize, ignore_self=self.ignore_self
+            return cast(
+                Any,
+                ThreadSafeCache(
+                    args[0], maxsize=self.maxsize, ignore_self=self.ignore_self
+                ),
             )
 
         if self.func is None:
@@ -101,7 +109,7 @@ class ThreadSafeCache:
         # Step 1: Try to get the result from cache (read-only)
         with self.global_rwlock.gen_rlock():
             if key in self.cache:
-                return self.cache[key]
+                return cast(R, self.cache[key])
 
         # Step 2: Check if there's a lock for this key (read-only)
         lock = None
@@ -112,7 +120,7 @@ class ThreadSafeCache:
             # Wait on the parameter-specific lock without holding the global lock
             with lock:
                 with self.global_rwlock.gen_rlock():
-                    return self.cache[key]
+                    return cast(R, self.cache[key])
 
         # Step 3: Key not in lock_dict; create a lock for it (write operation)
         with self.global_rwlock.gen_wlock():
@@ -124,7 +132,7 @@ class ThreadSafeCache:
             # Double-check cache in case another thread computed it
             with self.global_rwlock.gen_rlock():
                 if key in self.cache:
-                    return self.cache[key]
+                    return cast(R, self.cache[key])
 
             # Compute the result
             result = self.func(*args, **kwargs)
@@ -136,7 +144,7 @@ class ThreadSafeCache:
                 if self.maxsize is not None and len(self.cache) > self.maxsize:
                     del self.cache[next(iter(self.cache))]
 
-            return result
+            return cast(R, result)
 
     def _create_normalized_key(self, args, kwargs):
         """
