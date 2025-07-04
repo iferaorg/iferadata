@@ -120,6 +120,10 @@ class ThreadSafeCache(Generic[T, P, R]):
     def __call__(self, __instance: T, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call the cached function and return the cached value."""
 
+    @overload
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        """Call the cached standalone function."""
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Implementation for both decorator and function call usage."""
         if self.func is None and len(args) == 1 and callable(args[0]) and not kwargs:
@@ -169,7 +173,7 @@ class ThreadSafeCache(Generic[T, P, R]):
             # Compute the result
             if self.func is None:
                 raise RuntimeError("Function to cache must be provided.")
-            func = cast(Callable[Concatenate[T, P], R], self.func)
+            func = cast(Callable[..., R], self.func)
             result = func(*args, **kwargs)
 
             # Store in cache (write operation)
