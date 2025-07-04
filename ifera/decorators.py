@@ -1,7 +1,17 @@
 import threading
 import functools
 import inspect
-from typing import Any, Callable, Optional, TypeVar, Generic, ParamSpec, cast
+from typing import (
+    Any,
+    Callable,
+    Optional,
+    TypeVar,
+    Generic,
+    ParamSpec,
+    cast,
+    overload,
+    Concatenate,
+)
 from readerwriterlock import rwlock
 
 
@@ -39,10 +49,11 @@ def singleton(cls):
 
 
 P = ParamSpec("P")
+T = TypeVar("T")
 R = TypeVar("R")
 
 
-class ThreadSafeCache(Generic[P, R]):
+class ThreadSafeCache(Generic[T, P, R]):
     """
     A thread-safe caching decorator optimized for read-heavy scenarios.
     Compatible with class methods and uses a reader-writer lock for global
@@ -56,7 +67,7 @@ class ThreadSafeCache(Generic[P, R]):
 
     def __init__(
         self,
-        func: Callable[P, R] | None = None,
+        func: Callable[Concatenate[T, P], R] | None = None,
         maxsize: Optional[int] = None,
         ignore_self: bool = False,
     ) -> None:
@@ -67,7 +78,7 @@ class ThreadSafeCache(Generic[P, R]):
             maxsize (Optional[int]): Maximum size of the cache.
             ignore_self (bool): Whether to ignore 'self' in class methods.
         """
-        self.func: Optional[Callable[P, R]] = func
+        self.func: Optional[Callable[Concatenate[T, P], R]] = func
         self.maxsize = maxsize
         self.ignore_self = ignore_self
         self.cache = {}
@@ -81,15 +92,36 @@ class ThreadSafeCache(Generic[P, R]):
         if func is not None:
             functools.update_wrapper(self, func)
             self.signature = inspect.signature(func)
+            self.__signature__ = self.signature
 
-    def __get__(self, instance: Any, owner: Optional[type] = None) -> Callable[P, R]:
+    def __get__(
+        self, instance: Optional[T], owner: Optional[type] = None
+    ) -> Callable[..., R]:
         """Bind instance methods to ensure 'self' is passed correctly."""
         if instance is None:
-            return cast(Callable[P, R], self)
-        return cast(Callable[P, R], functools.partial(self.__call__, instance))
+            return cast(Callable[..., R], self)
+        if self.func is None:
+            raise RuntimeError("Function not initialized")
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        """Call the cached function with arguments, managing locks and cache."""
+        @functools.wraps(self.func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            return self.__call__(instance, *args, **kwargs)
+
+        wrapper.__signature__ = self.signature  # type: ignore[attr-defined]
+        return cast(Callable[P, R], wrapper)
+
+    @overload
+    def __call__(
+        self, __fn: Callable[Concatenate[T, P], R]
+    ) -> "ThreadSafeCache[T, P, R]":
+        """Support decorator usage without calling the function."""
+
+    @overload
+    def __call__(self, __instance: T, *args: P.args, **kwargs: P.kwargs) -> R:
+        """Call the cached function and return the cached value."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Implementation for both decorator and function call usage."""
         if self.func is None and len(args) == 1 and callable(args[0]) and not kwargs:
             return cast(
                 Any,
@@ -137,7 +169,7 @@ class ThreadSafeCache(Generic[P, R]):
             # Compute the result
             if self.func is None:
                 raise RuntimeError("Function to cache must be provided.")
-            func = cast(Callable[..., R], self.func)
+            func = cast(Callable[Concatenate[T, P], R], self.func)
             result = func(*args, **kwargs)
 
             # Store in cache (write operation)
