@@ -90,6 +90,42 @@ def _clean_date(text: str) -> Optional[dt.date]:
     return dtparse.parse(date_str, dayfirst=False).date()
 
 
+def _fetch_contract_page(symbol: str, max_retries: int) -> Optional[str]:
+    """Fetch the HTML page for a futures contract."""
+    url = f"https://www.barchart.com/futures/quotes/{symbol}"
+    retries = 0
+    resp = None
+
+    while retries < max_retries:
+        try:
+            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            if resp.status_code == 200:
+                return resp.text
+        except (
+            requests.RequestException
+        ) as e:  # pragma: no cover - network failure path
+            if retries == max_retries - 1:
+                raise RuntimeError(
+                    f"Failed to fetch {url} after {max_retries} retries."
+                ) from e
+        retries += 1
+        if retries < max_retries:
+            time.sleep(1)  # Wait 1 second before retrying
+    if resp is None:
+        raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries.")
+    if resp.status_code != 404:
+        print(f"Failed to fetch {url}: HTTP {resp.status_code}")
+    return None
+
+
+def _parse_contract_page(html: str) -> Tuple[Optional[dt.date], Optional[dt.date]]:
+    """Parse first notice and expiration dates from HTML."""
+    soup = BeautifulSoup(html, "html.parser")
+    first_notice = _extract_date("First Notice Date", soup)
+    expiration = _extract_date("Expiration Date", soup)
+    return first_notice, expiration
+
+
 def contract_notice_and_expiry(
     symbol: str, max_retries: int = 3
 ) -> Tuple[Optional[dt.date], Optional[dt.date]]:
@@ -107,32 +143,7 @@ def contract_notice_and_expiry(
     first_notice : datetime.date or None
     expiration    : datetime.date or None
     """
-    url = f"https://www.barchart.com/futures/quotes/{symbol}"
-    retries = 0
-    resp = None
-
-    while retries < max_retries:
-        try:
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-            if resp.status_code == 200:
-                break
-        except requests.RequestException as e:
-            if retries == max_retries - 1:
-                raise RuntimeError(
-                    f"Failed to fetch {url} after {max_retries} retries."
-                ) from e
-        retries += 1
-        if retries < max_retries:
-            time.sleep(1)  # Wait 1 second before retrying
-    else:
-        if resp is None:
-            raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries.")
-        if resp.status_code != 404:
-            print(f"Failed to fetch {url}: HTTP {resp.status_code}")
+    html = _fetch_contract_page(symbol, max_retries)
+    if html is None:
         return None, None
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    first_notice = _extract_date("First Notice Date", soup)
-    expiration = _extract_date("Expiration Date", soup)
-    return first_notice, expiration
+    return _parse_contract_page(html)
