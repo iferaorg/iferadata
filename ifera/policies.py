@@ -429,8 +429,10 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             for stage in stage_list:
                 if stage not in processed and parent_dict[stage] in processed:
                     parent_config = config_dict[parent_dict[stage]]
-                    derived_config = config_manager.create_derived_base_config(
-                        parent_config, stage
+                    derived_config = config_manager.get_base_instrument_config(
+                        symbol=parent_config.symbol,
+                        interval=stage,
+                        contract_code=parent_config.contract_code,
                     )
                     config_dict[stage] = derived_config
                     processed.add(stage)

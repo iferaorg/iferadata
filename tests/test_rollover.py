@@ -30,9 +30,9 @@ def test_calculate_rollover_traded_months_and_window(config_manager: ConfigManag
     start_date = dt.date(2020, 1, 1)
     start_ord = start_date.toordinal()
 
-    j = config_manager.create_derived_base_config(base, contract_code="F20")
-    h = config_manager.create_derived_base_config(base, contract_code="H20")
-    m = config_manager.create_derived_base_config(base, contract_code="M20")
+    j = config_manager.get_base_instrument_config("CL", "30m", contract_code="F20")
+    h = config_manager.get_base_instrument_config("CL", "30m", contract_code="H20")
+    m = config_manager.get_base_instrument_config("CL", "30m", contract_code="M20")
 
     h.expiration_date = start_date + dt.timedelta(days=4)
     m.expiration_date = start_date + dt.timedelta(days=35)

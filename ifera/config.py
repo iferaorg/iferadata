@@ -260,9 +260,6 @@ class ConfigManager:
         self._config_cache: Dict[
             Tuple[str, str, str, Optional[str]], InstrumentConfig
         ] = {}
-        self._base_derived_cache: Dict[
-            Tuple[str, Optional[str], Optional[str]], BaseInstrumentConfig
-        ] = {}
         self._load_data()
 
     def _load_data(self):
@@ -278,7 +275,6 @@ class ConfigManager:
 
         # Clear caches when data is reloaded
         self._base_config_cache.clear()
-        self._base_derived_cache.clear()
         self._config_cache.clear()
 
     def reload_if_updated(self):
@@ -347,7 +343,7 @@ class ConfigManager:
                     f"Allowed intervals: {allowed_intervals}"
                 )
             parent_config = self.get_base_instrument_config(symbol, parent_interval)
-            config = self.create_derived_base_config(
+            config = self._create_derived_base_config(
                 parent_config=parent_config,
                 new_interval=interval,
                 contract_code=contract_code,
@@ -358,17 +354,18 @@ class ConfigManager:
         # Remove 'intervals' as it's not part of BaseInstrumentConfig
         combined_dict.pop("intervals", None)
 
-        # Set the interval
-        combined_dict["interval"] = interval
-
-        base_config = BaseInstrumentConfig(
-            **combined_dict, last_update=self.last_instruments_update
-        )
-        # Cache the base config without contract code
-        self._base_config_cache[(symbol, interval, None)] = base_config
+        if (symbol, interval, None) in self._base_config_cache:
+            base_config = self._base_config_cache[(symbol, interval, None)]
+        else:
+            combined_dict["interval"] = interval
+            base_config = BaseInstrumentConfig(
+                **combined_dict, last_update=self.last_instruments_update
+            )
+            # Cache the base config without contract code
+            self._base_config_cache[(symbol, interval, None)] = base_config
 
         if contract_code is not None:
-            config = self.create_derived_base_config(
+            config = self._create_derived_base_config(
                 parent_config=base_config, contract_code=contract_code
             )
         else:
@@ -449,7 +446,7 @@ class ConfigManager:
             base_config=base_config, broker_name=broker_name
         )
 
-    def create_derived_base_config(
+    def _create_derived_base_config(
         self,
         parent_config: BaseInstrumentConfig,
         new_interval: Optional[str] = None,
@@ -474,15 +471,6 @@ class ConfigManager:
             raise ValueError(
                 "At least one of new_interval or contract_code must be provided."
             )
-
-        # Check if we already have this derived config in the cache
-        cache_interval = new_interval if new_interval else parent_config.interval
-        cache_contract_code = (
-            contract_code if contract_code else parent_config.contract_code
-        )
-        cache_key = (parent_config.symbol, cache_interval, cache_contract_code)
-        if cache_key in self._base_derived_cache:
-            return self._base_derived_cache[cache_key]
 
         config_dict = parent_config.model_dump()
 
@@ -547,9 +535,6 @@ class ConfigManager:
         child_config = BaseInstrumentConfig(**config_dict)
         child_config.parent_config = parent_config
 
-        # Cache the derived config
-        self._base_derived_cache[cache_key] = child_config
-
         return child_config
 
     def get_config_from_base(
@@ -587,5 +572,4 @@ class ConfigManager:
     def clear_cache(self):
         """Clear all configuration caches."""
         self._base_config_cache.clear()
-        self._base_derived_cache.clear()
         self._config_cache.clear()
