@@ -101,12 +101,9 @@ def process_raw_file(
     _ = type
 
     cm = ConfigManager()
-    instrument = cm.get_base_instrument_config(symbol, interval)
-
-    if contract_code:
-        instrument = cm.create_derived_base_config(
-            instrument, contract_code=contract_code
-        )
+    instrument = cm.get_base_instrument_config(
+        symbol, interval, contract_code=contract_code or None
+    )
 
     df = load_data(raw=True, instrument=instrument)
     process_data(df, instrument=instrument, zipfile=True)
@@ -122,12 +119,9 @@ def process_tensor_file(
     Process the processed file to generate the tensor file and upload to S3.
     """
     cm = ConfigManager()
-    instrument = cm.get_base_instrument_config(symbol, interval)
-
-    if contract_code:
-        instrument = cm.create_derived_base_config(
-            instrument, contract_code=contract_code
-        )
+    instrument = cm.get_base_instrument_config(
+        symbol, interval, contract_code=contract_code or None
+    )
 
     # Load processed DataFrame
     df = load_data(raw=False, instrument=instrument, zipfile=True)
@@ -246,8 +240,8 @@ def process_futures_metadata(symbol: str) -> None:
         for code, date_info in dates.items():
             expiration = date_info.get("expiration_date")
             full_symbol = f"{symbol}-{code}"  # e.g. "GC-F10"
-            contract_instrument = cm.create_derived_base_config(
-                instrument, contract_code=code
+            contract_instrument = cm.get_base_instrument_config(
+                symbol, "30m", contract_code=code
             )
 
             # Overwrite first_notice_date with calculated value
@@ -332,8 +326,8 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
             print(f"Warning: No metadata found for {symbol}-{code}. Skipping.")
             continue
 
-        contract_instrument = cm.create_derived_base_config(
-            base_instrument, contract_code=code
+        contract_instrument = cm.get_base_instrument_config(
+            symbol, "30m", contract_code=code
         )
 
         if dates[contract_instrument.contract_code]["first_notice_date"] is not None:
@@ -485,8 +479,8 @@ def process_futures_backadjusted_tensor(
         multiplier = float(entry["multiplier"])
         start_ord = dt.date.fromisoformat(str(entry["start_date"])).toordinal()
 
-        contract_instrument = cm.create_derived_base_config(
-            base_instrument, contract_code=code
+        contract_instrument = cm.get_base_instrument_config(
+            symbol, interval, contract_code=code
         )
         tens = load_data_tensor(
             instrument=contract_instrument,
