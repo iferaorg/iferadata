@@ -8,7 +8,7 @@ trading context.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple, Union
+from typing import List, Tuple
 
 import torch
 from torch import nn
@@ -379,7 +379,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
     def __init__(
         self,
         instrument_data: InstrumentData,
-        stages: Union[List[str], Dict[str, str]],
+        stages: List[str],
         atr_multiple: float,
         wait_for_breakeven: bool,
         minimum_improvement: float,
@@ -393,57 +393,17 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         config_manager = ConfigManager()
         data_manager = DataManager()
 
-        # Handle stages input: list or dict
-        if isinstance(stages, list):
-            # For a list, assume each stage is derived from the previous one
-            base_stage = stages[0]
-            parent_dict = {stages[0]: ""}
-            for i in range(1, len(stages)):
-                parent_dict[stages[i]] = stages[i - 1]
-            stage_list = stages
-        elif isinstance(stages, dict):
-            # For a dict, use key-value pairs where value is the parent interval
-            base_stages = [k for k, v in stages.items() if v == "" or v is None]
-            if len(base_stages) != 1:
-                raise ValueError("Exactly one stage must have an empty or None parent.")
-            base_stage = base_stages[0]
-            parent_dict = stages
-            stage_list = list(
-                stages.keys()
-            )  # Order of stages follows dict insertion order
-        else:
-            raise TypeError(
-                "stages must be a list of strings or a dict of stage:parent."
+        if stages[0] != instrument_data.instrument.interval:
+            raise ValueError("The first stage must match the instrument's interval.")
+
+        self.derived_configs = [
+            config_manager.get_base_instrument_config(
+                symbol=instrument_data.instrument.symbol,
+                interval=stage,
+                contract_code=instrument_data.instrument.contract_code,
             )
-
-        # Validate that the base stage matches the instrument's interval
-        if base_stage != instrument_data.instrument.interval:
-            raise ValueError("The base stage must match the instrument's interval.")
-
-        # Build configurations for each stage
-        config_dict = {base_stage: instrument_data.instrument}
-        processed = {base_stage}
-
-        while len(processed) < len(stage_list):
-            added = False
-            for stage in stage_list:
-                if stage not in processed and parent_dict[stage] in processed:
-                    parent_config = config_dict[parent_dict[stage]]
-                    derived_config = config_manager.get_base_instrument_config(
-                        symbol=parent_config.symbol,
-                        interval=stage,
-                        contract_code=parent_config.contract_code,
-                    )
-                    config_dict[stage] = derived_config
-                    processed.add(stage)
-                    added = True
-            if not added:
-                raise ValueError(
-                    "Cannot derive all stages: missing parent or cycle detected."
-                )
-
-        # Create derived data and policies in the order of stage_list
-        self.derived_configs = [config_dict[stage] for stage in stage_list]
+            for stage in stages
+        ]
         self.derived_data = [
             data_manager.get_instrument_data(
                 config,
@@ -455,7 +415,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self.artr_policies = [
             ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data
         ]
-        self.stage_count = len(stage_list)
+        self.stage_count = len(stages)
 
         # Initialize state tensors (to be set in reset)
         self.stage = torch.tensor(())
