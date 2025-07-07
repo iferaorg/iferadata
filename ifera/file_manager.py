@@ -363,8 +363,6 @@ class FileManager:
 
         if file in graph:
             return
-
-        graph.add_node(file)
         rules = self.get_rules(rule_type)
 
         for rule in rules:
@@ -453,17 +451,19 @@ class FileManager:
         ctx: FileManagerContext,
     ) -> None:
         """Recursively refresh dependencies, then the file if needed."""
-        has_successors = False
 
         # First refresh all dependencies
         for dep in self.dependency_graph.successors(file):
             self._refresh_file(dep, reset, ctx)
-            has_successors = True
 
         # Then check if this file needs refreshing
-        if has_successors and (reset or not self._is_up_to_date(file, ctx)):
+        if reset or not self._is_up_to_date(file, ctx):
             self.build_subgraph(file, RuleType.REFRESH, ctx)
+            if file not in self.refresh_graph:
+                raise ValueError(f"File {file} not found in refresh graph")
             self._refresh_stale_file(file, reset, ctx)
+            if not ctx.fop.exists(file):
+                raise FileNotFoundError(f"File {file} does not exist after refresh")
 
     def _select_refresh_node(
         self,
