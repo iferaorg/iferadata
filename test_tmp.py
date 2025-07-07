@@ -8,13 +8,13 @@ import os
 import datetime as dt
 
 
-dm = ifera.DataManager()
-cm = ifera.ConfigManager()
-instrument = cm.get_base_instrument_config("TN", "5m")
-device=torch.device("cuda:0")
+# dm = ifera.DataManager()
+# cm = ifera.ConfigManager()
+# instrument = cm.get_base_instrument_config("TN", "5m")
+# device=torch.device("cuda:0")
 
-idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device, backadjust=True)
-idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device, backadjust=True)
+# idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device, backadjust=True)
+# idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32, device=device, backadjust=True)
 
 # idata.data.shape
 
@@ -265,3 +265,35 @@ idata = dm.get_instrument_data(instrument_config=instrument, dtype=torch.float32
 # #     formatter={'float_kind': lambda x: f"{x:.4f}"}))
 # # print(np.array2string(active_idx.cpu().numpy(),
 # #     formatter={'int_kind': lambda x: f"{x}"}))
+
+import torch
+import ifera
+from einops import rearrange
+
+cm = ifera.ConfigManager()
+base_config = cm.get_base_instrument_config("CL", "1m")
+iconfig = cm.get_config("IBKR", "CL", "1m")
+
+dm = ifera.DataManager()
+idata = dm.get_instrument_data(instrument_config=base_config, backadjust=True, dtype=torch.float32, device=torch.device("cuda:0"))
+
+batch_size = idata.data.shape[0]-250
+
+openPolicy = ifera.AlwaysOpenPolicy(direction=1)
+initStopPolicy = ifera.InitialArtrStopLossPolicy(
+    instrument_data=idata, atr_multiple=3.0
+)
+maintenancePolicy = ifera.ScaledArtrMaintenancePolicy(
+    instrument_data=idata,
+    stages=["1m", "5m", "15m", "1h", "4h", "1d"],
+    atr_multiple=3.0,
+    wait_for_breakeven=False,
+    minimum_improvement=0.0,
+)
+
+tradingPolicy = ifera.TradingPolicy(
+    instrument_data=idata,
+    open_position_policy=openPolicy,
+    initial_stop_loss_policy=initStopPolicy,
+    position_maintenance_policy=maintenancePolicy,
+)

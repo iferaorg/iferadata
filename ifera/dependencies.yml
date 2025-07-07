@@ -23,6 +23,8 @@ dependency_rules:
   # Raw
   - dependent: "s3:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
   - dependent: "s3:raw/{type}/{interval}/{symbol}.zip"
+  - dependent: "github:iferaorg/iferadata/data/instruments.yml"
+  - dependent: "github:iferaorg/iferadata/data/brokers.yml"
 
   # Metadata
   - dependent: "s3:meta/futures/dates_raw/{symbol}.yml"
@@ -75,12 +77,23 @@ dependency_rules:
     depends_on:
       - "s3:{source}/{type}/1m/{symbol}.pt.gz"
 
+  - dependent: "s3:{source}/{type}/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["1h", "2h", "4h", "1d", "1w"]
+      source: ["tensor", "tensor_backadjusted"]
+    depends_on:
+      - "s3:{source}/{type}/30m/{symbol}.pt.gz"
+
 refresh_rules:
   # Upload
   - dependent: "s3:{source}/{type}/{interval}/{symbol}.{ext}"
     depends_on:
       - "file:{source}/{type}/{interval}/{symbol}.{ext}"
     refresh_function: "ifera.file_refresh.upload_file"
+
+  # Raw
+  - dependent: "file:raw/futures_individual/{interval}/{symbol}-{contract_code}.zip"
+  - dependent: "file:raw/{type}/{interval}/{symbol}.zip"
 
   # Fake file for metadata
   - dependent: "file:meta/futures_individual/30m/{symbol}-{contract_code}.zip"
@@ -166,4 +179,15 @@ refresh_rules:
       name: "ifera.file_refresh.aggregate_from_parent_tensor"
       additional_args:
         parent_interval: "1m"
+
+  - dependent: "file:{source}/{type}/{interval}/{symbol}.pt.gz"
+    where:
+      interval: ["1h", "2h", "4h", "1d", "1w"]
+      source: ["tensor", "tensor_backadjusted"]
+    depends_on:
+      - "file:{source}/{type}/30m/{symbol}.pt.gz"
+    refresh_function:
+      name: "ifera.file_refresh.aggregate_from_parent_tensor"
+      additional_args:
+        parent_interval: "30m"
 
