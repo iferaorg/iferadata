@@ -193,6 +193,9 @@ def test_is_up_to_date_true(monkeypatch, file_manager_instance):
         def get_mtime(self, file: str):
             return self.t.get(file)
 
+        def exists(self, _file: str) -> bool:
+            return True
+
     monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
     fm = file_manager_instance
     assert fm.is_up_to_date("file:/tmp/processed/ABC.txt") is True
@@ -234,6 +237,21 @@ def test_refresh_file_calls_process(monkeypatch, file_manager_instance):
         def remove(self, file: str, scheme):
             pass
 
+        def exists(self, _file: str) -> bool:
+            return True
+
+        def exists(self, _file: str) -> bool:
+            return True
+
+        def exists(self, _file: str) -> bool:
+            return True
+
+        def exists(self, _file: str) -> bool:
+            return True
+
+        def exists(self, _file: str) -> bool:
+            return True
+
     process_mock = MagicMock()
     monkeypatch.setattr("tests.helper_module.process", process_mock)
     monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
@@ -267,6 +285,9 @@ def test_refresh_stale_file_refresh_branch(monkeypatch, file_manager_refresh_ins
         def remove(self, file: str, scheme):
             pass
 
+        def exists(self, _file: str) -> bool:
+            return True
+
     combine_mock = MagicMock()
     monkeypatch.setattr("tests.helper_module.combine", combine_mock)
     monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))
@@ -299,6 +320,9 @@ def test_refresh_stale_file_refresh_branch_expansion_function(
 
         def remove(self, file: str, scheme):
             pass
+
+        def exists(self, _file: str) -> bool:
+            return True
 
     combine_mock = MagicMock()
     import_function.cache_clear()
@@ -334,6 +358,9 @@ def test_expansion_function_with_dependencies(
 
         def remove(self, file: str, scheme):
             pass
+
+        def exists(self, _file: str) -> bool:
+            return True
 
     fetch_mock = MagicMock()
     combine_mock = MagicMock()
@@ -372,6 +399,9 @@ def test_refresh_stale_file_list_args_error(monkeypatch, file_manager_refresh_in
 
         def remove(self, file: str, scheme):
             pass
+
+        def exists(self, _file: str) -> bool:
+            return True
 
     fm = file_manager_refresh_instance
     fm.build_subgraph("file:/tmp/output/CL.txt", RuleType.DEPENDENCY)
@@ -432,4 +462,4 @@ def test_where_clause_no_match(file_manager_where_instance):
     fm = file_manager_where_instance
     fm.build_subgraph("file:/tmp/foo/2m/AAA.txt", RuleType.DEPENDENCY)
     graph = fm.dependency_graph
-    assert list(graph.successors("file:/tmp/foo/2m/AAA.txt")) == []
+    assert "file:/tmp/foo/2m/AAA.txt" not in graph
