@@ -12,6 +12,7 @@ class DummyData:
         self.artr = torch.zeros((1, 1), dtype=torch.float32)
         self.device = torch.device("cpu")
         self.dtype = torch.float32
+        self.backadjust = False
 
     def convert_indices(self, *_args):
         return _args
