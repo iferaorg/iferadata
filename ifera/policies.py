@@ -407,17 +407,16 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             for stage in stages
         ]
 
-        fm.init_persistent_context()
-        self.derived_data = [
-            dm.get_instrument_data(
-                config,
-                dtype=instrument_data.dtype,
-                device=instrument_data.device,
-                backadjust=instrument_data.backadjust,
-            )
-            for config in self.derived_configs
-        ]
-        fm.clear_persistent_context()
+        with fm.persistentContext():
+            self.derived_data = [
+                dm.get_instrument_data(
+                    config,
+                    dtype=instrument_data.dtype,
+                    device=instrument_data.device,
+                    backadjust=instrument_data.backadjust,
+                )
+                for config in self.derived_configs
+            ]
 
         self.artr_policies = [
             ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data

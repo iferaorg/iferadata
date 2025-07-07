@@ -235,8 +235,8 @@ def test_is_up_to_date_missing(monkeypatch, file_manager_instance):
 def test_refresh_file_calls_process(monkeypatch, file_manager_instance):
     now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
     times = {
-        "file:/tmp/raw/ABC.txt": now,
-        "file:/tmp/processed/ABC.txt": now - dt.timedelta(days=1),
+        "file:/tmp/raw/ABC.txt": None,
+        "file:/tmp/processed/ABC.txt": None,
     }
 
     class DummyFOP:
@@ -478,3 +478,55 @@ def test_where_clause_no_match(file_manager_where_instance):
     fm.build_subgraph("file:/tmp/foo/2m/AAA.txt", RuleType.DEPENDENCY)
     graph = fm.dependency_graph
     assert "file:/tmp/foo/2m/AAA.txt" not in graph
+
+
+def test_persistent_context_nested(file_manager_instance):
+    fm = file_manager_instance
+    assert fm.persistent_context is None
+    with fm.persistentContext():
+        ctx = fm.persistent_context
+        assert isinstance(ctx, FileManagerContext)
+        with fm.persistentContext():
+            assert fm.persistent_context is ctx
+        assert fm.persistent_context is ctx
+    assert fm.persistent_context is None
+
+
+def test_persistent_context_cleanup(monkeypatch, file_manager_instance):
+    now = dt.datetime(2024, 1, 1, tzinfo=dt.timezone.utc)
+    times = {
+        "file:/tmp/raw/ABC.txt": None,
+        "file:/tmp/processed/ABC.txt": None,
+    }
+
+    class DummyFOP:
+        def __init__(self):
+            self.removed: list[str] = []
+
+        def get_mtime(self, file: str):
+            return times.get(file)
+
+        def remove_from_cache(self, _file: str):
+            pass
+
+        def remove(self, file: str, _scheme):
+            self.removed.append(file)
+
+        def exists(self, _file: str) -> bool:
+            return True
+
+    process_mock = MagicMock()
+    monkeypatch.setattr("tests.helper_module.process", process_mock)
+    monkeypatch.setattr("ifera.file_manager.FileOperations", DummyFOP)
+    monkeypatch.setattr("ifera.file_manager.os.path.exists", lambda p: False)
+
+    fm = file_manager_instance
+    with fm.persistentContext():
+        fm.refresh_file("file:/tmp/processed/ABC.txt")
+        # No cleanup yet
+        assert fm.persistent_context is not None
+        fop_ref = fm.persistent_context.fop
+        assert fop_ref.removed == []
+    # After context exit cleanup should have run
+    assert fm.persistent_context is None
+    assert fop_ref.removed == ["file:/tmp/raw/ABC.txt"]

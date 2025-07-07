@@ -4,6 +4,7 @@ import os
 import re
 from enum import Enum
 from functools import lru_cache
+from contextlib import contextmanager
 from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -262,6 +263,18 @@ class FileManagerContext:
     fop: FileOperations = field(default_factory=lambda: FileOperations())
     temp_files: List[str] = field(default_factory=list)
 
+    def cleanup_temp_files(self) -> None:
+        """Remove all temporary files tracked in this context."""
+        for temp_file in self.temp_files:
+            self.fop.remove(temp_file, Scheme.FILE)
+        self.temp_files.clear()
+
+    def __enter__(self) -> "FileManagerContext":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.cleanup_temp_files()
+
 
 @lru_cache(maxsize=100)
 def import_function(func_str: str) -> Callable:
@@ -302,6 +315,20 @@ class FileManager:
         except (yaml.YAMLError, IOError) as e:
             raise ValueError(f"Error loading config from {config_file}: {e}")
         self.persistent_context = None
+
+    @contextmanager
+    def persistentContext(self):
+        """Provide a context manager for persistent operations."""
+        created = False
+        if self.persistent_context is None:
+            self.persistent_context = FileManagerContext()
+            created = True
+        try:
+            yield
+        finally:
+            if created and self.persistent_context is not None:
+                self.persistent_context.cleanup_temp_files()
+                self.persistent_context = None
 
     def get_graph(self, rule_type: RuleType) -> nx.DiGraph:
         """Get the dependency graph or refresh graph based on the rule type."""
@@ -440,9 +467,10 @@ class FileManager:
         try:
             self._refresh_file(file, reset, context)
         finally:
-            for temp_file in context.temp_files:
-                if temp_file != file:
-                    context.fop.remove(temp_file, Scheme.FILE)
+            if file in context.temp_files:
+                context.temp_files.remove(file)
+            if self.persistent_context is None:
+                context.cleanup_temp_files()
 
     def _refresh_file(
         self,
@@ -824,6 +852,7 @@ class FileManager:
     def clear_persistent_context(self) -> None:
         """Clear the persistent context."""
         if self.persistent_context is not None:
+            self.persistent_context.cleanup_temp_files()
             self.persistent_context = None
 
 
