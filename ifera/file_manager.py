@@ -84,21 +84,25 @@ def pattern_to_regex(pattern_path: str) -> Tuple[str, List[str]]:
     return "^" + regex_string + "$", wildcard_names
 
 
-def match_pattern(pattern: str, file: str) -> Optional[Dict[str, str]]:
-    """Match a file against a pattern and extract wildcard values."""
+def match_pattern(pattern: str, file: str) -> Tuple[Dict[str, str], bool]:
+    """Match a file against a pattern and extract wildcard values.
+
+    Returns a tuple of the extracted wildcard values and a boolean indicating
+    whether the pattern matched the file.
+    """
     pattern_parts = urlparse(pattern)
     file_parts = urlparse(file)
 
     if pattern_parts.scheme != file_parts.scheme or pattern_parts.netloc != "":
-        return None
+        return {}, False
 
     regex, wildcard_names = pattern_to_regex(pattern_parts.path)
     match = re.match(regex, file_parts.path)
 
     if match:
-        return dict(zip(wildcard_names, match.groups()))
+        return dict(zip(wildcard_names, match.groups())), True
 
-    return None
+    return {}, False
 
 
 def substitute_pattern(pattern: str, wildcards: Dict[str, str]) -> str:
@@ -366,9 +370,9 @@ class FileManager:
         rules = self.get_rules(rule_type)
 
         for rule in rules:
-            wildcards = match_pattern(rule["dependent"], file)
+            wildcards, matched = match_pattern(rule["dependent"], file)
 
-            if wildcards and _where_matches(rule.get("where"), wildcards):
+            if matched and _where_matches(rule.get("where"), wildcards):
                 graph.add_node(file, wildcards=wildcards)
 
                 if rule.get("refresh_function"):
