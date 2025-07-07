@@ -45,8 +45,23 @@ def test_pattern_to_regex():
 def test_match_pattern():
     pattern = "file:/data/{source}/{symbol}.csv"
     file = "file:/data/raw/XYZ.csv"
-    assert match_pattern(pattern, file) == {"source": "raw", "symbol": "XYZ"}
-    assert match_pattern(pattern, "s3:/data/raw/XYZ.csv") is None
+    wildcards, matched = match_pattern(pattern, file)
+    assert matched is True
+    assert wildcards == {"source": "raw", "symbol": "XYZ"}
+
+    wildcards, matched = match_pattern(pattern, "s3:/data/raw/XYZ.csv")
+    assert matched is False
+    assert wildcards == {}
+
+    # Pattern without wildcards should still match exactly
+    pattern_no_wc = "file:/data/raw/XYZ.csv"
+    wildcards, matched = match_pattern(pattern_no_wc, "file:/data/raw/XYZ.csv")
+    assert matched is True
+    assert wildcards == {}
+
+    wildcards, matched = match_pattern(pattern_no_wc, "file:/data/raw/ABC.csv")
+    assert matched is False
+    assert wildcards == {}
 
 
 def test_substitute_pattern():
