@@ -301,6 +301,7 @@ class FileManager:
                 self.refresh_rules = config["refresh_rules"]
         except (yaml.YAMLError, IOError) as e:
             raise ValueError(f"Error loading config from {config_file}: {e}")
+        self.persistent_context = None
 
     def get_graph(self, rule_type: RuleType) -> nx.DiGraph:
         """Get the dependency graph or refresh graph based on the rule type."""
@@ -329,18 +330,19 @@ class FileManager:
         ctx: Optional[FileManagerContext] = None,
     ) -> None:
         graph = self.get_graph(rule_type)
-        ctx = ctx or FileManagerContext()
+        ctx = ctx or self.persistent_context or FileManagerContext()
 
         for dep in dependencies:
             if isinstance(dep, str):
-                try:
-                    dep_file = substitute_pattern(dep, wildcards)
-                    self.build_subgraph(dep_file, rule_type, ctx)
-                    graph.add_edge(parent_node, dep_file)
-                except ValueError as e:
-                    print(
-                        f"Warning: {e} when processing dependency {dep} for {parent_node}"
+                dep_file = substitute_pattern(dep, wildcards)
+                self.build_subgraph(dep_file, rule_type, ctx)
+
+                if dep_file not in graph:
+                    raise ValueError(
+                        f"Dependency {dep_file} not found in {rule_type.value} graph"
                     )
+
+                graph.add_edge(parent_node, dep_file)
             elif isinstance(dep, dict):
                 # Process dependency with wildcard expansion.
                 expanded_files = self._expand_dependency_wildcards(dep, wildcards, ctx)
@@ -363,10 +365,11 @@ class FileManager:
     ) -> None:
         """Recursively build the graph for a file and its dependencies."""
         graph = self.get_graph(rule_type)
-        ctx = ctx or FileManagerContext()
 
         if file in graph:
             return
+
+        ctx = ctx or self.persistent_context or FileManagerContext()
         rules = self.get_rules(rule_type)
 
         for rule in rules:
@@ -391,18 +394,11 @@ class FileManager:
 
                 break
 
-    def is_up_to_date(self, file: str) -> bool:
-        """Check if a file is up-to-date, building its subgraph if needed."""
-        context = FileManagerContext()
-        self.build_subgraph(file, RuleType.DEPENDENCY, context)
-
-        if file not in self.dependency_graph:
-            raise ValueError(f"File {file} not found in dependency graph")
-
-        return self._is_up_to_date(file, context)
-
-    def _is_up_to_date(self, file: str, ctx: FileManagerContext) -> bool:
+    def is_up_to_date(
+        self, file: str, ctx: Optional[FileManagerContext] = None
+    ) -> bool:
         """Recursively check if a file and its dependencies are up-to-date."""
+        ctx = ctx or self.persistent_context or FileManagerContext()
         if file in ctx.cache:
             return ctx.cache[file]
 
@@ -416,8 +412,10 @@ class FileManager:
                 result = False
             else:
                 # Check all dependencies
+                self.build_subgraph(file, RuleType.DEPENDENCY, ctx)
+
                 for dep in self.dependency_graph.successors(file):
-                    if not self._is_up_to_date(dep, ctx):
+                    if not self.is_up_to_date(dep, ctx):
                         result = False
                         break
 
@@ -436,11 +434,9 @@ class FileManager:
 
     def refresh_file(self, file: str, reset: bool = False) -> None:
         """Refresh a file if stale or missing, building its subgraph if needed."""
-        context = FileManagerContext()
+        context = self.persistent_context or FileManagerContext()
         self.build_subgraph(file, RuleType.DEPENDENCY, context)
 
-        if file not in self.dependency_graph:
-            raise ValueError(f"File {file} not found in dependency graph")
         try:
             self._refresh_file(file, reset, context)
         finally:
@@ -456,18 +452,16 @@ class FileManager:
     ) -> None:
         """Recursively refresh dependencies, then the file if needed."""
 
+        if file not in self.dependency_graph:
+            raise ValueError(f"File {file} not found in dependency graph")
+
         # First refresh all dependencies
         for dep in self.dependency_graph.successors(file):
             self._refresh_file(dep, reset, ctx)
 
         # Then check if this file needs refreshing
-        if reset or not self._is_up_to_date(file, ctx):
-            self.build_subgraph(file, RuleType.REFRESH, ctx)
-            if file not in self.refresh_graph:
-                raise ValueError(f"File {file} not found in refresh graph")
+        if reset or not self.is_up_to_date(file, ctx):
             self._refresh_stale_file(file, reset, ctx)
-            if not ctx.fop.exists(file):
-                raise FileNotFoundError(f"File {file} does not exist after refresh")
 
     def _select_refresh_node(
         self,
@@ -476,18 +470,23 @@ class FileManager:
         ctx: FileManagerContext,
     ) -> tuple[str | dict | None, RuleType, dict]:
         """Return the refresh rule node and its type for the given file."""
+        self.build_subgraph(file, RuleType.DEPENDENCY, ctx)
         node_data = self.dependency_graph.nodes[file]
         refresh_func_node = node_data.get("refresh_function")
 
         if refresh_func_node and all(
-            self._is_up_to_date(dep, ctx)
+            self.is_up_to_date(dep, ctx)
             for dep in self.dependency_graph.successors(file)
         ):
             return refresh_func_node, RuleType.DEPENDENCY, node_data
 
+        self.build_subgraph(file, RuleType.REFRESH, ctx)
+
+        if file not in self.refresh_graph:
+            raise ValueError(f"File {file} not found in refresh graph")
+
         for dep in self.refresh_graph.successors(file):
-            self.build_subgraph(dep, RuleType.DEPENDENCY, ctx)
-            if reset or not self._is_up_to_date(dep, ctx):
+            if reset or not self.is_up_to_date(dep, ctx):
                 self._refresh_stale_file(dep, reset, ctx)
 
         node_data = self.refresh_graph.nodes[file]
@@ -722,8 +721,8 @@ class FileManager:
 
             self.build_subgraph(dep_file, RuleType.DEPENDENCY, ctx)
             self._refresh_file(dep_file, reset, ctx)
+
             if dep_file not in ctx.cache:
-                self.build_subgraph(dep_file, RuleType.REFRESH, ctx)
                 self._refresh_stale_file(dep_file, reset, ctx)
 
     def _refresh_stale_file(
@@ -757,15 +756,20 @@ class FileManager:
         ctx.cache[file] = True
         ctx.fop.remove_from_cache(file)
 
+        if not ctx.fop.exists(file):
+            raise FileNotFoundError(f"File {file} does not exist after refresh")
+
     def get_dependencies(self, file: str) -> List[str]:
         """Get all dependencies for a file."""
-        self.build_subgraph(file, RuleType.DEPENDENCY, FileManagerContext())
+        ctx = self.persistent_context or FileManagerContext()
+        self.build_subgraph(file, RuleType.DEPENDENCY, ctx)
         return list(self.dependency_graph.successors(file))
 
     def get_node_params(self, rule_type: RuleType, file: str) -> dict:
         """Get parameters for a node in the graph."""
         graph = self.get_graph(rule_type)
-        self.build_subgraph(file, rule_type, FileManagerContext())
+        ctx = self.persistent_context or FileManagerContext()
+        self.build_subgraph(file, rule_type, ctx)
 
         if file not in graph:
             raise ValueError(f"File {file} not found in {rule_type.value} graph")
@@ -787,7 +791,8 @@ class FileManager:
         scheme_filter: Optional[Scheme] = None,
     ) -> datetime.datetime | None:
         """Get the maximum last modified time of all dependencies."""
-        self.build_subgraph(file, rule_type, FileManagerContext())
+        ctx = self.persistent_context or FileManagerContext()
+        self.build_subgraph(file, rule_type, ctx)
         graph = self.get_graph(rule_type)
 
         if file not in graph:
@@ -810,6 +815,16 @@ class FileManager:
                     max_mtime = mtime
 
         return max_mtime
+
+    def init_persistent_context(self) -> None:
+        """Initialize the persistent context for the file manager."""
+        if self.persistent_context is None:
+            self.persistent_context = FileManagerContext()
+
+    def clear_persistent_context(self) -> None:
+        """Clear the persistent context."""
+        if self.persistent_context is not None:
+            self.persistent_context = None
 
 
 def refresh_instrument_file(

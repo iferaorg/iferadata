@@ -14,6 +14,7 @@ import torch
 from torch import nn
 from .data_models import InstrumentData, DataManager
 from .config import ConfigManager
+from .file_manager import FileManager
 
 
 class PositionMaintenancePolicy(nn.Module, ABC):
@@ -390,28 +391,34 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self.wait_for_breakeven = wait_for_breakeven
         self.minimum_improvement = minimum_improvement
 
-        config_manager = ConfigManager()
-        data_manager = DataManager()
+        cm = ConfigManager()
+        dm = DataManager()
+        fm = FileManager()
 
         if stages[0] != instrument_data.instrument.interval:
             raise ValueError("The first stage must match the instrument's interval.")
 
         self.derived_configs = [
-            config_manager.get_base_instrument_config(
+            cm.get_base_instrument_config(
                 symbol=instrument_data.instrument.symbol,
                 interval=stage,
                 contract_code=instrument_data.instrument.contract_code,
             )
             for stage in stages
         ]
+
+        fm.init_persistent_context()
         self.derived_data = [
-            data_manager.get_instrument_data(
+            dm.get_instrument_data(
                 config,
                 dtype=instrument_data.dtype,
                 device=instrument_data.device,
+                backadjust=instrument_data.backadjust,
             )
             for config in self.derived_configs
         ]
+        fm.clear_persistent_context()
+
         self.artr_policies = [
             ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data
         ]
