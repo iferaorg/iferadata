@@ -12,6 +12,10 @@ dependency_rules:
     depends_on:
       - "file:/tmp/raw/bar/{symbol}.txt"
     refresh_function: "tests.helper_module.process"
+  - dependent: "file:/tmp/raw/foo/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/raw/bar/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
 refresh_rules:
   - dependent: "file:/tmp/{type}/{interval}/{symbol}.txt"
     where:
@@ -26,3 +30,7 @@ refresh_rules:
     depends_on:
       - "file:/tmp/raw/bar/{symbol}.txt"
     refresh_function: "tests.helper_module.process"
+  - dependent: "file:/tmp/raw/foo/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
+  - dependent: "file:/tmp/raw/bar/{symbol}.txt"
+    refresh_function: "tests.helper_module.fetch"
