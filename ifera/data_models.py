@@ -11,10 +11,9 @@ computation on both CPU and GPU devices.
 """
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
-from einops import repeat, rearrange
 
 from .config import BaseInstrumentConfig
 from .data_loading import load_data_tensor
@@ -65,11 +64,7 @@ class InstrumentData:
         self.device = (
             device
             if device is not None
-            else (
-                torch.device("cuda")
-                if torch.cuda.is_available()
-                else torch.device("cpu")
-            )
+            else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
         )
         self.backadjust = backadjust
         self.source = Source.TENSOR_BACKADJUSTED if self.backadjust else Source.TENSOR
@@ -77,9 +72,8 @@ class InstrumentData:
         self._load_data()
 
         self._chunk_size = 0
-        # Store ARTR data and mask separately
-        self._artr_data: None | torch.Tensor = None
-        self._artr_mask: None | torch.Tensor = None
+        # Store ARTR data
+        self._artr_data: torch.Tensor = torch.tensor([], dtype=self.dtype, device=self.device)
         self._alpha = 1.0 / 14
         self._acrossday = True
 
@@ -108,24 +102,10 @@ class InstrumentData:
         """Alpha parameter for ARTR calculation."""
         return self._alpha
 
-    @artr_alpha.setter
-    def artr_alpha(self, value: float) -> None:
-        """Set alpha parameter and clear cached ARTR values."""
-        self._alpha = value
-        self._artr_data = None
-        self._artr_mask = None
-
     @property
     def artr_acrossday(self) -> bool:
         """Flag indicating whether to calculate ARTR across days."""
         return self._acrossday
-
-    @artr_acrossday.setter
-    def artr_acrossday(self, value: bool) -> None:
-        """Set acrossday flag and clear cached ARTR values."""
-        self._acrossday = value
-        self._artr_data = None
-        self._artr_mask = None
 
     @property
     def valid_mask(self) -> torch.Tensor:
@@ -142,9 +122,7 @@ class InstrumentData:
         if self._chunk_size == 0:
             # Get total memory of the device in bytes
             if self.device.type == "cuda":
-                device_memory_bytes = torch.cuda.get_device_properties(
-                    self.device
-                ).total_memory
+                device_memory_bytes = torch.cuda.get_device_properties(self.device).total_memory
             else:
                 # For CPU, use a reasonable default (8 GB)
                 device_memory_bytes = 8 * 1024 * 1024 * 1024
@@ -163,17 +141,21 @@ class InstrumentData:
 
     @property
     def artr(self) -> torch.Tensor:
-        """Average Relative True Range (ATR) data."""
-        if self._artr_data is None:
-            mask = self.valid_mask
-            self._artr_data = masked_artr(
-                self.data,
-                mask,
-                alpha=self._alpha,
-                acrossday=self._acrossday,
-                chunk_size=self.chunk_size,
-            )
+        """Average Relative True Range (ARTR) data."""
+        return self._artr_data
 
+    def calculate_artr(self, alpha: float, acrossday: bool) -> torch.Tensor:
+        """Calculate and store the ARTR using the provided hyperparameters."""
+        self._alpha = alpha
+        self._acrossday = acrossday
+        mask = self.valid_mask
+        self._artr_data = masked_artr(
+            self.data,
+            mask,
+            alpha=self._alpha,
+            acrossday=self._acrossday,
+            chunk_size=self.chunk_size,
+        )
         return self._artr_data
 
     def get_prev_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -197,9 +179,7 @@ class InstrumentData:
         prev_time_idx = time_idx - 1
         mask = prev_time_idx < 0
         prev_date_idx = date_idx - mask.long()
-        prev_time_idx = torch.where(
-            mask, self.instrument.total_steps - 1, prev_time_idx
-        )
+        prev_time_idx = torch.where(mask, self.instrument.total_steps - 1, prev_time_idx)
         return prev_date_idx, prev_time_idx
 
     def get_next_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -251,9 +231,7 @@ class InstrumentData:
         if source.instrument.symbol != self.instrument.symbol:
             raise ValueError("Cannot convert indices between different symbols.")
         if source.instrument.trading_start != self.instrument.trading_start:
-            raise ValueError(
-                "Cannot convert indices between different trading start times."
-            )
+            raise ValueError("Cannot convert indices between different trading start times.")
 
         time_ratio = self.instrument.time_step / source.instrument.time_step
 
@@ -305,11 +283,7 @@ class DataManager:
         """
         # Normalize device
         if device is None:
-            device = (
-                torch.device("cuda")
-                if torch.cuda.is_available()
-                else torch.device("cpu")
-            )
+            device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
         # Create a new instance and cache it
         data = InstrumentData(
