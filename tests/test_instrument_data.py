@@ -5,7 +5,10 @@ from ifera.masked_series import masked_artr
 
 
 def test_calculate_artr(monkeypatch, base_instrument_config, ohlcv_single_date):
-    dummy_data = ohlcv_single_date
+    dummy_data = torch.cat(
+        [torch.zeros(ohlcv_single_date.shape[:-1] + (4,)), ohlcv_single_date],
+        dim=-1,
+    )
 
     def dummy_load(self):
         self._data = dummy_data
@@ -21,7 +24,7 @@ def test_calculate_artr(monkeypatch, base_instrument_config, ohlcv_single_date):
     result = data.calculate_artr(alpha=0.5, acrossday=False)
 
     mask = torch.ones(dummy_data.shape[:-1], dtype=torch.bool)
-    expected = masked_artr(dummy_data, mask, alpha=0.5, acrossday=False)
+    expected = masked_artr(dummy_data[..., 4:], mask, alpha=0.5, acrossday=False)
 
     torch.testing.assert_close(result, expected)
     torch.testing.assert_close(data.artr, expected)
