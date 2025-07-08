@@ -146,6 +146,6 @@ def load_data_tensor(
     tensor = tensor.to(dtype=dtype)
 
     if strip_date_time:
-        tensor = tensor[:, 4:].clone()  # Skip first 4 columns
+        tensor = tensor[:, :, 4:].clone()  # Skip first 4 columns
 
     return tensor
