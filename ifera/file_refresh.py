@@ -555,7 +555,9 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
 
     source_enum = Source(source)
     cm = ConfigManager()
-    parent_instrument = cm.get_base_instrument_config(symbol=symbol, interval=parent_interval)
+    parent_instrument = cm.get_base_instrument_config(
+        symbol=symbol, interval=parent_interval
+    )
 
     parent_tensor = load_data_tensor(
         instrument=parent_instrument,
@@ -577,13 +579,9 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
 
     if parent_steps % multiplier != 0:
         padding = (parent_steps // multiplier + 1) * multiplier - parent_steps
-        padding_data = torch.zeros(
-            (parent_tensor.shape[0], parent_tensor.shape[2]),
-            dtype=parent_tensor.dtype,
-            device=parent_tensor.device,
-        )
-        padding_data[:, 0:4] = parent_tensor[:, -1, 3, None]
-        padding_data = repeat(padding_data, "d c -> d g c", g=padding)
+        last_row = parent_tensor[:, -1, :].clone()
+        last_row[:, 8] = 0  # No additional volume for padding
+        padding_data = repeat(last_row, "d c -> d g c", g=padding)
         parent_tensor = torch.cat([parent_tensor, padding_data], dim=1)
 
     parent_tensor = rearrange(parent_tensor, "d (g n) c -> d g c n", n=multiplier)
@@ -594,15 +592,15 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
         device=parent_tensor.device,
     )
 
-    result[:, :, 0] = parent_tensor[:, :, 0, 0] # Date
-    result[:, :, 1] = parent_tensor[:, :, 1, 0] # Time
-    result[:, :, 2] = parent_tensor[:, :, 2, 0] # Trade date
-    result[:, :, 3] = parent_tensor[:, :, 3, 0] # Offset time
-    result[:, :, 4] = parent_tensor[:, :, 4, 0] # Open
-    result[:, :, 5] = parent_tensor[:, :, 5].max(dim=-1).values # High
-    result[:, :, 6] = parent_tensor[:, :, 6].min(dim=-1).values # Low
-    result[:, :, 7] = parent_tensor[:, :, 7, -1] # Close
-    result[:, :, 8] = parent_tensor[:, :, 8].sum(dim=-1) # Volume
+    result[:, :, 0] = parent_tensor[:, :, 0, 0]  # Date
+    result[:, :, 1] = parent_tensor[:, :, 1, 0]  # Time
+    result[:, :, 2] = parent_tensor[:, :, 2, 0]  # Trade date
+    result[:, :, 3] = parent_tensor[:, :, 3, 0]  # Offset time
+    result[:, :, 4] = parent_tensor[:, :, 4, 0]  # Open
+    result[:, :, 5] = parent_tensor[:, :, 5].max(dim=-1).values  # High
+    result[:, :, 6] = parent_tensor[:, :, 6].min(dim=-1).values  # Low
+    result[:, :, 7] = parent_tensor[:, :, 7, -1]  # Close
+    result[:, :, 8] = parent_tensor[:, :, 8].sum(dim=-1)  # Volume
 
     target_path = make_path(source_enum, type, interval, symbol, remove_file=True)
     write_tensor_to_gzip(str(target_path), result)
