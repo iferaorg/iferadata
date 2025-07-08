@@ -244,12 +244,18 @@ class ArtrStopLossPolicy(nn.Module):
         Data for the financial instrument being traded
     atr_multiple : float
         Multiple of the ATR to use for setting stop loss levels
+    alpha : float
+        Smoothing factor for ATR calculation
+    acrossday : bool
+        Whether to calculate ATR across days (True) or within the same day (False)
     """
 
-    def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
+    def __init__(self, instrument_data: InstrumentData, atr_multiple: float, alpha: float = 1.0 / 14.0, acrossday: bool = True) -> None:
         super().__init__()
         self.idata = instrument_data
         self.atr_multiple = atr_multiple
+        if len(instrument_data.artr) == 0:
+            instrument_data.calculate_artr(alpha=alpha, acrossday=acrossday)
 
     def forward(
         self,

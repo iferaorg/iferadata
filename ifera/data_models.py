@@ -89,12 +89,18 @@ class InstrumentData:
             self.instrument,
             dtype=self.dtype,
             device=self.device,
+            strip_date_time=False,
             source=self.source,
         )
 
     @property
     def data(self) -> torch.Tensor:
-        """Read-only property that lazily loads data on first access."""
+        """Returns the data tensor excluding date and time columns."""
+        return self._data[:, :, 4:]
+    
+    @property
+    def data_full(self) -> torch.Tensor:
+        """Full data tensor including date and time columns."""
         return self._data
 
     @property

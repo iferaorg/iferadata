@@ -554,9 +554,16 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
     """Aggregate a tensor from a parent interval tensor."""
 
     source_enum = Source(source)
+    cm = ConfigManager()
+    parent_instrument = cm.get_base_instrument_config(symbol=symbol, interval=parent_interval)
 
-    parent_path = make_path(source_enum, type, parent_interval, symbol)
-    parent_tensor = read_tensor_from_gzip(str(parent_path))
+    parent_tensor = load_data_tensor(
+        instrument=parent_instrument,
+        dtype=torch.float32,
+        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+        strip_date_time=False,
+        source=source_enum,
+    )
 
     parent_steps = parent_tensor.shape[1]
 
@@ -587,11 +594,15 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
         device=parent_tensor.device,
     )
 
-    result[:, :, 0] = parent_tensor[:, :, 0, 0]
-    result[:, :, 1] = parent_tensor[:, :, 1].max(dim=-1).values
-    result[:, :, 2] = parent_tensor[:, :, 2].min(dim=-1).values
-    result[:, :, 3] = parent_tensor[:, :, 3, -1]
-    result[:, :, 4] = parent_tensor[:, :, 4].sum(dim=-1)
+    result[:, :, 0] = parent_tensor[:, :, 0, 0] # Date
+    result[:, :, 1] = parent_tensor[:, :, 1, 0] # Time
+    result[:, :, 2] = parent_tensor[:, :, 2, 0] # Trade date
+    result[:, :, 3] = parent_tensor[:, :, 3, 0] # Offset time
+    result[:, :, 4] = parent_tensor[:, :, 4, 0] # Open
+    result[:, :, 5] = parent_tensor[:, :, 5].max(dim=-1).values # High
+    result[:, :, 6] = parent_tensor[:, :, 6].min(dim=-1).values # Low
+    result[:, :, 7] = parent_tensor[:, :, 7, -1] # Close
+    result[:, :, 8] = parent_tensor[:, :, 8].sum(dim=-1) # Volume
 
     target_path = make_path(source_enum, type, interval, symbol, remove_file=True)
     write_tensor_to_gzip(str(target_path), result)

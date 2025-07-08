@@ -6,6 +6,10 @@ from torch._higher_order_ops.foreach_map import foreach_map
 import yaml
 import os
 import datetime as dt
+import time
+from tqdm import tqdm
+from rich.live import Live
+from rich.table import Table
 
 
 # dm = ifera.DataManager()
@@ -270,30 +274,116 @@ import torch
 import ifera
 from einops import rearrange
 
+fm = ifera.FileManager()
 cm = ifera.ConfigManager()
-base_config = cm.get_base_instrument_config("CL", "1m")
-iconfig = cm.get_config("IBKR", "CL", "1m")
-
 dm = ifera.DataManager()
-idata = dm.get_instrument_data(instrument_config=base_config, backadjust=True, dtype=torch.float32, device=torch.device("cuda:0"))
 
-batch_size = idata.data.shape[0]-250
+broker = cm.get_broker_config("IBKR")
+symbols = broker.instruments.keys()
 
-openPolicy = ifera.AlwaysOpenPolicy(direction=1)
-initStopPolicy = ifera.InitialArtrStopLossPolicy(
-    instrument_data=idata, atr_multiple=3.0
-)
-maintenancePolicy = ifera.ScaledArtrMaintenancePolicy(
-    instrument_data=idata,
-    stages=["1m", "5m", "15m", "1h", "4h", "1d"],
-    atr_multiple=3.0,
-    wait_for_breakeven=False,
-    minimum_improvement=0.0,
-)
 
-tradingPolicy = ifera.TradingPolicy(
-    instrument_data=idata,
-    open_position_policy=openPolicy,
-    initial_stop_loss_policy=initStopPolicy,
-    position_maintenance_policy=maintenancePolicy,
-)
+def make_table(data_tensor, date_idx, time_idx, maintenance_policy, stop_loss, total_profit):
+    ord_date = data_tensor[date_idx, time_idx, 2].to(torch.int64).item()
+    time_seconds = data_tensor[date_idx, time_idx, 3].to(torch.int64).item()
+    stage_str = maintenance_policy.derived_configs[maintenance_policy.stage].interval if maintenance_policy.stage.shape[0] > 0 else "N/A"
+    current_high = data_tensor[date_idx, time_idx, 5].item()
+    current_low = data_tensor[date_idx, time_idx, 6].item()
+    stop_loss = stop_loss.item()
+    total_profit = total_profit.item()
+    date_str = dt.date.fromordinal(ord_date).strftime("%Y-%m-%d")
+    time_str = f"{time_seconds // 3600:02}:{(time_seconds % 3600) // 60:02}:{time_seconds % 60:02}"
+    ord_date = f"{date_str} {time_str}"
+    table = Table(title=f"Simulation Status on {ord_date}", show_lines=False)
+
+    table.add_column("Stage", justify="right", style="cyan")
+    table.add_column("Current High", justify="right", style="green")
+    table.add_column("Current Low", justify="right", style="yellow")
+    table.add_column("Stop Loss", justify="right", style="yellow")
+    table.add_column("Profit", justify="right", style="magenta")
+
+    table.add_row(
+        stage_str,
+        f"{current_high:.2f}",
+        f"{current_low:.2f}",
+        f"{stop_loss:.2f}",
+        f"{total_profit:.2f}"
+    )
+    
+    return table
+
+
+for symbol in ["CL"]:
+    iconfig = cm.get_base_instrument_config(symbol, "30m")
+    
+    if iconfig.type != "futures":
+        continue    
+
+    # ifera.delete_s3_file(f"tensor_backadjusted/futures/5m/{symbol}.pt.gz")
+    # ifera.delete_s3_file(f"tensor_backadjusted/futures/15m/{symbol}.pt.gz")
+    # ifera.delete_s3_file(f"tensor_backadjusted/futures/1h/{symbol}.pt.gz")
+    # ifera.delete_s3_file(f"tensor_backadjusted/futures/4h/{symbol}.pt.gz")
+    # ifera.delete_s3_file(f"tensor_backadjusted/futures/1d/{symbol}.pt.gz")
+    base_config = cm.get_base_instrument_config(symbol, "1m")
+
+    idata = dm.get_instrument_data(instrument_config=base_config, backadjust=True, dtype=torch.float32, device=torch.device("cuda:0"))
+    
+    # idata.calculate_artr(1.0/14.0, True)
+
+    batch_size = idata.data.shape[0]-250
+
+    openPolicy = ifera.AlwaysOpenPolicy(direction=1)
+    initStopPolicy = ifera.InitialArtrStopLossPolicy(
+        instrument_data=idata, atr_multiple=3.0
+    )
+    maintenancePolicy = ifera.ScaledArtrMaintenancePolicy(
+        instrument_data=idata,
+        stages=["1m", "5m", "15m", "1h", "4h", "1d"],
+        atr_multiple=3.0,
+        wait_for_breakeven=True,
+        minimum_improvement=0.0,
+    )
+
+    tradingPolicy = ifera.TradingPolicy(
+        instrument_data=idata,
+        open_position_policy=openPolicy,
+        initial_stop_loss_policy=initStopPolicy,
+        position_maintenance_policy=maintenancePolicy,
+    )
+    
+    ms = ifera.MarketSimulatorIntraday(instrument_data=idata, broker_name="IBKR")
+
+    test_date = dt.date.toordinal(dt.date(2021, 8, 23))
+    date_idx = (idata.data_full[:, 0, 2] == test_date).nonzero(as_tuple=True)[0].to(device=idata.data.device, dtype=torch.int32)
+    time_idx = torch.tensor([0], device=idata.data.device, dtype=torch.int32)
+    position = torch.zeros_like(date_idx, dtype=torch.int32, device=idata.device)
+    prev_stop_loss = torch.full_like(date_idx, torch.nan, dtype=torch.float32, device=idata.device)
+    entry_price = torch.full_like(date_idx, torch.nan, dtype=torch.float32, device=idata.device)
+
+    total_profit = torch.zeros_like(date_idx, dtype=torch.float32, device=idata.device)
+    
+    total_steps = (idata.data.shape[0] - date_idx[0].item() + 1) * idata.data.shape[1]
+    print(f"Starting simulation for {symbol} on {dt.date.fromordinal(test_date)}...")
+    t = time.time()
+    d = idata.data_full
+
+    with Live(make_table(idata.data_full, date_idx, time_idx, maintenancePolicy, prev_stop_loss, total_profit), refresh_per_second=4) as live:
+        action, stop_loss = tradingPolicy(date_idx, time_idx, position, prev_stop_loss, entry_price)
+        time_idx += 1
+        profit, position, entry_price, _ = ms.calculate_step(date_idx, time_idx, position, action, stop_loss)
+        position = position.clone()
+        total_profit += profit
+
+        while (position != 0).any():
+            live.update(make_table(idata.data_full, date_idx, time_idx, maintenancePolicy, prev_stop_loss, total_profit))
+            prev_stop_loss = stop_loss.clone()
+            action, stop_loss = tradingPolicy(date_idx, time_idx, position, prev_stop_loss, entry_price)
+            date_idx, time_idx = idata.get_next_indices(date_idx, time_idx)
+            action = torch.where((date_idx == idata.data.shape[0] - 1) & (time_idx == idata.data.shape[1] - 1), -position, 0)
+            profit, position, _, _ = ms.calculate_step(date_idx, time_idx, position, action, stop_loss)
+            position = position.clone()
+            total_profit += profit
+
+    print(f"Simulation completed in {time.time() - t:.2f} seconds.")
+    
+    max_idx = total_profit.argmax()
+    print(f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}")
