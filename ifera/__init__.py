@@ -56,6 +56,7 @@ __all__ = [
     "ArtrStopLossPolicy",
     "InitialArtrStopLossPolicy",
     "ScaledArtrMaintenancePolicy",
+    "TradingDonePolicy",
     "AlwaysFalseDonePolicy",
     "SingleTradeDonePolicy",
     "SingleMarketEnv",
