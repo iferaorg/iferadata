@@ -92,10 +92,15 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
 
     policy = TradingPolicy(
         instrument_data=dummy_data_last_bar,
-        open_position_policy=AlwaysOpenPolicy(1),
+        open_position_policy=AlwaysOpenPolicy(
+            1, batch_size=1, device=dummy_data_last_bar.device
+        ),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
-        trading_done_policy=AlwaysFalseDonePolicy(),
+        trading_done_policy=AlwaysFalseDonePolicy(
+            batch_size=1, device=dummy_data_last_bar.device
+        ),
+        batch_size=1,
     )
 
     d_idx = torch.tensor([0], dtype=torch.int32)
@@ -118,12 +123,15 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(1),
+        open_position_policy=AlwaysOpenPolicy(
+            1, batch_size=1, device=env.instrument_data.device
+        ),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=CloseAfterOneStep(),
         trading_done_policy=SingleTradeDonePolicy(
             batch_size=1, device=env.instrument_data.device
         ),
+        batch_size=1,
     )
 
     start_d = torch.tensor([0], dtype=torch.int32)
@@ -158,10 +166,13 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
     done_policy = TrackingDonePolicy()
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(1),
+        open_position_policy=AlwaysOpenPolicy(
+            1, batch_size=2, device=env.instrument_data.device
+        ),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
         trading_done_policy=done_policy,
+        batch_size=2,
     )
 
     start_d = torch.tensor([0, 0], dtype=torch.int32)
