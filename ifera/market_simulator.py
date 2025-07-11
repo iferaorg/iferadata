@@ -85,7 +85,7 @@ class MarketSimulatorIntraday:
             0, device=self.data.device, dtype=torch.int64
         )
 
-    @torch.compile(mode="max-autotune")
+    # @torch.compile(mode="max-autotune")
     def calculate_step(
         self,
         date_idx: torch.Tensor,
