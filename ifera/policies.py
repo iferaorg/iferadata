@@ -159,6 +159,7 @@ class TradingPolicy(nn.Module):
                 date_idx[no_position_mask],
                 time_idx[no_position_mask],
                 position[no_position_mask],
+                torch.where(no_position_mask)[0],
             )
             action[no_position_mask] = open_actions
 
@@ -207,7 +208,11 @@ class AlwaysOpenPolicy(nn.Module):
         self.direction = direction
 
     def forward(
-        self, date_idx: torch.Tensor, time_idx: torch.Tensor, position: torch.Tensor
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        batch_indices: torch.Tensor,
     ) -> torch.Tensor:
         """
         Determine actions for opening new positions.
@@ -226,8 +231,62 @@ class AlwaysOpenPolicy(nn.Module):
         action : torch.Tensor
             Actions to take (0 = no action, positive = buy, negative = sell)
         """
-        _, _ = date_idx, time_idx
+        _, _, _ = date_idx, time_idx, batch_indices  # Unused in this policy
         return torch.ones_like(position) * self.direction
+
+
+class OpenOncePolicy(nn.Module):
+    """
+    Policy that opens a position once and holds it.
+
+    This policy is used to test the trading policy structure with a simple
+    sub-policy that opens a position once and holds it.
+
+    Parameters
+    ----------
+    direction : int
+        Direction of the position (1 = long, -1 = short)
+    """
+
+    def __init__(self, direction, batch_size, device) -> None:
+        super().__init__()
+        self.direction = direction
+        self.opened = torch.zeros((batch_size,), dtype=torch.bool, device=device)
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        batch_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Determine actions for opening new positions.
+
+        Parameters
+        ----------
+        date_idx : torch.Tensor
+            Batch of date indices
+        time_idx : torch.Tensor
+            Batch of time indices
+        position : torch.Tensor
+            Current positions for each batch element (0 = no position)
+
+        Returns
+        -------
+        action : torch.Tensor
+            Actions to take (0 = no action, positive = buy, negative = sell)
+        """
+        _, _ = date_idx, time_idx  # Unused in this policy
+
+        action = torch.where(
+            self.opened[batch_indices],
+            torch.zeros_like(position),
+            torch.ones_like(position) * self.direction,
+        )
+        self.opened[batch_indices] = True
+
+        return action
 
 
 class ArtrStopLossPolicy(nn.Module):
@@ -250,7 +309,13 @@ class ArtrStopLossPolicy(nn.Module):
         Whether to calculate ATR across days (True) or within the same day (False)
     """
 
-    def __init__(self, instrument_data: InstrumentData, atr_multiple: float, alpha: float = 1.0 / 14.0, acrossday: bool = True) -> None:
+    def __init__(
+        self,
+        instrument_data: InstrumentData,
+        atr_multiple: float,
+        alpha: float = 1.0 / 14.0,
+        acrossday: bool = True,
+    ) -> None:
         super().__init__()
         self.idata = instrument_data
         self.atr_multiple = atr_multiple
