@@ -67,6 +67,27 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         pass
 
 
+class TradingDonePolicy(nn.Module, ABC):
+    """Abstract base class for trading done policies."""
+
+    @abstractmethod
+    def reset(self, mask: torch.Tensor) -> None:
+        """Reset the policy's state for the specified batch elements."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return a boolean tensor indicating completed episodes."""
+        raise NotImplementedError
+
+
 class TradingPolicy(nn.Module):
     """
     A composite trading policy that delegates to specialized sub-policies.
@@ -103,7 +124,7 @@ class TradingPolicy(nn.Module):
         open_position_policy: torch.nn.Module,
         initial_stop_loss_policy: torch.nn.Module,
         position_maintenance_policy: PositionMaintenancePolicy,
-        trading_done_policy: torch.nn.Module,
+        trading_done_policy: TradingDonePolicy,
     ) -> None:
         super().__init__()
         self.instrument_data = instrument_data
@@ -301,7 +322,7 @@ class OpenOncePolicy(nn.Module):
         return action
 
 
-class AlwaysFalseDonePolicy(nn.Module):
+class AlwaysFalseDonePolicy(TradingDonePolicy):
     """Trading done policy that never signals completion."""
 
     def reset(self, _mask: torch.Tensor) -> None:  # pragma: no cover - no state
@@ -321,7 +342,7 @@ class AlwaysFalseDonePolicy(nn.Module):
         return torch.zeros_like(position, dtype=torch.bool)
 
 
-class SingleTradeDonePolicy(nn.Module):
+class SingleTradeDonePolicy(TradingDonePolicy):
     """Signals done once a non-zero position returns to zero."""
 
     def __init__(self) -> None:

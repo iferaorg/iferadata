@@ -131,3 +131,41 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     assert env.done.item() is True
     assert env.position.item() == 0
     assert result.shape == (1,)
+
+
+def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three_steps):
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps,
+    )
+
+    env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
+
+    class TrackingDonePolicy(SingleTradeDonePolicy):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reset_called = False
+            self.last_mask = None
+
+        def reset(self, mask: torch.Tensor) -> None:  # pragma: no cover - simple flag
+            self.reset_called = True
+            self.last_mask = mask.clone()
+            super().reset(mask)
+
+    done_policy = TrackingDonePolicy()
+    trading_policy = TradingPolicy(
+        instrument_data=env.instrument_data,
+        open_position_policy=AlwaysOpenPolicy(1),
+        initial_stop_loss_policy=DummyInitialStopLoss(),
+        position_maintenance_policy=DummyMaintenance(),
+        trading_done_policy=done_policy,
+    )
+
+    start_d = torch.tensor([0, 0], dtype=torch.int32)
+    start_t = torch.tensor([0, 0], dtype=torch.int32)
+
+    env.reset(start_d, start_t, trading_policy)
+
+    assert done_policy.reset_called is True
+    assert done_policy.last_mask.shape[0] == start_d.shape[0]
