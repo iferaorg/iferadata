@@ -345,18 +345,13 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
 class SingleTradeDonePolicy(TradingDonePolicy):
     """Signals done once a non-zero position returns to zero."""
 
-    def __init__(self) -> None:
+    def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
-        self.had_position = torch.tensor(())
+        self.had_position = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
     def reset(self, mask: torch.Tensor) -> None:
         """Reset internal state for the selected batch elements."""
-        if self.had_position.numel() == 0:
-            self.had_position = torch.zeros(
-                mask.shape[0], dtype=torch.bool, device=mask.device
-            )
-        else:
-            self.had_position[mask] = False
+        self.had_position[mask] = False
 
     def forward(
         self,
@@ -368,8 +363,6 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     ) -> torch.Tensor:
         """Return True when position was open and is now zero."""
         _ = date_idx, time_idx, prev_stop, entry_price
-        if self.had_position.numel() == 0:
-            raise ValueError("Policy state not initialized. Call reset first.")
         indices = torch.arange(position.shape[0], device=position.device)
         done = (position == 0) & self.had_position[indices]
         self.had_position[indices] |= position != 0
@@ -542,6 +535,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         atr_multiple: float,
         wait_for_breakeven: bool,
         minimum_improvement: float,
+        batch_size: int,
     ) -> None:
         super().__init__()
         self.instrument_data = instrument_data
@@ -581,9 +575,13 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         ]
         self.stage_count = len(stages)
 
-        # Initialize state tensors (to be set in reset)
-        self.stage = torch.tensor(())
-        self.base_price = torch.tensor(())
+        # Initialize state tensors
+        device = instrument_data.device
+        dtype = instrument_data.dtype
+        self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
+        self.base_price = torch.full(
+            (batch_size,), float("nan"), dtype=dtype, device=device
+        )
 
     def reset(self, mask: torch.Tensor) -> None:
         """
@@ -592,17 +590,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         Args:
             mask (torch.Tensor): A boolean tensor where True indicates batches to reset.
         """
-        if self.stage.shape[0] == 0:
-            device = self.instrument_data.device
-            dtype = self.instrument_data.dtype
-            batch_size = mask.shape[0]
-            self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
-            self.base_price = torch.full(
-                (batch_size,), float("nan"), dtype=dtype, device=device
-            )
-        else:
-            self.stage[mask] = 0
-            self.base_price[mask] = float("nan")
+        self.stage[mask] = 0
+        self.base_price[mask] = float("nan")
 
     def forward(
         self,
@@ -614,11 +603,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute actions using scaled ARTR policy."""
-        # Check if state is initialized
-        if self.stage.shape[0] == 0 or batch_indices.max() >= self.stage.shape[0]:
-            raise ValueError(
-                "Policy state not initialized or batch indices out of range. Call reset with appropriate batch size first."
-            )
+        if batch_indices.max() >= self.stage.shape[0]:
+            raise ValueError("Batch indices out of range.")
 
         # Initialize outputs
         action = torch.zeros_like(position)
@@ -716,12 +702,17 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
 class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
     """
-    A position maintenance policy that adjusts stop-loss levels to maintain a fixed percentage of unrealized gains.
+    A position maintenance policy that adjusts stop-loss levels to maintain
+    a fixed percentage of unrealized gains.
 
     This policy operates in two stages:
-    - **Stage 1**: Waits until the price moves N ATR into profit, using ArtrStopLossPolicy.
-            Transitions to Stage 2 when the ATR-based stop-loss exceeds the entry price (higher for long, lower for short).
-    - **Stage 2**: Sets the stop-loss to retain a fixed percentage of unrealized gains relative to an anchor price, acting as a trailing stop.
+    - **Stage 1**: Waits until the price moves N ATR into profit using
+      :class:`ArtrStopLossPolicy`. Transitions to Stage 2 when the
+      ATR-based stop-loss exceeds the entry price (higher for long,
+      lower for short).
+    - **Stage 2**: Sets the stop-loss to retain a fixed percentage of
+      unrealized gains relative to an anchor price, acting as a
+      trailing stop.
 
     Attributes:
         instrument_data (InstrumentData): Financial instrument data.
@@ -729,7 +720,9 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         trailing_stop (bool): Whether to adjust stop-loss as a trailing stop in Stage 1.
         skip_stage1 (bool): If True, skips Stage 1 and starts at Stage 2.
         keep_percent (float): Percentage of unrealized gains to retain (0 < keep_percent < 1).
-        anchor_type (str): Anchor price type ("entry", "initial_stop", "artificial", "last_stage1_stop", "artificial_stage2").
+        anchor_type (str): Anchor price type
+            ("entry", "initial_stop", "artificial", "last_stage1_stop",
+            "artificial_stage2").
         artr_policy (ArtrStopLossPolicy): Policy for ATR-based stop-loss in Stage 1.
         stage (torch.Tensor): Current stage per batch element (0 = Stage 1, 1 = Stage 2).
         anchor (torch.Tensor): Anchor price per batch element for Stage 2 calculations.
@@ -743,6 +736,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         skip_stage1: bool,
         keep_percent: float,
         anchor_type: str,
+        batch_size: int,
     ) -> None:
         super().__init__()
         # Validate anchor_type and conditions
@@ -758,13 +752,15 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             skip_stage1 or not trailing_stop
         ):
             raise ValueError(
-                "anchor_type 'last_stage1_stop' and 'artificial_stage2' require skip_stage1=False and trailing_stop=True"
+                "anchor_type 'last_stage1_stop' and 'artificial_stage2' require "
+                "skip_stage1=False and trailing_stop=True"
             )
         if anchor_type in ["artificial", "artificial_stage2"] and not (
             0 < keep_percent < 1
         ):
             raise ValueError(
-                "keep_percent must be between 0 and 1 for 'artificial' and 'artificial_stage2' anchor_types"
+                "keep_percent must be between 0 and 1 for 'artificial' and "
+                "'artificial_stage2' anchor_types"
             )
 
         self.instrument_data = instrument_data
@@ -774,9 +770,15 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         self.anchor_type = anchor_type
         self.artr_policy = ArtrStopLossPolicy(instrument_data, stage1_atr_multiple)
 
-        # Initialize state tensors (populated in reset)
-        self.stage = torch.tensor(())
-        self.anchor = torch.tensor(())
+        device = instrument_data.device
+        dtype = instrument_data.dtype
+        initial_stage = 1 if self.skip_stage1 else 0
+        self.stage = torch.full(
+            (batch_size,), initial_stage, dtype=torch.long, device=device
+        )
+        self.anchor = torch.full(
+            (batch_size,), float("nan"), dtype=dtype, device=device
+        )
 
     def reset(self, mask: torch.Tensor) -> None:
         """
@@ -785,21 +787,9 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         Args:
             mask (torch.Tensor): Boolean tensor where True indicates batches to reset.
         """
-        if self.stage.shape[0] == 0:
-            device = self.instrument_data.device
-            dtype = self.instrument_data.dtype
-            batch_size = mask.shape[0]
-            initial_stage = 1 if self.skip_stage1 else 0
-            self.stage = torch.full(
-                (batch_size,), initial_stage, dtype=torch.long, device=device
-            )
-            self.anchor = torch.full(
-                (batch_size,), float("nan"), dtype=dtype, device=device
-            )
-        else:
-            initial_stage = 1 if self.skip_stage1 else 0
-            self.stage[mask] = initial_stage
-            self.anchor[mask] = float("nan")
+        initial_stage = 1 if self.skip_stage1 else 0
+        self.stage[mask] = initial_stage
+        self.anchor[mask] = float("nan")
 
     def forward(
         self,
@@ -811,10 +801,8 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute actions using percent gain policy."""
-        if self.stage.shape[0] == 0 or batch_indices.max() >= self.stage.shape[0]:
-            raise ValueError(
-                "Policy state not initialized or batch indices out of range. Call reset first."
-            )
+        if batch_indices.max() >= self.stage.shape[0]:
+            raise ValueError("Batch indices out of range.")
 
         # Initialize outputs: no new actions, start with previous stop-loss
         action = torch.zeros_like(position)
