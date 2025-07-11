@@ -103,12 +103,14 @@ class TradingPolicy(nn.Module):
         open_position_policy: torch.nn.Module,
         initial_stop_loss_policy: torch.nn.Module,
         position_maintenance_policy: PositionMaintenancePolicy,
+        trading_done_policy: torch.nn.Module,
     ) -> None:
         super().__init__()
         self.instrument_data = instrument_data
         self.open_position_policy = open_position_policy
         self.initial_stop_loss_policy = initial_stop_loss_policy
         self.position_maintenance_policy = position_maintenance_policy
+        self.trading_done_policy = trading_done_policy
 
     def forward(
         self,
@@ -117,7 +119,7 @@ class TradingPolicy(nn.Module):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Determine trading actions and stop loss levels based on current state.
 
@@ -143,6 +145,8 @@ class TradingPolicy(nn.Module):
             Actions to take (0 = no action, positive = buy, negative = sell)
         stop_loss : torch.Tensor
             Stop loss price levels
+        done : torch.Tensor
+            Boolean tensor indicating finished episodes
         """
         # Initialize result tensors
         action = torch.zeros_like(position)
@@ -187,7 +191,15 @@ class TradingPolicy(nn.Module):
             action[has_position_mask] = maintenance_actions
             stop_loss[has_position_mask] = maintenance_stops
 
-        return action, stop_loss
+        done = self.trading_done_policy(
+            date_idx, time_idx, position, prev_stop, entry_price
+        )
+        last_bar_mask = (date_idx == self.instrument_data.data.shape[0] - 1) & (
+            time_idx == self.instrument_data.data.shape[1] - 1
+        )
+        done = done | last_bar_mask
+
+        return action, stop_loss, done
 
 
 class AlwaysOpenPolicy(nn.Module):
@@ -287,6 +299,60 @@ class OpenOncePolicy(nn.Module):
         self.opened[batch_indices] = True
 
         return action
+
+
+class AlwaysFalseDonePolicy(nn.Module):
+    """Trading done policy that never signals completion."""
+
+    def reset(self, _mask: torch.Tensor) -> None:  # pragma: no cover - no state
+        """Reset policy state (no-op)."""
+        return None
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return ``False`` for all batches."""
+        _ = date_idx, time_idx, position, prev_stop, entry_price
+        return torch.zeros_like(position, dtype=torch.bool)
+
+
+class SingleTradeDonePolicy(nn.Module):
+    """Signals done once a non-zero position returns to zero."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.had_position = torch.tensor(())
+
+    def reset(self, mask: torch.Tensor) -> None:
+        """Reset internal state for the selected batch elements."""
+        if self.had_position.numel() == 0:
+            self.had_position = torch.zeros(
+                mask.shape[0], dtype=torch.bool, device=mask.device
+            )
+        else:
+            self.had_position[mask] = False
+
+    def forward(
+        self,
+        date_idx: torch.Tensor,
+        time_idx: torch.Tensor,
+        position: torch.Tensor,
+        prev_stop: torch.Tensor,
+        entry_price: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return True when position was open and is now zero."""
+        _ = date_idx, time_idx, prev_stop, entry_price
+        if self.had_position.numel() == 0:
+            raise ValueError("Policy state not initialized. Call reset first.")
+        indices = torch.arange(position.shape[0], device=position.device)
+        done = (position == 0) & self.had_position[indices]
+        self.had_position[indices] |= position != 0
+        return done
 
 
 class ArtrStopLossPolicy(nn.Module):
