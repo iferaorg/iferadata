@@ -322,66 +322,45 @@ symbol = "CL"
 iconfig = cm.get_base_instrument_config(symbol, "30m")
 
 base_config = cm.get_base_instrument_config(symbol, "1m")
-idata = dm.get_instrument_data(instrument_config=base_config, backadjust=True, dtype=torch.float32, device=torch.device("cuda:0"))
-batch_size = idata.data.shape[0]-250
+env = ifera.SingleMarketEnv(
+    instrument_config=base_config,
+    broker_name="IBKR",
+    backadjust=True,
+    device=torch.device("cuda:0"),
+    dtype=torch.float32,
+)
+batch_size = env.instrument_data.data.shape[0]-250
 
-openPolicy = ifera.OpenOncePolicy(direction=1, batch_size=batch_size, device=idata.device)
+openPolicy = ifera.OpenOncePolicy(direction=1, batch_size=batch_size, device=env.device)
 initStopPolicy = ifera.InitialArtrStopLossPolicy(
-    instrument_data=idata, atr_multiple=3.0
+    instrument_data=env.instrument_data, atr_multiple=3.0
 )
 maintenancePolicy = ifera.ScaledArtrMaintenancePolicy(
-    instrument_data=idata,
+    instrument_data=env.instrument_data,
     stages=["1m", "5m", "15m", "1h", "4h", "1d"],
     atr_multiple=3.0,
     wait_for_breakeven=True,
     minimum_improvement=0.0,
+    batch_size= batch_size,
 )
 
+done_policy = ifera.SingleTradeDonePolicy(batch_size=batch_size, device=env.device)
+
 tradingPolicy = ifera.TradingPolicy(
-    instrument_data=idata,
+    instrument_data=env.instrument_data,
     open_position_policy=openPolicy,
     initial_stop_loss_policy=initStopPolicy,
     position_maintenance_policy=maintenancePolicy,
+    trading_done_policy=done_policy,
 )
 
-tradingPolicy_comp = torch.compile(tradingPolicy, mode="max-autotune")
+date_idx = torch.arange(0, batch_size, device=env.device, dtype=torch.int32)
+time_idx = torch.zeros_like(date_idx, dtype=torch.int32, device=env.device)
 
-ms = ifera.MarketSimulatorIntraday(instrument_data=idata, broker_name="IBKR")
-
-date_idx = torch.arange(0, batch_size, device=idata.data.device, dtype=torch.int32)
-time_idx = torch.zeros_like(date_idx, dtype=torch.int32, device=idata.device)
-position = torch.zeros_like(date_idx, dtype=torch.int32, device=idata.device)
-prev_stop_loss = torch.full_like(date_idx, torch.nan, dtype=torch.float32, device=idata.device)
-entry_price = torch.full_like(date_idx, torch.nan, dtype=torch.float32, device=idata.device)
-
-total_profit = torch.zeros_like(date_idx, dtype=torch.float32, device=idata.device)
-
-total_steps = (idata.data.shape[0] - date_idx[0].item() + 1) * idata.data.shape[1]
 print(f"Starting simulation for {symbol}")
 t = time.time()
-d = idata.data_full
 
-action, stop_loss = tradingPolicy(date_idx, time_idx, position, prev_stop_loss, entry_price)
-time_idx += 1
-profit, position, entry_price, _ = ms.calculate_step(date_idx, time_idx, position, action, stop_loss)
-position = position.clone()
-total_profit += profit
-
-while (position != 0).any():
-    prev_stop_loss = stop_loss.clone()
-    action, stop_loss = tradingPolicy(date_idx, time_idx, position, prev_stop_loss, entry_price)
-
-    date_idx, time_idx = idata.get_next_indices(date_idx, time_idx)
-    overflow_mask = date_idx >= idata.data.shape[0]
-    date_idx[overflow_mask] = idata.data.shape[0] - 1
-    time_idx[overflow_mask] = idata.data.shape[1] - 1
-
-    last_bar_mask = (date_idx == idata.data.shape[0] - 1) & (time_idx == idata.data.shape[1] - 1)
-    action[last_bar_mask] = -position[last_bar_mask]  # Close positions on the last bar
-
-    profit, position, _, _ = ms.calculate_step(date_idx, time_idx, position, action, stop_loss)
-    position = position.clone()
-    total_profit += profit
+total_profit = env.rollout(trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx)
 
 print(f"Simulation completed in {time.time() - t:.2f} seconds.")
 
