@@ -73,6 +73,7 @@ class SingleMarketEnv:
                 torch.ones(batch_size, dtype=torch.bool, device=self.device)
             )
 
+    @torch.compile(mode="max-autotune")
     def step(self, trading_policy: TradingPolicy) -> torch.Tensor:
         """Run one simulation step using ``trading_policy``."""
 
@@ -120,6 +121,7 @@ class SingleMarketEnv:
         self.reset(start_date_idx, start_time_idx, trading_policy)
         steps = 0
         while True:
+            torch.compiler.cudagraph_mark_step_begin()
             self.step(trading_policy)
             steps += 1
             if self.done.all() or (max_steps is not None and steps >= max_steps):
