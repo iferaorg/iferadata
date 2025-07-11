@@ -121,7 +121,9 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
         open_position_policy=AlwaysOpenPolicy(1),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=CloseAfterOneStep(),
-        trading_done_policy=SingleTradeDonePolicy(),
+        trading_done_policy=SingleTradeDonePolicy(
+            batch_size=1, device=env.instrument_data.device
+        ),
     )
 
     start_d = torch.tensor([0], dtype=torch.int32)
@@ -144,7 +146,7 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
 
     class TrackingDonePolicy(SingleTradeDonePolicy):
         def __init__(self) -> None:
-            super().__init__()
+            super().__init__(batch_size=2, device=env.instrument_data.device)
             self.reset_called = False
             self.last_mask = None
 
