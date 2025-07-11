@@ -125,6 +125,7 @@ class TradingPolicy(nn.Module):
         initial_stop_loss_policy: torch.nn.Module,
         position_maintenance_policy: PositionMaintenancePolicy,
         trading_done_policy: TradingDonePolicy,
+        batch_size: int,
     ) -> None:
         super().__init__()
         self.instrument_data = instrument_data
@@ -132,6 +133,13 @@ class TradingPolicy(nn.Module):
         self.initial_stop_loss_policy = initial_stop_loss_policy
         self.position_maintenance_policy = position_maintenance_policy
         self.trading_done_policy = trading_done_policy
+        self._batch_size = batch_size
+        device = instrument_data.device
+        dtype = instrument_data.dtype
+        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._stop_loss = torch.full(
+            (batch_size,), float("nan"), dtype=dtype, device=device
+        )
 
     def forward(
         self,
@@ -169,9 +177,11 @@ class TradingPolicy(nn.Module):
         done : torch.Tensor
             Boolean tensor indicating finished episodes
         """
-        # Initialize result tensors
-        action = torch.zeros_like(position)
-        stop_loss = torch.full_like(prev_stop, float("nan"))
+        # Initialize result tensors in-place
+        action = self._action[: position.shape[0]]
+        stop_loss = self._stop_loss[: position.shape[0]]
+        action.zero_()
+        stop_loss.fill_(float("nan"))
 
         # Create masks for different position states
         no_position_mask = position == 0
@@ -236,9 +246,12 @@ class AlwaysOpenPolicy(nn.Module):
         Direction of the position (1 = long, -1 = short
     """
 
-    def __init__(self, direction) -> None:
+    def __init__(self, direction: int, batch_size: int, device: torch.device) -> None:
         super().__init__()
         self.direction = direction
+        self._action = torch.full(
+            (batch_size,), direction, dtype=torch.int32, device=device
+        )
 
     def forward(
         self,
@@ -265,7 +278,7 @@ class AlwaysOpenPolicy(nn.Module):
             Actions to take (0 = no action, positive = buy, negative = sell)
         """
         _, _, _ = date_idx, time_idx, batch_indices  # Unused in this policy
-        return torch.ones_like(position) * self.direction
+        return self._action[batch_indices]
 
 
 class OpenOncePolicy(nn.Module):
@@ -285,6 +298,10 @@ class OpenOncePolicy(nn.Module):
         super().__init__()
         self.direction = direction
         self.opened = torch.zeros((batch_size,), dtype=torch.bool, device=device)
+        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._direction = (
+            torch.ones(batch_size, dtype=torch.int32, device=device) * direction
+        )
 
     def forward(
         self,
@@ -312,11 +329,9 @@ class OpenOncePolicy(nn.Module):
         """
         _, _ = date_idx, time_idx  # Unused in this policy
 
-        action = torch.where(
-            self.opened[batch_indices],
-            torch.zeros_like(position),
-            torch.ones_like(position) * self.direction,
-        )
+        zero = self._zero[batch_indices]
+        direction = self._direction[batch_indices]
+        action = torch.where(self.opened[batch_indices], zero, direction)
         self.opened[batch_indices] = True
 
         return action
@@ -324,6 +339,10 @@ class OpenOncePolicy(nn.Module):
 
 class AlwaysFalseDonePolicy(TradingDonePolicy):
     """Trading done policy that never signals completion."""
+
+    def __init__(self, batch_size: int, device: torch.device) -> None:
+        super().__init__()
+        self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
     def reset(self, _mask: torch.Tensor) -> None:  # pragma: no cover - no state
         """Reset policy state (no-op)."""
@@ -339,7 +358,7 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
     ) -> torch.Tensor:
         """Return ``False`` for all batches."""
         _ = date_idx, time_idx, position, prev_stop, entry_price
-        return torch.zeros_like(position, dtype=torch.bool)
+        return self._false[: position.shape[0]]
 
 
 class SingleTradeDonePolicy(TradingDonePolicy):
@@ -348,6 +367,7 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
         self.had_position = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        self._indices = torch.arange(batch_size, device=device)
 
     def reset(self, mask: torch.Tensor) -> None:
         """Reset internal state for the selected batch elements."""
@@ -363,7 +383,7 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     ) -> torch.Tensor:
         """Return True when position was open and is now zero."""
         _ = date_idx, time_idx, prev_stop, entry_price
-        indices = torch.arange(position.shape[0], device=position.device)
+        indices = self._indices[: position.shape[0]]
         done = (position == 0) & self.had_position[indices]
         self.had_position[indices] |= position != 0
         return done
@@ -475,10 +495,17 @@ class InitialArtrStopLossPolicy(nn.Module):
         Multiple of the ATR to use for setting stop loss levels
     """
 
-    def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
+    def __init__(
+        self, instrument_data: InstrumentData, atr_multiple: float, batch_size: int
+    ) -> None:
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
         self.dtype = instrument_data.data.dtype
+        device = instrument_data.device
+        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._nan = torch.full(
+            (batch_size,), float("nan"), dtype=self.dtype, device=device
+        )
 
     def forward(
         self, date_idx: torch.Tensor, time_idx: torch.Tensor, action: torch.Tensor
@@ -500,13 +527,10 @@ class InitialArtrStopLossPolicy(nn.Module):
         stop_loss : torch.Tensor
             Stop loss price levels
         """
-        return self.artr_policy(
-            date_idx,
-            time_idx,
-            torch.zeros_like(action),
-            action,
-            torch.full_like(action, float("nan"), dtype=self.dtype),
-        )
+        size = action.shape[0]
+        zero = self._zero[:size]
+        nan_prev = self._nan[:size]
+        return self.artr_policy(date_idx, time_idx, zero, action, nan_prev)
 
 
 class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
@@ -582,6 +606,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self.base_price = torch.full(
             (batch_size,), float("nan"), dtype=dtype, device=device
         )
+        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._stop = torch.empty(batch_size, dtype=dtype, device=device)
 
     def reset(self, mask: torch.Tensor) -> None:
         """
@@ -606,9 +632,12 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         if batch_indices.max() >= self.stage.shape[0]:
             raise ValueError("Batch indices out of range.")
 
-        # Initialize outputs
-        action = torch.zeros_like(position)
-        stop_loss = prev_stop.clone()
+        # Initialize outputs in-place
+        batch_len = position.shape[0]
+        action = self._action[:batch_len]
+        stop_loss = self._stop[:batch_len]
+        action.zero_()
+        stop_loss.copy_(prev_stop)
 
         # Extract current state for the subset
         current_stage = self.stage[batch_indices]
@@ -634,11 +663,13 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 subset_position = position[stage0_mask]
                 subset_stop_loss = stop_loss[stage0_mask]
                 subset_entry_price = entry_price[stage0_mask]
+                zero_buf = self._action[: subset_position.shape[0]]
+                zero_buf.zero_()
                 potential_stop = self.artr_policies[0](
                     subset_date_idx,
                     subset_time_idx,
                     subset_position,
-                    torch.zeros_like(subset_position),
+                    zero_buf,
                     subset_stop_loss,
                 )
                 improve_mask_subset = (subset_position > 0) & (
@@ -667,11 +698,13 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 subset_position = position[stage_mask]
                 subset_stop_loss = stop_loss[stage_mask]
                 subset_base_price = current_base_price[stage_mask]
+                zero_buf = self._action[: subset_position.shape[0]]
+                zero_buf.zero_()
                 potential_stop = self.artr_policies[s](
                     subset_date_idx,
                     subset_time_idx,
                     subset_position,
-                    torch.zeros_like(subset_position),
+                    zero_buf,
                     subset_stop_loss,
                 )
                 improvement = torch.where(
@@ -779,6 +812,8 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         self.anchor = torch.full(
             (batch_size,), float("nan"), dtype=dtype, device=device
         )
+        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._stop = torch.empty(batch_size, dtype=dtype, device=device)
 
     def reset(self, mask: torch.Tensor) -> None:
         """
@@ -804,9 +839,12 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         if batch_indices.max() >= self.stage.shape[0]:
             raise ValueError("Batch indices out of range.")
 
-        # Initialize outputs: no new actions, start with previous stop-loss
-        action = torch.zeros_like(position)
-        stop_loss = prev_stop.clone()
+        # Initialize outputs without allocation
+        batch_len = position.shape[0]
+        action = self._action[:batch_len]
+        stop_loss = self._stop[:batch_len]
+        action.zero_()
+        stop_loss.copy_(prev_stop)
 
         # Get current state for the batch
         current_stage = self.stage[batch_indices]
@@ -839,11 +877,13 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         if stage1_mask.any():
             subset = stage1_mask
             indices = batch_indices[subset]
+            zero_buf = self._action[: position[subset].shape[0]]
+            zero_buf.zero_()
             atr_stop = self.artr_policy(
                 date_idx[subset],
                 time_idx[subset],
                 position[subset],
-                torch.zeros_like(position[subset]),
+                zero_buf,
                 prev_stop[subset],
             )
             move_to_stage2 = (position[subset] > 0) & (
