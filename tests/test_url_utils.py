@@ -31,8 +31,8 @@ def test_extract_date_and_clean_date():
     soup = url_utils.BeautifulSoup(html, "html.parser")
     first_notice = url_utils._extract_date("First Notice Date", soup)
     expiration = url_utils._extract_date("Expiration Date", soup)
-    assert first_notice.isoformat() == "2024-01-15"
-    assert expiration.isoformat() == "2024-02-20"
+    assert first_notice is not None and first_notice.isoformat() == "2024-01-15"
+    assert expiration is not None and expiration.isoformat() == "2024-02-20"
 
 
 class DummyResponse:
@@ -49,8 +49,8 @@ def test_parse_contract_page():
     </table>
     """
     first_notice, expiration = url_utils._parse_contract_page(html)
-    assert first_notice.isoformat() == "2024-01-15"
-    assert expiration.isoformat() == "2024-02-20"
+    assert first_notice is not None and first_notice.isoformat() == "2024-01-15"
+    assert expiration is not None and expiration.isoformat() == "2024-02-20"
 
 
 def test_contract_notice_and_expiry_success(monkeypatch):
@@ -71,8 +71,8 @@ def test_contract_notice_and_expiry_success(monkeypatch):
     first_notice, expiration = url_utils.contract_notice_and_expiry(
         "CLF24", max_retries=1
     )
-    assert first_notice.isoformat() == "2024-01-15"
-    assert expiration.isoformat() == "2024-02-20"
+    assert first_notice is not None and first_notice.isoformat() == "2024-01-15"
+    assert expiration is not None and expiration.isoformat() == "2024-02-20"
 
 
 def test_fetch_contract_page(monkeypatch):

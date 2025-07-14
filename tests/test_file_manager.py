@@ -255,18 +255,6 @@ def test_refresh_file_calls_process(monkeypatch, file_manager_instance):
         def exists(self, _file: str) -> bool:
             return True
 
-        def exists(self, _file: str) -> bool:
-            return True
-
-        def exists(self, _file: str) -> bool:
-            return True
-
-        def exists(self, _file: str) -> bool:
-            return True
-
-        def exists(self, _file: str) -> bool:
-            return True
-
     process_mock = MagicMock()
     monkeypatch.setattr("tests.helper_module.process", process_mock)
     monkeypatch.setattr("ifera.file_manager.FileOperations", lambda: DummyFOP(times))

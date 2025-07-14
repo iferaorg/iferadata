@@ -156,7 +156,7 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
         def __init__(self) -> None:
             super().__init__(batch_size=2, device=env.instrument_data.device)
             self.reset_called = False
-            self.last_mask = None
+            self.last_mask = torch.empty(0, dtype=torch.bool)
 
         def reset(self, mask: torch.Tensor) -> None:  # pragma: no cover - simple flag
             self.reset_called = True

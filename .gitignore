@@ -3,3 +3,4 @@ megalinter-reports/
 data/*/
 .env
 report/jscpd-report.md
+.vscode/
