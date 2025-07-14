@@ -5,10 +5,18 @@ Module containing market simulator implementations for backtesting trading strat
 from typing import Final
 
 import torch
+
 from einops import rearrange
 
 from .data_models import InstrumentData
 from .config import ConfigManager
+
+
+CHANNEL_OPEN = 0
+CHANNEL_HIGH = 1
+CHANNEL_LOW = 2
+CHANNEL_CLOSE = 3
+CHANNEL_VOLUME = 4
 
 
 class MarketSimulatorIntraday:
@@ -45,14 +53,6 @@ class MarketSimulatorIntraday:
         Calculate the commission for an action.
     """
 
-    CHANNELS: Final = {
-        "open": 0,
-        "high": 1,
-        "low": 2,
-        "close": 3,
-        "volume": 4,
-    }
-
     def __init__(self, instrument_data: InstrumentData, broker_name: str):
         cm = ConfigManager()
         self.instrument: Final = cm.get_config_from_base(
@@ -82,7 +82,7 @@ class MarketSimulatorIntraday:
             float("nan"), device=self.data.device, dtype=self.data.dtype
         )
         self._zero_tensor: Final = torch.tensor(
-            0, device=self.data.device, dtype=torch.int64
+            0, device=self.data.device, dtype=torch.int32
         )
 
     # @torch.compile(mode="max-autotune")
@@ -140,11 +140,13 @@ class MarketSimulatorIntraday:
         the execution price. If a stop loss level is provided, the function will also calculate
         the effect of the stop loss order.
         """
+        mask = self.mask[date_idx, time_idx]
+        data = self.data[date_idx, time_idx]
+        contract_multiplier = self.instrument.contract_multiplier
+
         # No trades on masked out dates and times
-        action = torch.where(self.mask[date_idx, time_idx], action, self._zero_tensor)
-        stop_loss = torch.where(
-            self.mask[date_idx, time_idx], stop_loss, self._nan_tensor
-        )
+        action = torch.where(mask, action, self._zero_tensor)
+        stop_loss = torch.where(mask, stop_loss, self._nan_tensor)
 
         (
             action_sign,
@@ -157,7 +159,7 @@ class MarketSimulatorIntraday:
 
         new_position_sign = torch.sign(new_position)
 
-        current_price = self.data[date_idx, time_idx, self.CHANNELS["open"]]
+        current_price = data[CHANNEL_OPEN]
         slippage = (current_price * self._slippage_pct).clamp(
             min=self.instrument.min_slippage
         )
@@ -172,8 +174,8 @@ class MarketSimulatorIntraday:
 
         stop_check_price = torch.where(
             new_position_sign == 1,
-            self.data[date_idx, time_idx, self.CHANNELS["low"]],
-            self.data[date_idx, time_idx, self.CHANNELS["high"]],
+            data[CHANNEL_LOW],
+            data[CHANNEL_HIGH],
         )
         stop_mask = (new_position_sign * (stop_loss - stop_check_price)) > 0
         stop_position = new_position * stop_mask
@@ -185,7 +187,7 @@ class MarketSimulatorIntraday:
         ) - slippage * torch.sign(stop_position)
         stop_commision = self.calculate_commission(torch.abs(stop_position), stop_price)
 
-        close_price = self.data[date_idx, time_idx, self.CHANNELS["close"]]
+        close_price = data[CHANNEL_CLOSE]
         close_price = torch.where(stop_mask, stop_price, close_price)
 
         prev_close_price = self._get_prev_close_price(date_idx, time_idx)
@@ -194,7 +196,7 @@ class MarketSimulatorIntraday:
             (execution_price - prev_close_price) * close_position
             + (close_price - execution_price) * open_position
             + (close_price - prev_close_price) * kept_position
-        ) * self.instrument.contract_multiplier
+        ) * contract_multiplier
 
         profit = position_value_delta - commission - stop_commision
 
@@ -203,7 +205,7 @@ class MarketSimulatorIntraday:
                 execution_price * (close_position - open_position)
                 + stop_price.nan_to_num(posinf=0.0, neginf=0.0) * stop_position
             )
-            * self.instrument.contract_multiplier
+            * contract_multiplier
             - commission
             - stop_commision
         )
@@ -246,8 +248,8 @@ class MarketSimulatorIntraday:
         flat_idx = date_idx * self.data.shape[1] + time_idx
         return torch.where(
             flat_idx > 0,
-            self.data_flat[flat_idx - 1, self.CHANNELS["close"]],
-            self.data_flat[flat_idx, self.CHANNELS["open"]],
+            self.data_flat[flat_idx - 1, CHANNEL_CLOSE],
+            self.data_flat[flat_idx, CHANNEL_OPEN],
         )
 
 

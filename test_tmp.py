@@ -39,18 +39,17 @@ from rich.table import Table
 
 # for symbol in symbols:
 #     iconfig = cm.get_base_instrument_config(symbol, "30m")
-    
+
 #     if iconfig.type != "futures":
 #         continue
-    
+
 #     print(f"Refreshing backadjusted tensors for {symbol}...")
 #     fm.refresh_file(f"s3:tensor_backadjusted/futures/1m/{symbol}.pt.gz")
-    # ifera.delete_s3_file(f"meta/futures/rollover/{symbol}.yml")
-    # fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
+# ifera.delete_s3_file(f"meta/futures/rollover/{symbol}.yml")
+# fm.refresh_file(f"file:meta/futures/rollover/{symbol}.yml")
 
 # ifera.delete_s3_file(f"meta/futures/rollover/PL.yml")
 # fm.refresh_file(f"s3:tensor_backadjusted/futures/1m/PL.pt.gz")
-
 
 
 # -----------------------------------------------------------
@@ -89,15 +88,15 @@ from rich.table import Table
 
 #     mismatches[symbol] = {}
 #     instrument = cm.get_config(broker_name="barchart", symbol=symbol, interval="30m")
-    
+
 #     if instrument.first_notice_day_rule is None:
 #         continue
-    
+
 #     if instrument.last_trading_day_rule is None:
 #         raise ValueError(
 #             f"Instrument {symbol} does not have a last trading day rule defined."
 #         )
-    
+
 #     print(f"{symbol}: {instrument.broker_symbol}")
 #     url_raw = f"file:data/meta/futures/dates_raw/{symbol}.yml"
 #     url = f"file:data/meta/futures/dates/{symbol}.yml"
@@ -126,8 +125,8 @@ from rich.table import Table
 #             contract_instrument.contract_code,  # type: ignore
 #             ifera.ExpirationRule(contract_instrument.last_trading_day_rule),
 #             contract_instrument.asset_class
-#         ) 
-        
+#         )
+
 #         calculated_first_notice_date = ifera.calculate_expiration(
 #             contract_instrument.contract_code,  # type: ignore
 #             ifera.ExpirationRule(contract_instrument.first_notice_day_rule),
@@ -165,7 +164,7 @@ from rich.table import Table
 #         #         1900, 1, 1
 #         #     )  # Default to a very old date if no data is available
 
-        
+
 #         # if expiration_date != calculated_exp_date or last_trade_date > calculated_exp_date or (last_trade_date - calculated_exp_date).days < -7:
 #         # if expiration_date != calculated_exp_date:
 #         #     print(
@@ -225,7 +224,7 @@ from rich.table import Table
 # for dep in fm.refresh_graph.successors(url):
 #     if not dep.startswith("file:data/tensor/futures_individual/30m/"):
 #         continue
-    
+
 #     fm.refresh_file(dep)
 #     params = fm.get_node_params(ifera.RuleType.REFRESH, dep)
 
@@ -271,11 +270,16 @@ from rich.table import Table
 # #     formatter={'int_kind': lambda x: f"{x}"}))
 
 
-
-def make_table(data_tensor, date_idx, time_idx, maintenance_policy, stop_loss, total_profit):
+def make_table(
+    data_tensor, date_idx, time_idx, maintenance_policy, stop_loss, total_profit
+):
     ord_date = data_tensor[date_idx, time_idx, 2].to(torch.int64).item()
     time_seconds = data_tensor[date_idx, time_idx, 3].to(torch.int64).item()
-    stage_str = maintenance_policy.derived_configs[maintenance_policy.stage].interval if maintenance_policy.stage.shape[0] > 0 else "N/A"
+    stage_str = (
+        maintenance_policy.derived_configs[maintenance_policy.stage].interval
+        if maintenance_policy.stage.shape[0] > 0
+        else "N/A"
+    )
     current_high = data_tensor[date_idx, time_idx, 5].item()
     current_low = data_tensor[date_idx, time_idx, 6].item()
     stop_loss = stop_loss.item()
@@ -296,16 +300,17 @@ def make_table(data_tensor, date_idx, time_idx, maintenance_policy, stop_loss, t
         f"{current_high:.2f}",
         f"{current_low:.2f}",
         f"{stop_loss:.2f}",
-        f"{total_profit:.2f}"
+        f"{total_profit:.2f}",
     )
-    
+
     return table
+
 
 # symbols = broker.instruments.keys()
 # for symbol in ["CL"]:
 
 # if iconfig.type != "futures":
-#     continue    
+#     continue
 
 
 import torch
@@ -329,11 +334,11 @@ env = ifera.SingleMarketEnv(
     device=torch.device("cuda:0"),
     dtype=torch.float32,
 )
-batch_size = env.instrument_data.data.shape[0]-250
+batch_size = env.instrument_data.data.shape[0] - 250
 
 openPolicy = ifera.OpenOncePolicy(direction=1, batch_size=batch_size, device=env.device)
 initStopPolicy = ifera.InitialArtrStopLossPolicy(
-    instrument_data=env.instrument_data, atr_multiple=3.0
+    instrument_data=env.instrument_data, atr_multiple=3.0, batch_size=batch_size
 )
 maintenancePolicy = ifera.ScaledArtrMaintenancePolicy(
     instrument_data=env.instrument_data,
@@ -341,7 +346,7 @@ maintenancePolicy = ifera.ScaledArtrMaintenancePolicy(
     atr_multiple=3.0,
     wait_for_breakeven=True,
     minimum_improvement=0.0,
-    batch_size= batch_size,
+    batch_size=batch_size,
 )
 
 done_policy = ifera.SingleTradeDonePolicy(batch_size=batch_size, device=env.device)
@@ -352,6 +357,7 @@ tradingPolicy = ifera.TradingPolicy(
     initial_stop_loss_policy=initStopPolicy,
     position_maintenance_policy=maintenancePolicy,
     trading_done_policy=done_policy,
+    batch_size=batch_size,
 )
 
 date_idx = torch.arange(0, batch_size, device=env.device, dtype=torch.int32)
@@ -360,9 +366,13 @@ time_idx = torch.zeros_like(date_idx, dtype=torch.int32, device=env.device)
 print(f"Starting simulation for {symbol}")
 t = time.time()
 
-total_profit = env.rollout(trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx)
+total_profit = env.rollout(
+    trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx
+)
 
 print(f"Simulation completed in {time.time() - t:.2f} seconds.")
 
 max_idx = total_profit.argmax()
-print(f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}")
+print(
+    f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
+)

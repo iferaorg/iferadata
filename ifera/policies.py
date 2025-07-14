@@ -344,7 +344,7 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
         super().__init__()
         self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
-    def reset(self, _mask: torch.Tensor) -> None:  # pragma: no cover - no state
+    def reset(self, mask: torch.Tensor) -> None:  # pragma: no cover - no state
         """Reset policy state (no-op)."""
         return None
 
