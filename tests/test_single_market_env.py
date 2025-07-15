@@ -51,7 +51,6 @@ class DummyMaintenance(PositionMaintenancePolicy):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
-        batch_indices: torch.Tensor,
     ):
         return torch.zeros_like(position), prev_stop
 
@@ -67,7 +66,6 @@ class CloseAfterOneStep(PositionMaintenancePolicy):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
-        batch_indices: torch.Tensor,
     ):
         action = torch.where(time_idx >= 1, -position, torch.zeros_like(position))
         return action, prev_stop
