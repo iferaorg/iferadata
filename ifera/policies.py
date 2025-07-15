@@ -674,7 +674,9 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             min_improvement = self.minimum_improvement * torch.abs(
                 current_base_price - stop_loss
             )
-            improve_mask_subset = stage_mask & (improvement > min_improvement)
+            improve_mask_subset = (
+                stage_mask & (improvement > min_improvement) & (conv_date_idx >= 0)
+            )
             stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
             current_stage[stage_mask] = torch.where(
                 improve_mask_subset & (s < self.stage_count - 1),
