@@ -159,7 +159,7 @@ class MarketSimulatorIntraday:
 
         new_position_sign = torch.sign(new_position)
 
-        current_price = data[CHANNEL_OPEN]
+        current_price = data[..., CHANNEL_OPEN]
         slippage = (current_price * self._slippage_pct).clamp(
             min=self.instrument.min_slippage
         )
@@ -174,8 +174,8 @@ class MarketSimulatorIntraday:
 
         stop_check_price = torch.where(
             new_position_sign == 1,
-            data[CHANNEL_LOW],
-            data[CHANNEL_HIGH],
+            data[..., CHANNEL_LOW],
+            data[..., CHANNEL_HIGH],
         )
         stop_mask = (new_position_sign * (stop_loss - stop_check_price)) > 0
         stop_position = new_position * stop_mask
@@ -187,7 +187,7 @@ class MarketSimulatorIntraday:
         ) - slippage * torch.sign(stop_position)
         stop_commision = self.calculate_commission(torch.abs(stop_position), stop_price)
 
-        close_price = data[CHANNEL_CLOSE]
+        close_price = data[..., CHANNEL_CLOSE]
         close_price = torch.where(stop_mask, stop_price, close_price)
 
         prev_close_price = self._get_prev_close_price(date_idx, time_idx)
@@ -230,10 +230,11 @@ class MarketSimulatorIntraday:
         commission : torch.Tensor
             Commission for the action.
         """
-        commission = (action_abs * self.instrument.commission).clamp(
-            min=self.instrument.min_commission
+        instrument = self.instrument
+        commission = (action_abs * instrument.commission).clamp(
+            min=instrument.min_commission
         )
-        max_commission = price * action_abs * self.instrument.max_commission_pct
+        max_commission = price * action_abs * instrument.max_commission_pct
         commission = torch.where(
             self._use_max_commission_mask,
             commission.clamp(max=max_commission),

@@ -74,7 +74,7 @@ class SingleMarketEnv:
             )
 
     @torch.compile(mode="max-autotune")
-    def step(self, trading_policy: TradingPolicy) -> torch.Tensor:
+    def step(self, trading_policy: TradingPolicy):
         """Run one simulation step using ``trading_policy``."""
 
         action, stop_loss, done = trading_policy(
@@ -98,16 +98,17 @@ class SingleMarketEnv:
         execution_price = torch.where(done, self.entry_price, execution_price)
 
         entry_mask = (self.position == 0) & (new_position != 0)
-        self.entry_price = torch.where(entry_mask, execution_price, self.entry_price)
+        entry_price = torch.where(entry_mask, execution_price, self.entry_price)
 
-        self.date_idx = next_date_idx
-        self.time_idx = next_time_idx
-        self.position = new_position
-        self.prev_stop_loss = stop_loss
-        self.total_profit += profit
-        self.done |= done
-
-        return profit
+        return (
+            profit,
+            new_position,
+            next_date_idx,
+            next_time_idx,
+            entry_price,
+            stop_loss,
+            done,
+        )
 
     def rollout(
         self,
@@ -122,8 +123,25 @@ class SingleMarketEnv:
         steps = 0
         while True:
             torch.compiler.cudagraph_mark_step_begin()
-            self.step(trading_policy)
+            (
+                profit,
+                new_position,
+                next_date_idx,
+                next_time_idx,
+                entry_price,
+                stop_loss,
+                done,
+            ) = self.step(trading_policy)
+
+            self.position = new_position.clone()
+            self.date_idx = next_date_idx.clone()
+            self.time_idx = next_time_idx.clone()
+            self.entry_price = entry_price.clone()
+            self.prev_stop_loss = stop_loss.clone()
+            self.total_profit = self.total_profit + profit
+            self.done = self.done | done
             steps += 1
+
             if self.done.all() or (max_steps is not None and steps >= max_steps):
                 break
         return self.total_profit.clone()
