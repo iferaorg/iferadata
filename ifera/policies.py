@@ -12,6 +12,7 @@ from typing import List, Tuple
 
 import torch
 from torch import nn
+from einops import rearrange, repeat
 from .data_models import InstrumentData, DataManager
 from .config import ConfigManager
 from .file_manager import FileManager
@@ -46,7 +47,6 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
-        batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute actions and stop loss levels for the current state.
@@ -57,7 +57,6 @@ class PositionMaintenancePolicy(nn.Module, ABC):
             position (torch.Tensor): Current positions (non-zero for existing positions).
             prev_stop (torch.Tensor): Previous stop loss levels.
             entry_price (torch.Tensor): Entry prices for the positions.
-            batch_indices (torch.Tensor): Indices of the batch elements.
 
         Returns:
             Tuple[torch.Tensor, torch.Tensor]: (action, stop_loss)
@@ -134,12 +133,6 @@ class TradingPolicy(nn.Module):
         self.position_maintenance_policy = position_maintenance_policy
         self.trading_done_policy = trading_done_policy
         self._batch_size = batch_size
-        device = instrument_data.device
-        dtype = instrument_data.dtype
-        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._stop_loss = torch.full(
-            (batch_size,), float("nan"), dtype=dtype, device=device
-        )
 
     def forward(
         self,
@@ -177,47 +170,31 @@ class TradingPolicy(nn.Module):
         done : torch.Tensor
             Boolean tensor indicating finished episodes
         """
-        # Initialize result tensors in-place
-        action = self._action[: position.shape[0]]
-        stop_loss = self._stop_loss[: position.shape[0]]
-        action.zero_()
-        stop_loss.fill_(float("nan"))
-
         # Create masks for different position states
         no_position_mask = position == 0
         has_position_mask = position != 0
 
         # Handle batches with no position (position == 0)
-        if no_position_mask.any():
-            # Get actions for opening positions
-            open_actions = self.open_position_policy(
-                date_idx[no_position_mask],
-                time_idx[no_position_mask],
-                position[no_position_mask],
-                torch.where(no_position_mask)[0],
-            )
-            action[no_position_mask] = open_actions
+        action = self.open_position_policy(
+            date_idx,
+            time_idx,
+            no_position_mask,
+        )
 
-            # For batches where we're opening a position, get initial stop loss
-            opening_position_mask = no_position_mask & (action != 0)
-            if opening_position_mask.any():
-                initial_stops = self.initial_stop_loss_policy(
-                    date_idx[opening_position_mask],
-                    time_idx[opening_position_mask],
-                    action[opening_position_mask],
-                )
-                stop_loss[opening_position_mask] = initial_stops
-                self.position_maintenance_policy.reset(opening_position_mask)
+        # For batches where we're opening a position, get initial stop loss
+        opening_position_mask = action != 0
+
+        stop_loss = self.initial_stop_loss_policy(
+            date_idx,
+            time_idx,
+            action,
+        )
+        self.position_maintenance_policy.reset(opening_position_mask)
 
         # Handle batches with existing positions
         if has_position_mask.any():
             maintenance_actions, maintenance_stops = self.position_maintenance_policy(
-                date_idx[has_position_mask],
-                time_idx[has_position_mask],
-                position[has_position_mask],
-                prev_stop[has_position_mask],
-                entry_price[has_position_mask],
-                torch.where(has_position_mask)[0],
+                date_idx, time_idx, position, prev_stop, entry_price
             )
             action[has_position_mask] = maintenance_actions
             stop_loss[has_position_mask] = maintenance_stops
@@ -248,17 +225,14 @@ class AlwaysOpenPolicy(nn.Module):
 
     def __init__(self, direction: int, batch_size: int, device: torch.device) -> None:
         super().__init__()
-        self.direction = direction
-        self._action = torch.full(
-            (batch_size,), direction, dtype=torch.int32, device=device
-        )
+        _ = batch_size
+        self.direction = torch.tensor(direction, dtype=torch.int32, device=device)
 
     def forward(
         self,
         date_idx: torch.Tensor,
         time_idx: torch.Tensor,
-        position: torch.Tensor,
-        batch_indices: torch.Tensor,
+        no_position_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
         Determine actions for opening new positions.
@@ -269,16 +243,16 @@ class AlwaysOpenPolicy(nn.Module):
             Batch of date indices
         time_idx : torch.Tensor
             Batch of time indices
-        position : torch.Tensor
-            Current positions for each batch element (0 = no position)
+        no_position_mask : torch.Tensor
+            Mask indicating which batch elements have no position (0 = no position)
 
         Returns
         -------
         action : torch.Tensor
             Actions to take (0 = no action, positive = buy, negative = sell)
         """
-        _, _, _ = date_idx, time_idx, batch_indices  # Unused in this policy
-        return self._action[batch_indices]
+        _, _ = date_idx, time_idx  # Unused in this policy
+        return no_position_mask * self.direction
 
 
 class OpenOncePolicy(nn.Module):
@@ -296,19 +270,14 @@ class OpenOncePolicy(nn.Module):
 
     def __init__(self, direction, batch_size, device) -> None:
         super().__init__()
-        self.direction = direction
+        self.direction = torch.tensor(direction, dtype=torch.int32, device=device)
         self.opened = torch.zeros((batch_size,), dtype=torch.bool, device=device)
-        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._direction = (
-            torch.ones(batch_size, dtype=torch.int32, device=device) * direction
-        )
 
     def forward(
         self,
         date_idx: torch.Tensor,
         time_idx: torch.Tensor,
-        position: torch.Tensor,
-        batch_indices: torch.Tensor,
+        no_position_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
         Determine actions for opening new positions.
@@ -319,8 +288,8 @@ class OpenOncePolicy(nn.Module):
             Batch of date indices
         time_idx : torch.Tensor
             Batch of time indices
-        position : torch.Tensor
-            Current positions for each batch element (0 = no position)
+        no_position_mask : torch.Tensor
+            Mask indicating which batch elements have no position (0 = no position)
 
         Returns
         -------
@@ -329,12 +298,10 @@ class OpenOncePolicy(nn.Module):
         """
         _, _ = date_idx, time_idx  # Unused in this policy
 
-        zero = self._zero[batch_indices]
-        direction = self._direction[batch_indices]
-        action = torch.where(self.opened[batch_indices], zero, direction)
-        self.opened[batch_indices] = True
+        open_mask = no_position_mask & ~self.opened
+        self.opened = self.opened | open_mask
 
-        return action
+        return open_mask * self.direction
 
 
 class AlwaysFalseDonePolicy(TradingDonePolicy):
@@ -457,7 +424,9 @@ class ArtrStopLossPolicy(nn.Module):
         # Replace NaN values in prev_stop with infinity (negative for long positions,
         # positive for short positions) to ensure proper stop loss initialization
         prev_stop = torch.where(
-            torch.isnan(prev_stop), torch.inf * direction * -1, prev_stop
+            torch.isnan(prev_stop) & (direction != 0),
+            torch.inf * direction * -1,
+            prev_stop,
         )
 
         # Relative ATR multiplier for stop loss levels
@@ -474,7 +443,9 @@ class ArtrStopLossPolicy(nn.Module):
             torch.maximum(prev_stop, reference_price / artr),
             torch.minimum(prev_stop, reference_price * artr),
         )
-        stop_price = torch.where(torch.isnan(stop_price), prev_stop, stop_price)
+        stop_price = torch.where(
+            torch.isnan(stop_price) | (direction == 0), prev_stop, stop_price
+        )
 
         return stop_price
 
@@ -500,12 +471,10 @@ class InitialArtrStopLossPolicy(nn.Module):
     ) -> None:
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
-        self.dtype = instrument_data.data.dtype
+        dtype = instrument_data.data.dtype
         device = instrument_data.device
         self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._nan = torch.full(
-            (batch_size,), float("nan"), dtype=self.dtype, device=device
-        )
+        self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
 
     def forward(
         self, date_idx: torch.Tensor, time_idx: torch.Tensor, action: torch.Tensor
@@ -527,10 +496,7 @@ class InitialArtrStopLossPolicy(nn.Module):
         stop_loss : torch.Tensor
             Stop loss price levels
         """
-        size = action.shape[0]
-        zero = self._zero[:size]
-        nan_prev = self._nan[:size]
-        return self.artr_policy(date_idx, time_idx, zero, action, nan_prev)
+        return self.artr_policy(date_idx, time_idx, self._zero, action, self._nan)
 
 
 class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
@@ -594,6 +560,22 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 for config in self.derived_configs
             ]
 
+        date_idx_base = torch.arange(
+            self.derived_data[0].data.size(0), device=instrument_data.device
+        )
+        time_idx_base = torch.arange(
+            self.derived_data[0].data.size(1), device=instrument_data.device
+        )
+        date_idx = repeat(date_idx_base, "d -> d t", t=time_idx_base.size(0))
+        time_idx = repeat(time_idx_base, "t -> d t", d=date_idx_base.size(0))
+
+        self.converted_indices = [
+            self.derived_data[s].convert_indices(
+                self.derived_data[0], date_idx, time_idx
+            )
+            for s in range(len(self.derived_data))
+        ]
+
         self.artr_policies = [
             ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data
         ]
@@ -608,6 +590,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         )
         self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._stop = torch.empty(batch_size, dtype=dtype, device=device)
+        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
 
     def reset(self, mask: torch.Tensor) -> None:
         """
@@ -616,8 +600,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         Args:
             mask (torch.Tensor): A boolean tensor where True indicates batches to reset.
         """
-        self.stage[mask] = 0
-        self.base_price[mask] = float("nan")
+        self.stage = torch.where(mask, self._zero, self.stage)
+        self.base_price = torch.where(mask, self._nan, self.base_price)
 
     def forward(
         self,
@@ -626,109 +610,81 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
-        batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute actions using scaled ARTR policy."""
-        if batch_indices.max() >= self.stage.shape[0]:
-            raise ValueError("Batch indices out of range.")
 
-        # Initialize outputs in-place
-        batch_len = position.shape[0]
-        action = self._action[:batch_len]
-        stop_loss = self._stop[:batch_len]
-        action.zero_()
-        stop_loss.copy_(prev_stop)
+        # Initialize outputs
+        action = self._action
+        stop_loss = prev_stop.clone()
 
         # Extract current state for the subset
-        current_stage = self.stage[batch_indices]
-        current_base_price = self.base_price[batch_indices]
+        has_position_mask = position != 0
+        current_stage = self.stage
+        current_base_price = self.base_price.clone()
 
         # Set base_price
-        nan_base_mask = torch.isnan(current_base_price)
+        nan_base_mask = torch.isnan(self.base_price) & has_position_mask
         if self.wait_for_breakeven:
-            self.base_price[batch_indices[nan_base_mask]] = entry_price[nan_base_mask]
-            current_base_price[nan_base_mask] = entry_price[nan_base_mask]
+            current_base_price = torch.where(
+                nan_base_mask, entry_price, current_base_price
+            )
         else:
-            finite_prev_stop = ~torch.isnan(prev_stop) & ~torch.isinf(prev_stop)
+            finite_prev_stop = torch.isfinite(prev_stop)
             set_mask = nan_base_mask & finite_prev_stop
-            self.base_price[batch_indices[set_mask]] = prev_stop[set_mask]
-            current_base_price[set_mask] = prev_stop[set_mask]
+            current_base_price = torch.where(set_mask, prev_stop, current_base_price)
 
         # Handle stage 0
         stage0_mask = current_stage == 0
-        if stage0_mask.any():
-            if self.wait_for_breakeven:
-                subset_date_idx = date_idx[stage0_mask]
-                subset_time_idx = time_idx[stage0_mask]
-                subset_position = position[stage0_mask]
-                subset_stop_loss = stop_loss[stage0_mask]
-                subset_entry_price = entry_price[stage0_mask]
-                zero_buf = self._action[: subset_position.shape[0]]
-                zero_buf.zero_()
-                potential_stop = self.artr_policies[0](
-                    subset_date_idx,
-                    subset_time_idx,
-                    subset_position,
-                    zero_buf,
-                    subset_stop_loss,
-                )
-                improve_mask_subset = (subset_position > 0) & (
-                    potential_stop > subset_entry_price
-                ) | (subset_position < 0) & (potential_stop < subset_entry_price)
-                stop_loss[stage0_mask] = torch.where(
-                    improve_mask_subset, potential_stop, subset_stop_loss
-                )
-                current_stage[stage0_mask] = torch.where(
-                    improve_mask_subset,
-                    torch.tensor(1, dtype=torch.long, device=self.stage.device),
-                    current_stage[stage0_mask],
-                )
-            else:
-                current_stage[stage0_mask] = 1
+        if self.wait_for_breakeven:
+            potential_stop = self.artr_policies[0](
+                date_idx,
+                time_idx,
+                position * stage0_mask,
+                self._zero,
+                stop_loss,
+            )
+            improve_mask_subset = stage0_mask & (
+                (position > 0) & (potential_stop > entry_price)
+                | (position < 0) & (potential_stop < entry_price)
+            )
+            stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
+            current_stage = torch.where(improve_mask_subset, 1, current_stage)
+        else:
+            current_stage = torch.where(
+                stage0_mask & has_position_mask, 1, current_stage
+            )
 
         # Handle stages > 0
         for s in range(1, self.stage_count):
             stage_mask = current_stage == s
-            if stage_mask.any():
-                subset_date_idx = date_idx[stage_mask]
-                subset_time_idx = time_idx[stage_mask]
-                subset_date_idx, subset_time_idx = self.derived_data[s].convert_indices(
-                    self.derived_data[0], subset_date_idx, subset_time_idx
-                )
-                subset_position = position[stage_mask]
-                subset_stop_loss = stop_loss[stage_mask]
-                subset_base_price = current_base_price[stage_mask]
-                zero_buf = self._action[: subset_position.shape[0]]
-                zero_buf.zero_()
-                potential_stop = self.artr_policies[s](
-                    subset_date_idx,
-                    subset_time_idx,
-                    subset_position,
-                    zero_buf,
-                    subset_stop_loss,
-                )
-                improvement = torch.where(
-                    subset_position > 0,
-                    potential_stop - subset_stop_loss,
-                    subset_stop_loss - potential_stop,
-                )
-                min_improvement = self.minimum_improvement * torch.abs(
-                    subset_base_price - subset_stop_loss
-                )
-                improve_mask_subset = improvement > min_improvement
-                stop_loss[stage_mask] = torch.where(
-                    improve_mask_subset, potential_stop, subset_stop_loss
-                )
-                if s < self.stage_count - 1:
-                    current_stage[stage_mask] = torch.where(
-                        improve_mask_subset,
-                        torch.tensor(s + 1, dtype=torch.long, device=self.stage.device),
-                        current_stage[stage_mask],
-                    )
+            conv_date_idx = self.converted_indices[s][0][date_idx, time_idx]
+            conv_time_idx = self.converted_indices[s][1][date_idx, time_idx]
+            potential_stop = self.artr_policies[s](
+                conv_date_idx,
+                conv_time_idx,
+                position * stage_mask,
+                self._zero,
+                stop_loss,
+            )
+            improvement = torch.where(
+                position > 0,
+                potential_stop - stop_loss,
+                stop_loss - potential_stop,
+            )
+            min_improvement = self.minimum_improvement * torch.abs(
+                current_base_price - stop_loss
+            )
+            improve_mask_subset = stage_mask & (improvement > min_improvement)
+            stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
+            current_stage[stage_mask] = torch.where(
+                improve_mask_subset & (s < self.stage_count - 1),
+                s + 1,
+                current_stage[stage_mask],
+            )
 
         # Update the full state with the modified subset
-        self.stage[batch_indices] = current_stage
-        self.base_price[batch_indices] = current_base_price
+        self.stage = current_stage
+        self.base_price = current_base_price
 
         return action, stop_loss
 
@@ -814,6 +770,10 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         )
         self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._stop = torch.empty(batch_size, dtype=dtype, device=device)
+        self._initial_stage = torch.full(
+            (batch_size,), initial_stage, dtype=torch.long, device=device
+        )
+        self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
 
     def reset(self, mask: torch.Tensor) -> None:
         """
@@ -822,9 +782,8 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         Args:
             mask (torch.Tensor): Boolean tensor where True indicates batches to reset.
         """
-        initial_stage = 1 if self.skip_stage1 else 0
-        self.stage[mask] = initial_stage
-        self.anchor[mask] = float("nan")
+        self.stage = torch.where(mask, self._initial_stage, self.stage)
+        self.anchor = torch.where(mask, self._nan, self.anchor)
 
     def forward(
         self,
@@ -833,104 +792,93 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         position: torch.Tensor,
         prev_stop: torch.Tensor,
         entry_price: torch.Tensor,
-        batch_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute actions using percent gain policy."""
-        if batch_indices.max() >= self.stage.shape[0]:
-            raise ValueError("Batch indices out of range.")
 
         # Initialize outputs without allocation
-        batch_len = position.shape[0]
-        action = self._action[:batch_len]
-        stop_loss = self._stop[:batch_len]
-        action.zero_()
-        stop_loss.copy_(prev_stop)
+        action = self._action
+        stop_loss = prev_stop.clone()
 
         # Get current state for the batch
-        current_stage = self.stage[batch_indices]
+        has_position_mask = position != 0
+        current_stage = self.stage.clone()
 
         # Set anchor for certain anchor_types on first call
-        first_call_mask = torch.isnan(self.anchor[batch_indices])
-        set_anchor_mask = first_call_mask & (
-            self.anchor_type in ["entry", "initial_stop", "artificial"]
-        )
-        if set_anchor_mask.any():
-            subset = set_anchor_mask
-            indices = batch_indices[subset]
-            if self.anchor_type == "entry":
-                self.anchor[indices] = entry_price[subset]
-            elif self.anchor_type == "initial_stop":
-                self.anchor[indices] = prev_stop[subset]
-            elif self.anchor_type == "artificial":
-                reference_channel = torch.where(
-                    position[subset] > 0, 1, 2
-                )  # 1 for high, 2 for low
-                reference_price = self.instrument_data.data[
-                    date_idx[subset], time_idx[subset], reference_channel
-                ]
-                self.anchor[indices] = (
-                    prev_stop[subset] - self.keep_percent * reference_price
-                ) / (1 - self.keep_percent)
+        first_call_mask = torch.isnan(self.anchor) & has_position_mask
+        if self.anchor_type == "entry":
+            self.anchor = torch.where(first_call_mask, entry_price, self.anchor)
+        elif self.anchor_type == "initial_stop":
+            self.anchor = torch.where(first_call_mask, prev_stop, self.anchor)
+        elif self.anchor_type == "artificial":
+            reference_channel = torch.where(position > 0, 1, 2)  # 1 for high, 2 for low
+            reference_price = self.instrument_data.data[
+                date_idx, time_idx, reference_channel
+            ]
+            self.anchor = torch.where(
+                first_call_mask,
+                (prev_stop - self.keep_percent * reference_price)
+                / (1 - self.keep_percent),
+                self.anchor,
+            )
 
         # Stage 1: ATR-based waiting period
-        stage1_mask = current_stage == 0
-        if stage1_mask.any():
-            subset = stage1_mask
-            indices = batch_indices[subset]
-            zero_buf = self._action[: position[subset].shape[0]]
-            zero_buf.zero_()
-            atr_stop = self.artr_policy(
-                date_idx[subset],
-                time_idx[subset],
-                position[subset],
-                zero_buf,
-                prev_stop[subset],
+        stage1_mask = (current_stage == 0) & has_position_mask
+        atr_stop = self.artr_policy(
+            date_idx,
+            time_idx,
+            position * stage1_mask,
+            action,
+            prev_stop,
+        )
+        move_to_stage2 = stage1_mask & (
+            (position > 0) & (atr_stop > entry_price)
+            | (position < 0) & (atr_stop < entry_price)
+        )
+
+        if self.anchor_type == "last_stage1_stop":
+            self.anchor = torch.where(move_to_stage2, atr_stop, self.anchor)
+        elif self.anchor_type == "artificial_stage2":
+            reference_channel = torch.where(position > 0, 1, 2)
+            reference_price = self.instrument_data.data[
+                date_idx,
+                time_idx,
+                reference_channel,
+            ]
+            self.anchor = torch.where(
+                move_to_stage2,
+                (atr_stop - self.keep_percent * reference_price)
+                / (1 - self.keep_percent),
+                self.anchor,
             )
-            move_to_stage2 = (position[subset] > 0) & (
-                atr_stop > entry_price[subset]
-            ) | (position[subset] < 0) & (atr_stop < entry_price[subset])
-            if move_to_stage2.any():
-                move_indices = indices[move_to_stage2]
-                if self.anchor_type == "last_stage1_stop":
-                    self.anchor[move_indices] = atr_stop[move_to_stage2]
-                elif self.anchor_type == "artificial_stage2":
-                    reference_channel = torch.where(
-                        position[subset][move_to_stage2] > 0, 1, 2
-                    )
-                    reference_price = self.instrument_data.data[
-                        date_idx[subset][move_to_stage2],
-                        time_idx[subset][move_to_stage2],
-                        reference_channel,
-                    ]
-                    self.anchor[move_indices] = (
-                        atr_stop[move_to_stage2] - self.keep_percent * reference_price
-                    ) / (1 - self.keep_percent)
-                self.stage[move_indices] = 1
-            if self.trailing_stop:
-                stop_loss[subset] = atr_stop
+
+        self.stage = torch.where(move_to_stage2, 1, current_stage)
+
+        if self.trailing_stop:
+            stop_loss = torch.where(stage1_mask, atr_stop, stop_loss)
 
         # Stage 2: Percent-based stop-loss
         stage2_mask = current_stage == 1
-        if stage2_mask.any():
-            subset = stage2_mask
-            indices = batch_indices[subset]
-            anchor = self.anchor[indices]
-            # Use high for long, low for short as reference price
-            reference_channel = torch.where(position[subset] > 0, 1, 2)
-            reference_price = self.instrument_data.data[
-                date_idx[subset], time_idx[subset], reference_channel
-            ]
-            # Calculate candidate stop-loss
-            candidate_stop_loss = torch.where(
-                position[subset] > 0,
-                anchor + self.keep_percent * (reference_price - anchor),
-                anchor - self.keep_percent * (anchor - reference_price),
-            )
-            # Ensure stop-loss only tightens (trailing stop behavior)
-            stop_loss[subset] = torch.where(
-                position[subset] > 0,
-                torch.maximum(prev_stop[subset], candidate_stop_loss),
-                torch.minimum(prev_stop[subset], candidate_stop_loss),
-            )
+        anchor = self.anchor
+        # Use high for long, low for short as reference price
+        reference_channel = torch.where(position > 0, 1, 2)
+        reference_price = self.instrument_data.data[
+            date_idx, time_idx, reference_channel
+        ]
+        # Calculate candidate stop-loss
+        candidate_stop_loss = torch.where(
+            position > 0,
+            torch.maximum(
+                prev_stop, anchor + self.keep_percent * (reference_price - anchor)
+            ),
+            torch.minimum(
+                prev_stop, anchor - self.keep_percent * (anchor - reference_price)
+            ),
+        )
+        # Ensure stop-loss only tightens (trailing stop behavior)
+        stop_loss = torch.where(
+            stage2_mask,
+            candidate_stop_loss,
+            stop_loss,
+        )
 
         return action, stop_loss
