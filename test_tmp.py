@@ -271,8 +271,12 @@ from rich.table import Table
 
 
 def make_table(
-    data_tensor, date_idx, time_idx, maintenance_policy, stop_loss, total_profit
+    data_tensor, date_idx_t, time_idx_t, maintenance_policy, stop_loss_t, total_profit
 ):
+    idx = total_profit.argmax()
+    date_idx = date_idx_t[idx].item()
+    time_idx = time_idx_t[idx].item()
+    stop_loss = stop_loss_t[idx].item()
     ord_date = data_tensor[date_idx, time_idx, 2].to(torch.int64).item()
     time_seconds = data_tensor[date_idx, time_idx, 3].to(torch.int64).item()
     stage_str = (
@@ -334,7 +338,7 @@ env = ifera.SingleMarketEnv(
     device=torch.device("cuda:0"),
     dtype=torch.float32,
 )
-batch_size = env.instrument_data.data.shape[0] - 250
+batch_size = 10  # env.instrument_data.data.shape[0] - 250
 
 openPolicy = ifera.OpenOncePolicy(direction=1, batch_size=batch_size, device=env.device)
 initStopPolicy = ifera.InitialArtrStopLossPolicy(
