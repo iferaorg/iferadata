@@ -192,12 +192,11 @@ class TradingPolicy(nn.Module):
         self.position_maintenance_policy.reset(opening_position_mask)
 
         # Handle batches with existing positions
-        if has_position_mask.any():
-            maintenance_actions, maintenance_stops = self.position_maintenance_policy(
-                date_idx, time_idx, position, prev_stop, entry_price
-            )
-            action[has_position_mask] = maintenance_actions
-            stop_loss[has_position_mask] = maintenance_stops
+        maintenance_actions, maintenance_stops = self.position_maintenance_policy(
+            date_idx, time_idx, position, prev_stop, entry_price
+        )
+        action = torch.where(has_position_mask, maintenance_actions, action)
+        stop_loss = torch.where(has_position_mask, maintenance_stops, stop_loss)
 
         done = self.trading_done_policy(
             date_idx, time_idx, position, prev_stop, entry_price
@@ -325,7 +324,7 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
     ) -> torch.Tensor:
         """Return ``False`` for all batches."""
         _ = date_idx, time_idx, position, prev_stop, entry_price
-        return self._false[: position.shape[0]]
+        return self._false
 
 
 class SingleTradeDonePolicy(TradingDonePolicy):
@@ -338,7 +337,7 @@ class SingleTradeDonePolicy(TradingDonePolicy):
 
     def reset(self, mask: torch.Tensor) -> None:
         """Reset internal state for the selected batch elements."""
-        self.had_position[mask] = False
+        self.had_position = torch.where(mask, False, self.had_position)
 
     def forward(
         self,
@@ -350,9 +349,8 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     ) -> torch.Tensor:
         """Return True when position was open and is now zero."""
         _ = date_idx, time_idx, prev_stop, entry_price
-        indices = self._indices[: position.shape[0]]
-        done = (position == 0) & self.had_position[indices]
-        self.had_position[indices] |= position != 0
+        done = (position == 0) & self.had_position
+        self.had_position = torch.where(position != 0, True, self.had_position)
         return done
 
 
@@ -678,10 +676,10 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 stage_mask & (improvement > min_improvement) & (conv_date_idx >= 0)
             )
             stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
-            current_stage[stage_mask] = torch.where(
+            current_stage = torch.where(
                 improve_mask_subset & (s < self.stage_count - 1),
                 s + 1,
-                current_stage[stage_mask],
+                current_stage,
             )
 
         # Update the full state with the modified subset
