@@ -5,11 +5,62 @@ from __future__ import annotations
 from typing import Optional
 
 import torch
+import datetime as dt
+from rich.live import Live
+from rich.table import Table
 
 from .config import BaseInstrumentConfig
 from .data_models import DataManager, InstrumentData
 from .market_simulator import MarketSimulatorIntraday
 from .policies import TradingPolicy
+
+
+def make_table(
+    data_tensor, date_idx_t, time_idx_t, maintenance_policy, stop_loss_t, total_profit_t, entry_price, steps, contract_multiplier
+):
+    cost_basis_t = entry_price.nan_to_num(1) * contract_multiplier
+    profit_perc_t = (total_profit_t / cost_basis_t) * 100
+    idx = profit_perc_t.argmax()
+    date_idx = date_idx_t[idx].item()
+    time_idx = time_idx_t[idx].item()
+    stop_loss = stop_loss_t[idx].nan_to_num().item()
+    profit_perc = profit_perc_t[idx].item()
+    ord_date = data_tensor[date_idx, time_idx, 2].to(torch.int64).item()
+    time_seconds = data_tensor[date_idx, time_idx, 3].to(torch.int64).item()
+    stage_str = (
+        maintenance_policy.derived_configs[maintenance_policy.stage[idx]].interval
+        if maintenance_policy.stage.shape[0] > 0
+        else "N/A"
+    )
+    current_high = data_tensor[date_idx, time_idx, 5].item()
+    current_low = data_tensor[date_idx, time_idx, 6].item()
+    total_profit = total_profit_t[idx].item()
+    date_str = dt.date.fromordinal(ord_date).strftime("%Y-%m-%d")
+    time_str = f"{time_seconds // 3600:02}:{(time_seconds % 3600) // 60:02}:{time_seconds % 60:02}"
+    ord_date = f"{date_str} {time_str}"
+    table = Table(title=f"Simulation Status for batch ID {idx} on {ord_date}", show_lines=False)
+
+    table.add_column("Steps", justify="right", style="white")
+    table.add_column("Stage", justify="right", style="cyan")
+    table.add_column("Current High", justify="right", style="green")
+    table.add_column("Current Low", justify="right", style="yellow")
+    table.add_column("Stop Loss", justify="right", style="yellow")
+    table.add_column("Profit", justify="right", style="magenta")
+    table.add_column("Profit %", justify="right", style="magenta")
+
+    table.add_row(
+        f"{steps}",
+        stage_str,
+        f"{current_high:.2f}",
+        f"{current_low:.2f}",
+        f"{stop_loss:.2f}",
+        f"{total_profit:.2f}",
+        f"{profit_perc:.2f}%",
+    )
+
+    return table
+
+
 
 
 class SingleMarketEnv:
@@ -73,7 +124,7 @@ class SingleMarketEnv:
                 torch.ones(batch_size, dtype=torch.bool, device=self.device)
             )
 
-    @torch.compile(mode="max-autotune")
+    #@torch.compile(mode="max-autotune")
     def step(self, trading_policy: TradingPolicy):
         """Run one simulation step using ``trading_policy``."""
 
@@ -144,4 +195,69 @@ class SingleMarketEnv:
 
             if self.done.all() or (max_steps is not None and steps >= max_steps):
                 break
+        return self.total_profit.clone()
+
+    def rollout_with_display(
+        self,
+        trading_policy: TradingPolicy,
+        start_date_idx: torch.Tensor,
+        start_time_idx: torch.Tensor,
+        max_steps: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
+
+        self.reset(start_date_idx, start_time_idx, trading_policy)
+        contract_multiplier = self.instrument_data.instrument.contract_multiplier
+        steps = 0
+        with Live(
+            make_table(
+                self.instrument_data.data_full,
+                self.date_idx,
+                self.time_idx,
+                trading_policy.position_maintenance_policy,
+                self.prev_stop_loss,
+                self.total_profit,
+                self.entry_price,
+                steps,
+                contract_multiplier
+            ),
+            refresh_per_second=4,
+        ) as live:
+            while True:
+                #torch.compiler.cudagraph_mark_step_begin()
+                (
+                    profit,
+                    new_position,
+                    next_date_idx,
+                    next_time_idx,
+                    entry_price,
+                    stop_loss,
+                    done,
+                ) = self.step(trading_policy)
+
+                self.position = new_position.clone()
+                self.date_idx = next_date_idx.clone()
+                self.time_idx = next_time_idx.clone()
+                self.entry_price = entry_price.clone()
+                self.prev_stop_loss = stop_loss.clone()
+                self.total_profit = self.total_profit + profit
+                self.done = self.done | done
+                steps += 1
+
+                live.update(
+                    make_table(
+                        self.instrument_data.data_full,
+                        self.date_idx,
+                        self.time_idx,
+                        trading_policy.position_maintenance_policy,
+                        self.prev_stop_loss,
+                        self.total_profit,
+                        self.entry_price,
+                        steps,
+                        contract_multiplier
+                    )
+                )
+
+                if self.done.all() or (max_steps is not None and steps >= max_steps):
+                    break
         return self.total_profit.clone()
