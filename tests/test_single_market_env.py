@@ -36,7 +36,8 @@ class DummyData:
 
 
 class DummyInitialStopLoss(torch.nn.Module):
-    def forward(self, date_idx, time_idx, action):
+    def forward(self, date_idx, time_idx, position, action, prev_stop):
+        _ = position, prev_stop
         return torch.zeros_like(action, dtype=torch.float32)
 
 
