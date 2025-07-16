@@ -338,7 +338,7 @@ env = ifera.SingleMarketEnv(
     device=torch.device("cuda:0"),
     dtype=torch.float32,
 )
-batch_size = 10  # env.instrument_data.data.shape[0] - 250
+batch_size = 50 # env.instrument_data.data.shape[0] - 250
 
 openPolicy = ifera.OpenOncePolicy(direction=1, batch_size=batch_size, device=env.device)
 initStopPolicy = ifera.InitialArtrStopLossPolicy(
@@ -371,8 +371,11 @@ print(f"Starting simulation for {symbol}")
 t = time.time()
 
 total_profit = env.rollout(
-    trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx
+    trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx, max_steps=2000
 )
+# total_profit = env.rollout_with_display(
+#     trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx, max_steps=2000
+# )
 
 print(f"Simulation completed in {time.time() - t:.2f} seconds.")
 
