@@ -19,8 +19,13 @@ class PositionMaintenancePolicy(nn.Module, ABC):
     """Abstract base class for position maintenance policies."""
 
     @abstractmethod
-    def reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, mask: torch.Tensor) -> None:
         """Reset the policy's state for the specified batch elements."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Reset the entire policy state."""
         raise NotImplementedError
 
     @abstractmethod
@@ -112,8 +117,14 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self._stop = torch.empty(batch_size, dtype=dtype, device=device)
         self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        self.reset()
 
-    def reset(self, mask: torch.Tensor) -> None:
+    def reset(self) -> None:
+        """Fully reset internal stage and base price."""
+        self.stage = self._zero.clone()
+        self.base_price = self._nan.clone()
+
+    def masked_reset(self, mask: torch.Tensor) -> None:
         self.stage = torch.where(mask, self._zero, self.stage)
         self.base_price = torch.where(mask, self._nan, self.base_price)
 
@@ -256,8 +267,14 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             (batch_size,), initial_stage, dtype=torch.long, device=device
         )
         self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        self.reset()
 
-    def reset(self, mask: torch.Tensor) -> None:
+    def reset(self) -> None:
+        """Fully reset stage and anchor state."""
+        self.stage = self._initial_stage.clone()
+        self.anchor = self._nan.clone()
+
+    def masked_reset(self, mask: torch.Tensor) -> None:
         self.stage = torch.where(mask, self._initial_stage, self.stage)
         self.anchor = torch.where(mask, self._nan, self.anchor)
 

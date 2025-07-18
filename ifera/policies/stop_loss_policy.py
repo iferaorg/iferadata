@@ -14,6 +14,11 @@ class StopLossPolicy(nn.Module, ABC):
     """Abstract base class for stop loss policies."""
 
     @abstractmethod
+    def reset(self) -> None:
+        """Reset policy state."""
+        raise NotImplementedError
+
+    @abstractmethod
     def forward(
         self,
         date_idx: torch.Tensor,
@@ -41,6 +46,11 @@ class ArtrStopLossPolicy(StopLossPolicy):
         self.atr_multiple = atr_multiple
         if len(instrument_data.artr) == 0:
             instrument_data.calculate_artr(alpha=alpha, acrossday=acrossday)
+        self.reset()
+
+    def reset(self) -> None:
+        """ArtrStopLossPolicy does not maintain state."""
+        return None
 
     def forward(
         self,
@@ -89,6 +99,11 @@ class InitialArtrStopLossPolicy(StopLossPolicy):
         device = instrument_data.device
         self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        self.reset()
+
+    def reset(self) -> None:
+        """InitialArtrStopLossPolicy holds no state to reset."""
+        return None
 
     def forward(
         self,

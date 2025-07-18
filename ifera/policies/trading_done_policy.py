@@ -12,8 +12,13 @@ class TradingDonePolicy(nn.Module, ABC):
     """Abstract base class for trading done policies."""
 
     @abstractmethod
-    def reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, mask: torch.Tensor) -> None:
         """Reset the policy's state for the specified batch elements."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Fully reset the policy state."""
         raise NotImplementedError
 
     @abstractmethod
@@ -35,8 +40,13 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
         self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        self.reset()
 
-    def reset(self, mask: torch.Tensor) -> None:
+    def reset(self) -> None:
+        """No internal state to reset."""
+        return None
+
+    def masked_reset(self, mask: torch.Tensor) -> None:
         return None
 
     def forward(
@@ -58,8 +68,13 @@ class SingleTradeDonePolicy(TradingDonePolicy):
         super().__init__()
         self.had_position = torch.zeros(batch_size, dtype=torch.bool, device=device)
         self._indices = torch.arange(batch_size, device=device)
+        self.reset()
 
-    def reset(self, mask: torch.Tensor) -> None:
+    def reset(self) -> None:
+        """Reset ``had_position`` for all batches."""
+        self.had_position = torch.zeros_like(self.had_position)
+
+    def masked_reset(self, mask: torch.Tensor) -> None:
         self.had_position = torch.where(mask, False, self.had_position)
 
     def forward(

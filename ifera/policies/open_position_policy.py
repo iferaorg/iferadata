@@ -12,6 +12,11 @@ class OpenPositionPolicy(nn.Module, ABC):
     """Abstract base class for open position policies."""
 
     @abstractmethod
+    def reset(self) -> None:
+        """Reset any internal state held by the policy."""
+        raise NotImplementedError
+
+    @abstractmethod
     def forward(
         self,
         date_idx: torch.Tensor,
@@ -29,6 +34,11 @@ class AlwaysOpenPolicy(OpenPositionPolicy):
         super().__init__()
         _ = batch_size
         self.direction = torch.tensor(direction, dtype=torch.int32, device=device)
+        self.reset()
+
+    def reset(self) -> None:
+        """AlwaysOpenPolicy holds no state so nothing to reset."""
+        return None
 
     def forward(
         self,
@@ -47,6 +57,12 @@ class OpenOncePolicy(OpenPositionPolicy):
         super().__init__()
         self.direction = torch.tensor(direction, dtype=torch.int32, device=device)
         self.opened = torch.zeros((batch_size,), dtype=torch.bool, device=device)
+        self._zero = torch.zeros_like(self.opened)
+        self.reset()
+
+    def reset(self) -> None:
+        """Reset ``opened`` state to ``False`` for all batches."""
+        self.opened = self._zero.clone()
 
     def forward(
         self,
