@@ -18,24 +18,23 @@ from .stop_loss_policy import ArtrStopLossPolicy
 class PositionMaintenancePolicy(nn.Module, ABC):
     """Abstract base class for position maintenance policies."""
 
+    def __init__(self) -> None:
+        super().__init__()
+
     @abstractmethod
-    def masked_reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         """Reset the policy's state for the specified batch elements."""
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self) -> None:
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset the entire policy state."""
         raise NotImplementedError
 
     @abstractmethod
     def forward(
         self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
+        state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return action and stop loss tensors."""
         raise NotImplementedError
@@ -58,6 +57,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self.atr_multiple = atr_multiple
         self.wait_for_breakeven = wait_for_breakeven
         self.minimum_improvement = minimum_improvement
+        self.batch_size = batch_size
 
         cm = ConfigManager()
         dm = DataManager()
@@ -109,101 +109,88 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
         device = instrument_data.device
         dtype = instrument_data.dtype
-        self.stage = torch.zeros(batch_size, dtype=torch.long, device=device)
-        self.base_price = torch.full(
-            (batch_size,), float("nan"), dtype=dtype, device=device
-        )
         self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._stop = torch.empty(batch_size, dtype=dtype, device=device)
-        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._zero = torch.zeros(self.batch_size, dtype=torch.int32, device=device)
         self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
-        self.reset()
 
-    def reset(self) -> None:
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset internal stage and base price."""
-        self.stage = self._zero.clone()
-        self.base_price = self._nan.clone()
+        state["maint_stage"] = self._zero.clone()
+        state["base_price"] = self._nan.clone()
 
-    def masked_reset(self, mask: torch.Tensor) -> None:
-        self.stage = torch.where(mask, self._zero, self.stage)
-        self.base_price = torch.where(mask, self._nan, self.base_price)
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+        state["maint_stage"] = torch.where(mask, self._zero, state["maint_stage"])
+        state["base_price"] = torch.where(mask, self._nan, state["base_price"])
 
     def forward(
         self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
+        state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        action = self._action
-        stop_loss = prev_stop.clone()
-
+        action = self._action.clone()
+        date_idx = state["date_idx"]
+        time_idx = state["time_idx"]
+        entry_price = state["entry_price"]
+        stop_loss = state["prev_stop_loss"].clone()
+        position = state["position"]
+        base_price = state["base_price"]
+        stage = state["maint_stage"]
         has_position_mask = position != 0
-        current_stage = self.stage
-        current_base_price = self.base_price.clone()
 
-        nan_base_mask = torch.isnan(self.base_price) & has_position_mask
+        nan_base_mask = torch.isnan(base_price) & has_position_mask
         if self.wait_for_breakeven:
-            current_base_price = torch.where(
-                nan_base_mask, entry_price, current_base_price
-            )
+            base_price = torch.where(nan_base_mask, entry_price, base_price)
         else:
-            finite_prev_stop = torch.isfinite(prev_stop)
+            finite_prev_stop = torch.isfinite(stop_loss)
             set_mask = nan_base_mask & finite_prev_stop
-            current_base_price = torch.where(set_mask, prev_stop, current_base_price)
+            base_price = torch.where(set_mask, stop_loss, base_price)
 
-        stage0_mask = current_stage == 0
+        stage0_mask = stage == 0
         if self.wait_for_breakeven:
             potential_stop = self.artr_policies[0](
-                date_idx,
-                time_idx,
-                position * stage0_mask,
+                state,
                 self._zero,
-                stop_loss,
             )
             improve_mask_subset = stage0_mask & (
                 (position > 0) & (potential_stop > entry_price)
                 | (position < 0) & (potential_stop < entry_price)
             )
             stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
-            current_stage = torch.where(improve_mask_subset, 1, current_stage)
+            stage = torch.where(improve_mask_subset, 1, stage)
         else:
-            current_stage = torch.where(
-                stage0_mask & has_position_mask, 1, current_stage
-            )
+            stage = torch.where(stage0_mask & has_position_mask, 1, stage)
 
         for s in range(1, self.stage_count):
-            stage_mask = current_stage == s
+            stage_mask = stage == s
             conv_date_idx = self.converted_indices[s][0][date_idx, time_idx]
             conv_time_idx = self.converted_indices[s][1][date_idx, time_idx]
-            potential_stop = self.artr_policies[s](
-                conv_date_idx,
-                conv_time_idx,
-                position * stage_mask,
-                self._zero,
-                stop_loss,
-            )
+            conv_state = {
+                "date_idx": conv_date_idx,
+                "time_idx": conv_time_idx,
+                "position": position * stage_mask,
+                "prev_stop_loss": stop_loss,
+            }
+            potential_stop = self.artr_policies[s](conv_state, self._zero)
             improvement = torch.where(
                 position > 0,
                 potential_stop - stop_loss,
                 stop_loss - potential_stop,
             )
             min_improvement = self.minimum_improvement * torch.abs(
-                current_base_price - stop_loss
+                base_price - stop_loss
             )
             improve_mask_subset = (
                 stage_mask & (improvement > min_improvement) & (conv_date_idx >= 0)
             )
             stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
-            current_stage = torch.where(
+            stage = torch.where(
                 improve_mask_subset & (s < self.stage_count - 1),
                 s + 1,
-                current_stage,
+                stage,
             )
 
-        self.stage = current_stage
-        self.base_price = current_base_price
+        state["maint_stage"] = stage
+        state["base_price"] = base_price
 
         return action, stop_loss
 
@@ -255,61 +242,58 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         device = instrument_data.device
         dtype = instrument_data.dtype
         initial_stage = 1 if self.skip_stage1 else 0
-        self.stage = torch.full(
-            (batch_size,), initial_stage, dtype=torch.long, device=device
-        )
-        self.anchor = torch.full(
-            (batch_size,), float("nan"), dtype=dtype, device=device
-        )
         self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._stop = torch.empty(batch_size, dtype=dtype, device=device)
         self._initial_stage = torch.full(
             (batch_size,), initial_stage, dtype=torch.long, device=device
         )
         self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
-        self.reset()
 
-    def reset(self) -> None:
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset stage and anchor state."""
-        self.stage = self._initial_stage.clone()
-        self.anchor = self._nan.clone()
+        state["maint_stage"] = self._initial_stage.clone()
+        state["maint_anchor"] = self._nan.clone()
 
-    def masked_reset(self, mask: torch.Tensor) -> None:
-        self.stage = torch.where(mask, self._initial_stage, self.stage)
-        self.anchor = torch.where(mask, self._nan, self.anchor)
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+        state["maint_stage"] = torch.where(
+            mask, self._initial_stage, state["maint_stage"]
+        )
+        state["maint_anchor"] = torch.where(mask, self._nan, state["maint_anchor"])
 
     def forward(
         self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
+        state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         action = self._action
-        stop_loss = prev_stop.clone()
+        stop_loss = state["prev_stop"].clone()
+        position = state["position"]
+        entry_price = state["entry_price"]
+        prev_stop = state["prev_stop"]
+        date_idx = state["date_idx"]
+        time_idx = state["time_idx"]
+        anchor = state["maint_anchor"]
+        stage = state["maint_stage"]
 
         has_position_mask = position != 0
-        current_stage = self.stage.clone()
 
-        first_call_mask = torch.isnan(self.anchor) & has_position_mask
+        first_call_mask = torch.isnan(anchor) & has_position_mask
         if self.anchor_type == "entry":
-            self.anchor = torch.where(first_call_mask, entry_price, self.anchor)
+            anchor = torch.where(first_call_mask, entry_price, anchor)
         elif self.anchor_type == "initial_stop":
-            self.anchor = torch.where(first_call_mask, prev_stop, self.anchor)
+            anchor = torch.where(first_call_mask, prev_stop, anchor)
         elif self.anchor_type == "artificial":
             reference_channel = torch.where(position > 0, 1, 2)
             reference_price = self.instrument_data.data[
                 date_idx, time_idx, reference_channel
             ]
-            self.anchor = torch.where(
+            anchor = torch.where(
                 first_call_mask,
                 (prev_stop - self.keep_percent * reference_price)
                 / (1 - self.keep_percent),
-                self.anchor,
+                anchor,
             )
 
-        stage1_mask = (current_stage == 0) & has_position_mask
+        stage1_mask = (stage == 0) & has_position_mask
         atr_stop = self.artr_policy(
             date_idx, time_idx, position * stage1_mask, action, prev_stop
         )
@@ -319,26 +303,25 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         )
 
         if self.anchor_type == "last_stage1_stop":
-            self.anchor = torch.where(move_to_stage2, atr_stop, self.anchor)
+            anchor = torch.where(move_to_stage2, atr_stop, anchor)
         elif self.anchor_type == "artificial_stage2":
             reference_channel = torch.where(position > 0, 1, 2)
             reference_price = self.instrument_data.data[
                 date_idx, time_idx, reference_channel
             ]
-            self.anchor = torch.where(
+            anchor = torch.where(
                 move_to_stage2,
                 (atr_stop - self.keep_percent * reference_price)
                 / (1 - self.keep_percent),
-                self.anchor,
+                anchor,
             )
 
-        self.stage = torch.where(move_to_stage2, 1, current_stage)
+        stage = torch.where(move_to_stage2, 1, stage)
 
         if self.trailing_stop:
             stop_loss = torch.where(stage1_mask, atr_stop, stop_loss)
 
-        stage2_mask = current_stage == 1
-        anchor = self.anchor
+        stage2_mask = stage == 1
         reference_channel = torch.where(position > 0, 1, 2)
         reference_price = self.instrument_data.data[
             date_idx, time_idx, reference_channel
@@ -353,5 +336,8 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             ),
         )
         stop_loss = torch.where(stage2_mask, candidate_stop_loss, stop_loss)
+
+        state["maint_stage"] = stage
+        state["maint_anchor"] = anchor
 
         return action, stop_loss

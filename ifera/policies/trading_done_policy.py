@@ -11,24 +11,23 @@ from torch import nn
 class TradingDonePolicy(nn.Module, ABC):
     """Abstract base class for trading done policies."""
 
+    def __init__(self) -> None:
+        super().__init__()
+
     @abstractmethod
-    def masked_reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         """Reset the policy's state for the specified batch elements."""
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self) -> None:
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset the policy state."""
         raise NotImplementedError
 
     @abstractmethod
     def forward(
         self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
+        state: dict[str, torch.Tensor],
     ) -> torch.Tensor:
         """Return tensor indicating finished episodes."""
         raise NotImplementedError
@@ -40,24 +39,23 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
         self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
-        self.reset()
 
-    def reset(self) -> None:
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
         """No internal state to reset."""
+        _ = state
         return None
 
-    def masked_reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+        """No internal state to reset."""
+        _ = state
+        _ = mask
         return None
 
     def forward(
         self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
+        state: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        _ = date_idx, time_idx, position, prev_stop, entry_price
+        _ = state
         return self._false
 
 
@@ -68,24 +66,21 @@ class SingleTradeDonePolicy(TradingDonePolicy):
         super().__init__()
         self.had_position = torch.zeros(batch_size, dtype=torch.bool, device=device)
         self._indices = torch.arange(batch_size, device=device)
-        self.reset()
 
-    def reset(self) -> None:
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset ``had_position`` for all batches."""
-        self.had_position = torch.zeros_like(self.had_position)
+        state["had_position"] = torch.zeros_like(self.had_position)
 
-    def masked_reset(self, mask: torch.Tensor) -> None:
-        self.had_position = torch.where(mask, False, self.had_position)
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+        state["had_position"] = torch.where(mask, False, state["had_position"])
 
     def forward(
         self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
+        state: dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        _ = date_idx, time_idx, prev_stop, entry_price
-        done = (position == 0) & self.had_position
-        self.had_position = torch.where(position != 0, True, self.had_position)
+        position = state["position"]
+        had_position = state["had_position"]
+        done = (position == 0) & had_position
+        state["had_position"] = torch.where(position != 0, True, had_position)
+
         return done

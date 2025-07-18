@@ -129,40 +129,33 @@ class SingleMarketEnv:
             ),
             "done": torch.zeros(batch_size, dtype=torch.bool, device=self.device),
         }
-
-        if trading_policy is not None and hasattr(
-            trading_policy.trading_done_policy, "masked_reset"
-        ):
-            trading_policy.trading_done_policy.masked_reset(
-                torch.ones(batch_size, dtype=torch.bool, device=self.device)
-            )
+        if trading_policy is not None:
+            trading_policy.reset(self.state)
 
     # @torch.compile(mode="max-autotune")
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
         """Run one simulation step using ``trading_policy``."""
+        date_idx = state["date_idx"]
+        time_idx = state["time_idx"]
+        position = state["position"]
+        entry_price = state["entry_price"]
 
-        action, stop_loss, done = trading_policy(
-            state["date_idx"],
-            state["time_idx"],
-            state["position"],
-            state["prev_stop_loss"],
-            state["entry_price"],
-        )
+        action, stop_loss, done = trading_policy(state)
 
         next_date_idx, next_time_idx = self.instrument_data.get_next_indices(
-            state["date_idx"], state["time_idx"]
+            date_idx, time_idx
         )
-        next_date_idx = torch.where(done, state["date_idx"], next_date_idx)
-        next_time_idx = torch.where(done, state["time_idx"], next_time_idx)
+        next_date_idx = torch.where(done, date_idx, next_date_idx)
+        next_time_idx = torch.where(done, time_idx, next_time_idx)
         profit, new_position, execution_price, _ = self.market_simulator.calculate_step(
-            next_date_idx, next_time_idx, state["position"], action, stop_loss
+            next_date_idx, next_time_idx, position, action, stop_loss
         )
         profit = torch.where(done, torch.zeros_like(profit), profit)
-        new_position = torch.where(done, state["position"], new_position)
-        execution_price = torch.where(done, state["entry_price"], execution_price)
+        new_position = torch.where(done, position, new_position)
+        execution_price = torch.where(done, entry_price, execution_price)
 
-        entry_mask = (state["position"] == 0) & (new_position != 0)
-        entry_price = torch.where(entry_mask, execution_price, state["entry_price"])
+        entry_mask = (position == 0) & (new_position != 0)
+        entry_price = torch.where(entry_mask, execution_price, entry_price)
 
         return {
             "profit": profit,
@@ -184,17 +177,15 @@ class SingleMarketEnv:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
-        trading_policy.reset()
         steps = 0
         while True:
             torch.compiler.cudagraph_mark_step_begin()
             step_state = self.step(trading_policy, self.state)
 
-            self.state["position"] = step_state["position"].clone()
-            self.state["date_idx"] = step_state["date_idx"].clone()
-            self.state["time_idx"] = step_state["time_idx"].clone()
-            self.state["entry_price"] = step_state["entry_price"].clone()
-            self.state["prev_stop_loss"] = step_state["prev_stop_loss"].clone()
+            for key in step_state:
+                if key != "done" and key in self.state:
+                    self.state[key] = step_state[key].clone()
+
             self.state["total_profit"] = (
                 self.state["total_profit"] + step_state["profit"]
             )
@@ -217,7 +208,6 @@ class SingleMarketEnv:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
-        trading_policy.reset()
         contract_multiplier = self.instrument_data.instrument.contract_multiplier
         steps = 0
         with Live(
@@ -238,11 +228,10 @@ class SingleMarketEnv:
                 # torch.compiler.cudagraph_mark_step_begin()
                 step_state = self.step(trading_policy, self.state)
 
-                self.state["position"] = step_state["position"].clone()
-                self.state["date_idx"] = step_state["date_idx"].clone()
-                self.state["time_idx"] = step_state["time_idx"].clone()
-                self.state["entry_price"] = step_state["entry_price"].clone()
-                self.state["prev_stop_loss"] = step_state["prev_stop_loss"].clone()
+                for key in step_state:
+                    if key != "done":
+                        self.state[key] = step_state[key].clone()
+
                 self.state["total_profit"] = (
                     self.state["total_profit"] + step_state["profit"]
                 )
