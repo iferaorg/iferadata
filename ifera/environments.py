@@ -132,7 +132,7 @@ class SingleMarketEnv:
         if trading_policy is not None:
             trading_policy.reset(self.state)
 
-    # @torch.compile(mode="max-autotune")
+    @torch.compile(mode="max-autotune")
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
         """Run one simulation step using ``trading_policy``."""
         date_idx = state["date_idx"]
