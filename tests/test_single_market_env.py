@@ -137,8 +137,8 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     start_t = torch.tensor([0], dtype=torch.int32)
 
     result = env.rollout(trading_policy, start_d, start_t, max_steps=5)
-    assert env.done.item() is True
-    assert env.position.item() == 0
+    assert env.state["done"].item() is True
+    assert env.state["position"].item() == 0
     assert result.shape == (1,)
 
 
