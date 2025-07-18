@@ -131,9 +131,9 @@ class SingleMarketEnv:
         }
 
         if trading_policy is not None and hasattr(
-            trading_policy.trading_done_policy, "reset"
+            trading_policy.trading_done_policy, "masked_reset"
         ):
-            trading_policy.trading_done_policy.reset(
+            trading_policy.trading_done_policy.masked_reset(
                 torch.ones(batch_size, dtype=torch.bool, device=self.device)
             )
 
@@ -184,6 +184,7 @@ class SingleMarketEnv:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
+        trading_policy.reset()
         steps = 0
         while True:
             torch.compiler.cudagraph_mark_step_begin()
@@ -216,6 +217,7 @@ class SingleMarketEnv:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
+        trading_policy.reset()
         contract_multiplier = self.instrument_data.instrument.contract_multiplier
         steps = 0
         with Live(

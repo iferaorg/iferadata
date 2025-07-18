@@ -42,8 +42,11 @@ class DummyInitialStopLoss(torch.nn.Module):
 
 
 class DummyMaintenance(PositionMaintenancePolicy):
-    def reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, mask: torch.Tensor) -> None:
         pass
+
+    def reset(self) -> None:
+        return None
 
     def forward(
         self,
@@ -57,8 +60,11 @@ class DummyMaintenance(PositionMaintenancePolicy):
 
 
 class CloseAfterOneStep(PositionMaintenancePolicy):
-    def reset(self, mask: torch.Tensor) -> None:
+    def masked_reset(self, mask: torch.Tensor) -> None:
         pass
+
+    def reset(self) -> None:
+        return None
 
     def forward(
         self,
@@ -157,10 +163,12 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
             self.reset_called = False
             self.last_mask = torch.empty(0, dtype=torch.bool)
 
-        def reset(self, mask: torch.Tensor) -> None:  # pragma: no cover - simple flag
+        def masked_reset(
+            self, mask: torch.Tensor
+        ) -> None:  # pragma: no cover - simple flag
             self.reset_called = True
             self.last_mask = mask.clone()
-            super().reset(mask)
+            super().masked_reset(mask)
 
     done_policy = TrackingDonePolicy()
     trading_policy = TradingPolicy(

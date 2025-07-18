@@ -50,6 +50,18 @@ class TradingPolicy(BaseTradingPolicy):
         self.position_maintenance_policy = position_maintenance_policy
         self.trading_done_policy = trading_done_policy
         self._batch_size = batch_size
+        self.reset()
+
+    def reset(self) -> None:
+        """Reset all sub-policies to their initial state."""
+        if hasattr(self.open_position_policy, "reset"):
+            self.open_position_policy.reset()
+        if hasattr(self.initial_stop_loss_policy, "reset"):
+            self.initial_stop_loss_policy.reset()
+        if hasattr(self.position_maintenance_policy, "reset"):
+            self.position_maintenance_policy.reset()
+        if hasattr(self.trading_done_policy, "reset"):
+            self.trading_done_policy.reset()
 
     def forward(
         self,
@@ -69,7 +81,7 @@ class TradingPolicy(BaseTradingPolicy):
         stop_loss = self.initial_stop_loss_policy(
             date_idx, time_idx, position, action, prev_stop
         )
-        self.position_maintenance_policy.reset(opening_position_mask)
+        self.position_maintenance_policy.masked_reset(opening_position_mask)
 
         maintenance_actions, maintenance_stops = self.position_maintenance_policy(
             date_idx, time_idx, position, prev_stop, entry_price
