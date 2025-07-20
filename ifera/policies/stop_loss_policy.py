@@ -46,6 +46,8 @@ class ArtrStopLossPolicy(StopLossPolicy):
         self.atr_multiple = atr_multiple
         if len(instrument_data.artr) == 0:
             instrument_data.calculate_artr(alpha=alpha, acrossday=acrossday)
+        self._data = instrument_data.data
+        self._artr = instrument_data.artr
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """ArtrStopLossPolicy does not maintain state."""
@@ -69,12 +71,12 @@ class ArtrStopLossPolicy(StopLossPolicy):
             prev_stop,
         )
 
-        artr = self.idata.artr[date_idx, time_idx] * self.atr_multiple + 1.0
+        artr = self._artr[date_idx, time_idx] * self.atr_multiple + 1.0
 
         reference_channel = torch.where(
             position == 0, 3, torch.where(direction > 0, 1, 2)
         )
-        reference_price = self.idata.data[date_idx, time_idx, reference_channel]
+        reference_price = self._data[date_idx, time_idx, reference_channel]
 
         stop_price = torch.where(
             direction > 0,

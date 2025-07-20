@@ -233,6 +233,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             )
 
         self.instrument_data = instrument_data
+        self._data = instrument_data.data
         self.trailing_stop = trailing_stop
         self.skip_stage1 = skip_stage1
         self.keep_percent = keep_percent
@@ -283,9 +284,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             anchor = torch.where(first_call_mask, prev_stop, anchor)
         elif self.anchor_type == "artificial":
             reference_channel = torch.where(position > 0, 1, 2)
-            reference_price = self.instrument_data.data[
-                date_idx, time_idx, reference_channel
-            ]
+            reference_price = self._data[date_idx, time_idx, reference_channel]
             anchor = torch.where(
                 first_call_mask,
                 (prev_stop - self.keep_percent * reference_price)
@@ -306,9 +305,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             anchor = torch.where(move_to_stage2, atr_stop, anchor)
         elif self.anchor_type == "artificial_stage2":
             reference_channel = torch.where(position > 0, 1, 2)
-            reference_price = self.instrument_data.data[
-                date_idx, time_idx, reference_channel
-            ]
+            reference_price = self._data[date_idx, time_idx, reference_channel]
             anchor = torch.where(
                 move_to_stage2,
                 (atr_stop - self.keep_percent * reference_price)
@@ -323,9 +320,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
 
         stage2_mask = stage == 1
         reference_channel = torch.where(position > 0, 1, 2)
-        reference_price = self.instrument_data.data[
-            date_idx, time_idx, reference_channel
-        ]
+        reference_price = self._data[date_idx, time_idx, reference_channel]
         candidate_stop_loss = torch.where(
             position > 0,
             torch.maximum(

@@ -327,6 +327,7 @@ dm = ifera.DataManager()
 
 broker = cm.get_broker_config("IBKR")
 
+device = torch.device("cuda:0")
 symbol = "CL"
 iconfig = cm.get_base_instrument_config(symbol, "30m")
 
@@ -335,10 +336,16 @@ env = ifera.SingleMarketEnv(
     instrument_config=base_config,
     broker_name="IBKR",
     backadjust=True,
-    device=torch.device("cuda:0"),
+    device=device,
     dtype=torch.float32,
 )
 batch_size = env.instrument_data.data.shape[0] - 250
+
+date_idx = torch.arange(0, batch_size, dtype=torch.int32, device=env.device)
+time_idx = torch.zeros_like(date_idx, dtype=torch.int32, device=env.device)
+# date_idx = torch.tensor([env.instrument_data.data.shape[0] - 1], dtype=torch.int32, device=env.device)
+# time_idx = torch.tensor([env.instrument_data.data.shape[1] - 4], dtype=torch.int32, device=env.device)
+# batch_size = date_idx.shape[0]
 
 openPolicy = ifera.OpenOncePolicy(direction=1, batch_size=batch_size, device=env.device)
 initStopPolicy = ifera.InitialArtrStopLossPolicy(
@@ -364,18 +371,18 @@ tradingPolicy = ifera.TradingPolicy(
     batch_size=batch_size,
 )
 
-date_idx = torch.arange(0, batch_size, device=env.device, dtype=torch.int32)
-time_idx = torch.zeros_like(date_idx, dtype=torch.int32, device=env.device)
 
 print(f"Starting simulation for {symbol}")
 t = time.time()
 
 total_profit = env.rollout(
-    trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx, max_steps=10000
+    trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx
 )
 # total_profit = env.rollout_with_display(
 #     trading_policy=tradingPolicy, start_date_idx=date_idx, start_time_idx=time_idx, max_steps=2000
 # )
+
+profit_perc = env.state["total_profit"] / (env.state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
 
 print(f"Simulation completed in {time.time() - t:.2f} seconds.")
 
@@ -383,3 +390,4 @@ max_idx = total_profit.argmax()
 print(
     f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
 )
+print(f"Expected return: {(profit_perc.mean().item() - 1.0) * 100:.4f} %")
