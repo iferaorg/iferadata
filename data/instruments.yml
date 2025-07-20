@@ -9,7 +9,7 @@ templates:
     liquidEnd: "17:00:00"
     regularStart: "09:30:00"
     regularEnd: "17:00:00"
-    removeDates: []            # Empty list, can be overridden if needed
+    removeDates: []            # Empty list, can be overridden if needed 
     intervals: ["1m"]
     startDate: "2009-10-01"
     daysOfWeek: [0, 1, 2, 3, 4]  # Monday to Friday
