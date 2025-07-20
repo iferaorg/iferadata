@@ -93,6 +93,7 @@ class SingleMarketEnv:
         )
         self.device = self.instrument_data.device
         self.dtype = self.instrument_data.dtype
+        self.max_date_idx = self.instrument_data.data.shape[0] - 1
 
         # State tensors populated in reset
         self.state = {
@@ -132,7 +133,7 @@ class SingleMarketEnv:
         if trading_policy is not None:
             trading_policy.reset(self.state)
 
-    @torch.compile(mode="max-autotune")
+    @torch.compile(mode="max-autotune", fullgraph=True)
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
         """Run one simulation step using ``trading_policy``."""
         date_idx = state["date_idx"]
@@ -145,6 +146,7 @@ class SingleMarketEnv:
         next_date_idx, next_time_idx = self.instrument_data.get_next_indices(
             date_idx, time_idx
         )
+        done = done | (next_date_idx > self.max_date_idx)
         next_date_idx = torch.where(done, date_idx, next_date_idx)
         next_time_idx = torch.where(done, time_idx, next_time_idx)
         profit, new_position, execution_price, _ = self.market_simulator.calculate_step(
@@ -178,6 +180,7 @@ class SingleMarketEnv:
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
         steps = 0
+
         while True:
             torch.compiler.cudagraph_mark_step_begin()
             step_state = self.step(trading_policy, self.state)
@@ -185,6 +188,10 @@ class SingleMarketEnv:
             for key in step_state:
                 if key != "done" and key in self.state:
                     self.state[key] = step_state[key].clone()
+
+            for key in self.state:
+                if key not in step_state:
+                    self.state[key] = self.state[key].clone()
 
             self.state["total_profit"] = (
                 self.state["total_profit"] + step_state["profit"]
@@ -196,6 +203,7 @@ class SingleMarketEnv:
                 max_steps is not None and steps >= max_steps
             ):
                 break
+
         return self.state["total_profit"].clone()
 
     def rollout_with_display(

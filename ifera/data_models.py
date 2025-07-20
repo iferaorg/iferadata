@@ -23,6 +23,33 @@ from .file_manager import refresh_instrument_file
 from .enums import Scheme, Source
 
 
+def calculate_chunk_size(device: torch.device, dtype: torch.dtype) -> int:
+    """Calculate the chunk size for the ARTR calculation.
+
+    Returns the largest power of 2 that is less than
+    sqrt(device_memory / (10 * dtype_size))
+    """
+    # if self._chunk_size == 0:
+    # Get total memory of the device in bytes
+    if device.type == "cuda":
+        device_memory_bytes = torch.cuda.get_device_properties(device).total_memory
+    else:
+        # For CPU, use a reasonable default (8 GB)
+        device_memory_bytes = 8 * 1024 * 1024 * 1024
+
+    # Get size of the data type in bytes
+    dtype_size_bytes = torch.tensor([], dtype=dtype).element_size()
+
+    # Calculate according to formula
+    value = device_memory_bytes / (10 * dtype_size_bytes)
+    sqrt_value = math.sqrt(value)
+
+    # Find the largest power of 2 less than the calculated value
+    chunk_size = 2 ** int(math.log2(sqrt_value))
+
+    return chunk_size
+
+
 class InstrumentData:
     """
     Class for loading and processing financial instrument data.
@@ -64,16 +91,21 @@ class InstrumentData:
         self.device = (
             device
             if device is not None
-            else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            else (
+                torch.device("cuda")
+                if torch.cuda.is_available()
+                else torch.device("cpu")
+            )
         )
         self.backadjust = backadjust
         self.source = Source.TENSOR_BACKADJUSTED if self.backadjust else Source.TENSOR
 
         self._load_data()
 
-        self._chunk_size = 0
         # Store ARTR data
-        self._artr_data: torch.Tensor = torch.tensor([], dtype=self.dtype, device=self.device)
+        self._artr_data: torch.Tensor = torch.tensor(
+            [], dtype=self.dtype, device=self.device
+        )
         self._alpha = 1.0 / 14
         self._acrossday = True
 
@@ -97,7 +129,7 @@ class InstrumentData:
     def data(self) -> torch.Tensor:
         """Returns the data tensor excluding date and time columns."""
         return self._data[:, :, 4:]
-    
+
     @property
     def data_full(self) -> torch.Tensor:
         """Full data tensor including date and time columns."""
@@ -119,33 +151,6 @@ class InstrumentData:
         return self.data[..., -1].to(torch.int) != 0
 
     @property
-    def chunk_size(self) -> int:
-        """Calculate the chunk size for the ARTR calculation.
-
-        Returns the largest power of 2 that is less than
-        sqrt(device_memory / (10 * dtype_size))
-        """
-        if self._chunk_size == 0:
-            # Get total memory of the device in bytes
-            if self.device.type == "cuda":
-                device_memory_bytes = torch.cuda.get_device_properties(self.device).total_memory
-            else:
-                # For CPU, use a reasonable default (8 GB)
-                device_memory_bytes = 8 * 1024 * 1024 * 1024
-
-            # Get size of the data type in bytes
-            dtype_size_bytes = torch.tensor([], dtype=self.dtype).element_size()
-
-            # Calculate according to formula
-            value = device_memory_bytes / (10 * dtype_size_bytes)
-            sqrt_value = math.sqrt(value)
-
-            # Find the largest power of 2 less than the calculated value
-            self._chunk_size = 2 ** int(math.log2(sqrt_value))
-
-        return self._chunk_size
-
-    @property
     def artr(self) -> torch.Tensor:
         """Average Relative True Range (ARTR) data."""
         return self._artr_data
@@ -155,13 +160,15 @@ class InstrumentData:
         self._alpha = alpha
         self._acrossday = acrossday
         mask = self.valid_mask
-        self._artr_data = masked_artr(
-            self.data,
-            mask,
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        artr_data = masked_artr(
+            self.data.to(device),
+            mask.to(device),
             alpha=self._alpha,
             acrossday=self._acrossday,
-            chunk_size=self.chunk_size,
+            chunk_size=calculate_chunk_size(device=device, dtype=self.dtype),
         )
+        self._artr_data = artr_data.to(self.device)
         return self._artr_data
 
     def get_prev_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -185,7 +192,9 @@ class InstrumentData:
         prev_time_idx = time_idx - 1
         mask = prev_time_idx < 0
         prev_date_idx = date_idx - mask.long()
-        prev_time_idx = torch.where(mask, self.instrument.total_steps - 1, prev_time_idx)
+        prev_time_idx = torch.where(
+            mask, self.instrument.total_steps - 1, prev_time_idx
+        )
         return prev_date_idx, prev_time_idx
 
     def get_next_indices(self, date_idx, time_idx) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -237,7 +246,9 @@ class InstrumentData:
         if source.instrument.symbol != self.instrument.symbol:
             raise ValueError("Cannot convert indices between different symbols.")
         if source.instrument.trading_start != self.instrument.trading_start:
-            raise ValueError("Cannot convert indices between different trading start times.")
+            raise ValueError(
+                "Cannot convert indices between different trading start times."
+            )
 
         time_ratio = self.instrument.time_step / source.instrument.time_step
 
@@ -289,7 +300,11 @@ class DataManager:
         """
         # Normalize device
         if device is None:
-            device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+            device = (
+                torch.device("cuda")
+                if torch.cuda.is_available()
+                else torch.device("cpu")
+            )
 
         # Create a new instance and cache it
         data = InstrumentData(
