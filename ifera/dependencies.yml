@@ -53,7 +53,7 @@ dependency_rules:
   # Special tensors
   - dependent: "s3:tensor_backadjusted/futures/{interval}/{symbol}.pt.gz"
     where:
-      interval: ["1m", "30m"]
+      interval: ["1m"]
     depends_on:
       - "s3:meta/futures/rollover/{symbol}.yml"
       - pattern: "s3:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
@@ -134,7 +134,7 @@ refresh_rules:
   # Special tensors
   - dependent: "file:tensor_backadjusted/futures/{interval}/{symbol}.pt.gz"
     where:
-      interval: ["1m", "30m"]
+      interval: ["1m"]
     depends_on:
       - "file:meta/futures/rollover/{symbol}.yml"
       - pattern: "file:tensor/futures_individual/{interval}/{symbol}-{contract_code}.pt.gz"
