@@ -64,11 +64,9 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         batch_size: int,
     ) -> None:
         super().__init__()
-        self.instrument_data = instrument_data
         self.atr_multiple = atr_multiple
         self.wait_for_breakeven = wait_for_breakeven
         self.minimum_improvement = minimum_improvement
-        self.batch_size = batch_size
 
         cm = ConfigManager()
         dm = DataManager()
@@ -77,7 +75,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         if stages[0] != instrument_data.instrument.interval:
             raise ValueError("The first stage must match the instrument's interval.")
 
-        self.derived_configs = [
+        derived_configs = [
             cm.get_base_instrument_config(
                 symbol=instrument_data.instrument.symbol,
                 interval=stage,
@@ -87,30 +85,28 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         ]
 
         with fm.persistentContext():
-            self.derived_data = [
+            derived_data = [
                 dm.get_instrument_data(
                     config,
                     dtype=instrument_data.dtype,
                     device=instrument_data.device,
                     backadjust=instrument_data.backadjust,
                 )
-                for config in self.derived_configs
+                for config in derived_configs
             ]
 
         date_idx_base = torch.arange(
-            self.derived_data[0].data.size(0), device=instrument_data.device
+            derived_data[0].data.size(0), device=instrument_data.device
         )
         time_idx_base = torch.arange(
-            self.derived_data[0].data.size(1), device=instrument_data.device
+            derived_data[0].data.size(1), device=instrument_data.device
         )
         date_idx = repeat(date_idx_base, "d -> d t", t=time_idx_base.size(0))
         time_idx = repeat(time_idx_base, "t -> d t", d=date_idx_base.size(0))
 
         converted = [
-            self.derived_data[s].convert_indices(
-                self.derived_data[0], date_idx, time_idx
-            )
-            for s in range(len(self.derived_data))
+            derived_data[s].convert_indices(derived_data[0], date_idx, time_idx)
+            for s in range(len(derived_data))
         ]
 
         self.converted_indices = nn.ModuleList(
@@ -118,7 +114,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         )
 
         self.artr_policies = nn.ModuleList(
-            ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data
+            ArtrStopLossPolicy(data, self.atr_multiple) for data in derived_data
         )
         self.stage_count = len(stages)
 
@@ -128,10 +124,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
         )
         self.register_buffer(
-            "_stop", torch.empty(batch_size, dtype=dtype, device=device)
-        )
-        self.register_buffer(
-            "_zero", torch.zeros(self.batch_size, dtype=torch.int32, device=device)
+            "_zero", torch.zeros(batch_size, dtype=torch.int32, device=device)
         )
         self.register_buffer(
             "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
@@ -255,7 +248,6 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
                 "'artificial_stage2' anchor_types"
             )
 
-        self.instrument_data = instrument_data
         self.register_buffer("_data", instrument_data.data)
         self.trailing_stop = trailing_stop
         self.skip_stage1 = skip_stage1
@@ -268,9 +260,6 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         initial_stage = 1 if self.skip_stage1 else 0
         self.register_buffer(
             "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
-        )
-        self.register_buffer(
-            "_stop", torch.empty(batch_size, dtype=dtype, device=device)
         )
         self.register_buffer(
             "_initial_stage",

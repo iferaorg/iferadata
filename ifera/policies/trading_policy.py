@@ -48,12 +48,11 @@ class TradingPolicy(BaseTradingPolicy):
         batch_size: int,
     ) -> None:
         super().__init__()
-        self.instrument_data = instrument_data
         self.open_position_policy = open_position_policy
         self.initial_stop_loss_policy = initial_stop_loss_policy
         self.position_maintenance_policy = position_maintenance_policy
         self.trading_done_policy = trading_done_policy
-        self._batch_size = batch_size
+        _ = batch_size
         self._last_date_idx = instrument_data.data.shape[0] - 1
         self._last_time_idx = instrument_data.data.shape[1] - 1
 

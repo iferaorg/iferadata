@@ -39,10 +39,6 @@ def test_scaled_artr_initialization(monkeypatch, dummy_instrument_data):
     )
 
     assert policy.stage_count == 2
-    assert [cfg.interval for cfg in policy.derived_configs] == [
-        dummy_instrument_data.instrument.interval,
-        "1h",
-    ]
 
 
 def test_scaled_artr_invalid_base(monkeypatch, dummy_instrument_data):
