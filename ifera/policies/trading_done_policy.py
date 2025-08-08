@@ -67,7 +67,6 @@ class SingleTradeDonePolicy(TradingDonePolicy):
         self.register_buffer(
             "had_position", torch.zeros(batch_size, dtype=torch.bool, device=device)
         )
-        self.register_buffer("_indices", torch.arange(batch_size, device=device))
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset ``had_position`` for all batches."""
