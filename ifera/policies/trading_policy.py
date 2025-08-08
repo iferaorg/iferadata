@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import copy
 from typing import Tuple
 
 import torch
@@ -55,6 +56,16 @@ class TradingPolicy(BaseTradingPolicy):
         _ = batch_size
         self._last_date_idx = instrument_data.data.shape[0] - 1
         self._last_time_idx = instrument_data.data.shape[1] - 1
+
+    def clone(self, device: torch.device | str) -> "TradingPolicy":
+        """Return a deep copy of the policy moved to ``device``.
+
+        All sub-policies are duplicated and the new instance is transferred to the
+        target device, leaving the original unmodified.
+        """
+        cloned_policy = copy.deepcopy(self)
+        cloned_policy.to(device)
+        return cloned_policy
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset all sub-policies to their initial state."""

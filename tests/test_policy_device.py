@@ -113,3 +113,39 @@ def test_trading_policy_to_device(dummy_instrument_data):
     trading_policy.to(device)
     for tensor in trading_policy.state_dict().values():
         assert tensor.device == device
+
+
+def test_trading_policy_clone_to_device(dummy_instrument_data):
+    device = _target_device()
+    open_policy = AlwaysOpenPolicy(
+        direction=1, batch_size=1, device=torch.device("cpu")
+    )
+    initial_stop = InitialArtrStopLossPolicy(
+        dummy_instrument_data, atr_multiple=1.0, batch_size=1
+    )
+    maintenance = PercentGainMaintenancePolicy(
+        dummy_instrument_data,
+        stage1_atr_multiple=1.0,
+        trailing_stop=True,
+        skip_stage1=False,
+        keep_percent=0.5,
+        anchor_type="entry",
+        batch_size=1,
+    )
+    done_policy = AlwaysFalseDonePolicy(batch_size=1, device=torch.device("cpu"))
+    trading_policy = TradingPolicy(
+        dummy_instrument_data,
+        open_policy,
+        initial_stop,
+        maintenance,
+        done_policy,
+        batch_size=1,
+    )
+    cloned = trading_policy.clone(device)
+    assert cloned is not trading_policy
+    for key, tensor in trading_policy.state_dict().items():
+        cloned_tensor = cloned.state_dict()[key]
+        assert tensor.data_ptr() != cloned_tensor.data_ptr()
+        assert torch.allclose(tensor.cpu(), cloned_tensor.cpu(), equal_nan=True)
+        assert tensor.device == torch.device("cpu")
+        assert cloned_tensor.device == device
