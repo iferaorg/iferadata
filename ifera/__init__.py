@@ -13,7 +13,7 @@ from .data_processing import (
 )
 from .file_manager import FileManager, RuleType
 from .market_simulator import MarketSimulatorIntraday
-from .environments import SingleMarketEnv
+from .environments import MultiGPUSingleMarketEnv, SingleMarketEnv
 from .masked_series import masked_artr, masked_ema, masked_rtr, masked_sma
 from .policies import *
 from .series import artr, ema, ema_slow, ffill, rtr, sma
@@ -60,6 +60,7 @@ __all__ = [
     "AlwaysFalseDonePolicy",
     "SingleTradeDonePolicy",
     "SingleMarketEnv",
+    "MultiGPUSingleMarketEnv",
     "FileManager",
     "Scheme",
     "Source",

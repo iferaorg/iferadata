@@ -265,3 +265,107 @@ class SingleMarketEnv:
                 ):
                     break
         return self.state["total_profit"].clone()
+
+
+class MultiGPUSingleMarketEnv:
+    """Run a :class:`SingleMarketEnv` on multiple devices by splitting the batch."""
+
+    def __init__(
+        self,
+        instrument_config: BaseInstrumentConfig,
+        broker_name: str,
+        *,
+        backadjust: bool = False,
+        devices: Optional[list[torch.device]] = None,
+        dtype: torch.dtype = torch.float32,
+    ) -> None:
+        if devices is None:
+            device_count = torch.cuda.device_count()
+            if device_count == 0:
+                devices = [torch.device("cpu")]
+            else:
+                devices = [torch.device(f"cuda:{idx}") for idx in range(device_count)]
+
+        self.envs = [
+            SingleMarketEnv(
+                instrument_config,
+                broker_name,
+                backadjust=backadjust,
+                device=device,
+                dtype=dtype,
+            )
+            for device in devices
+        ]
+        self.devices = devices
+
+    def _chunk_tensor(self, tensor: torch.Tensor) -> list[torch.Tensor]:
+        batch_size = tensor.shape[0]
+        per_device = (batch_size + len(self.envs) - 1) // len(self.envs)
+        return [
+            tensor[i * per_device : min((i + 1) * per_device, batch_size)]
+            for i in range(len(self.envs))
+        ]
+
+    def reset(
+        self,
+        start_date_idx: torch.Tensor,
+        start_time_idx: torch.Tensor,
+        trading_policies: list[TradingPolicy],
+    ) -> None:
+        """Reset all underlying environments."""
+        if len(trading_policies) != len(self.envs):
+            raise ValueError("Mismatch between policies and devices")
+
+        d_chunks = self._chunk_tensor(start_date_idx)
+        t_chunks = self._chunk_tensor(start_time_idx)
+        for env, d_chunk, t_chunk, policy in zip(
+            self.envs, d_chunks, t_chunks, trading_policies
+        ):
+            env.reset(d_chunk.to(env.device), t_chunk.to(env.device), policy)
+
+    def step(
+        self, trading_policies: list[TradingPolicy]
+    ) -> list[dict[str, torch.Tensor]]:
+        """Execute one step for each environment."""
+        step_states = []
+        for env, policy in zip(self.envs, trading_policies):
+            step_states.append(env.step(policy, env.state))
+        return step_states
+
+    def rollout(
+        self,
+        trading_policies: list[TradingPolicy],
+        start_date_idx: torch.Tensor,
+        start_time_idx: torch.Tensor,
+        max_steps: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Run rollouts on all devices sequentially over time."""
+
+        self.reset(start_date_idx, start_time_idx, trading_policies)
+        steps = 0
+
+        while True:
+            torch.compiler.cudagraph_mark_step_begin()
+            step_states = self.step(trading_policies)
+
+            for env, step_state in zip(self.envs, step_states):
+                for key in step_state:
+                    if key != "done" and key in env.state:
+                        env.state[key] = step_state[key].clone()
+
+                for key in env.state:
+                    if key not in step_state:
+                        env.state[key] = env.state[key].clone()
+
+                env.state["total_profit"] = (
+                    env.state["total_profit"] + step_state["profit"]
+                )
+                env.state["done"] = env.state["done"] | step_state["done"]
+
+            steps += 1
+            if all(env.state["done"].all() for env in self.envs) or (
+                max_steps is not None and steps >= max_steps
+            ):
+                break
+
+        return torch.cat([env.state["total_profit"].clone() for env in self.envs])
