@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import copy
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 from torch import nn
 
 from ..data_models import InstrumentData
+from ..torch_utils import get_devices, get_module_device
 from .open_position_policy import OpenPositionPolicy
 from .stop_loss_policy import StopLossPolicy
 from .position_maintenance_policy import PositionMaintenancePolicy
@@ -103,3 +104,30 @@ class TradingPolicy(BaseTradingPolicy):
         done = done | last_bar_mask
 
         return action, stop_loss, done
+
+
+def clone_trading_policy_for_devices(
+    policy: TradingPolicy, devices: Optional[list[torch.device]] = None
+) -> list[TradingPolicy]:
+    """Clone ``policy`` for each device.
+
+    The original ``policy`` is reused if its device appears in ``devices``.  All
+    other devices receive a deep-copied clone moved to the respective device.
+    When ``devices`` is ``None`` the same default logic as
+    :class:`MultiGPUSingleMarketEnv` is applied, using all available CUDA
+    devices or the CPU if CUDA is unavailable.
+    """
+
+    resolved_devices = get_devices(devices)
+    policy_device = get_module_device(policy)
+    cloned_policies: list[TradingPolicy] = []
+    used_original = False
+
+    for device in resolved_devices:
+        if device == policy_device and not used_original:
+            cloned_policies.append(policy)
+            used_original = True
+        else:
+            cloned_policies.append(policy.clone(device))
+
+    return cloned_policies
