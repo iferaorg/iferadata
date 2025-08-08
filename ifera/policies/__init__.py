@@ -1,6 +1,10 @@
 """Convenience exports for policy classes."""
 
-from .trading_policy import BaseTradingPolicy, TradingPolicy
+from .trading_policy import (
+    BaseTradingPolicy,
+    TradingPolicy,
+    clone_trading_policy_for_devices,
+)
 from .open_position_policy import OpenPositionPolicy, AlwaysOpenPolicy, OpenOncePolicy
 from .stop_loss_policy import (
     StopLossPolicy,
@@ -33,4 +37,5 @@ __all__ = [
     "TradingDonePolicy",
     "AlwaysFalseDonePolicy",
     "SingleTradeDonePolicy",
+    "clone_trading_policy_for_devices",
 ]
