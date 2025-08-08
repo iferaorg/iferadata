@@ -46,8 +46,8 @@ class ArtrStopLossPolicy(StopLossPolicy):
         self.atr_multiple = atr_multiple
         if len(instrument_data.artr) == 0:
             instrument_data.calculate_artr(alpha=alpha, acrossday=acrossday)
-        self._data = instrument_data.data
-        self._artr = instrument_data.artr
+        self.register_buffer("_data", instrument_data.data)
+        self.register_buffer("_artr", instrument_data.artr)
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """ArtrStopLossPolicy does not maintain state."""
@@ -98,15 +98,11 @@ class InitialArtrStopLossPolicy(StopLossPolicy):
     ) -> None:
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
-        dtype = instrument_data.data.dtype
-        device = instrument_data.device
-        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        _ = batch_size
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """InitialArtrStopLossPolicy holds no state to reset."""
         _ = state
-        return None
 
     def forward(
         self,

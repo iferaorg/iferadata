@@ -35,7 +35,9 @@ class AlwaysOpenPolicy(OpenPositionPolicy):
     def __init__(self, direction: int, batch_size: int, device: torch.device) -> None:
         super().__init__()
         _ = batch_size
-        self.direction = torch.tensor(direction, dtype=torch.int32, device=device)
+        self.register_buffer(
+            "direction", torch.tensor(direction, dtype=torch.int32, device=device)
+        )
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """AlwaysOpenPolicy holds no state so nothing to reset."""
@@ -56,14 +58,15 @@ class OpenOncePolicy(OpenPositionPolicy):
 
     def __init__(self, direction: int, batch_size: int, device: torch.device) -> None:
         super().__init__()
-        self.direction = torch.tensor(direction, dtype=torch.int32, device=device)
+        self.register_buffer(
+            "direction", torch.tensor(direction, dtype=torch.int32, device=device)
+        )
         self._batch_size = batch_size
-        self.device = device
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset ``opened`` state to ``False`` for all batches."""
         state["opened"] = torch.zeros(
-            self._batch_size, dtype=torch.bool, device=self.device
+            self._batch_size, dtype=torch.bool, device=self.direction.device
         )
 
     def forward(

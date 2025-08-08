@@ -36,46 +36,45 @@ class DummyData:
 
 
 class DummyInitialStopLoss(torch.nn.Module):
-    def forward(self, date_idx, time_idx, position, action, prev_stop):
-        _ = position, prev_stop
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
+        _ = state
+
+    def forward(
+        self, state: dict[str, torch.Tensor], action: torch.Tensor
+    ) -> torch.Tensor:
+        _ = state
         return torch.zeros_like(action, dtype=torch.float32)
 
 
 class DummyMaintenance(PositionMaintenancePolicy):
-    def masked_reset(self, mask: torch.Tensor) -> None:
-        pass
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+        _ = state, mask
 
-    def reset(self) -> None:
-        return None
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
+        _ = state
 
     def forward(
-        self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
-    ):
-        return torch.zeros_like(position), prev_stop
+        self, state: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return torch.zeros_like(state["position"]), state["prev_stop_loss"]
 
 
 class CloseAfterOneStep(PositionMaintenancePolicy):
-    def masked_reset(self, mask: torch.Tensor) -> None:
-        pass
+    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+        _ = state, mask
 
-    def reset(self) -> None:
-        return None
+    def reset(self, state: dict[str, torch.Tensor]) -> None:
+        _ = state
 
     def forward(
-        self,
-        date_idx: torch.Tensor,
-        time_idx: torch.Tensor,
-        position: torch.Tensor,
-        prev_stop: torch.Tensor,
-        entry_price: torch.Tensor,
-    ):
-        action = torch.where(time_idx >= 1, -position, torch.zeros_like(position))
-        return action, prev_stop
+        self, state: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        action = torch.where(
+            state["time_idx"] >= 1,
+            -state["position"],
+            torch.zeros_like(state["position"]),
+        )
+        return action, state["prev_stop_loss"]
 
 
 @pytest.fixture
@@ -108,13 +107,15 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
         batch_size=1,
     )
 
-    d_idx = torch.tensor([0], dtype=torch.int32)
-    t_idx = torch.tensor([0], dtype=torch.int32)
-    position = torch.tensor([0], dtype=torch.int32)
-    prev_stop = torch.tensor([float("nan")])
-    entry_price = torch.tensor([float("nan")])
+    state = {
+        "date_idx": torch.tensor([0], dtype=torch.int32),
+        "time_idx": torch.tensor([0], dtype=torch.int32),
+        "position": torch.tensor([0], dtype=torch.int32),
+        "prev_stop_loss": torch.tensor([float("nan")]),
+        "entry_price": torch.tensor([float("nan")]),
+    }
 
-    _, _, done = policy(d_idx, t_idx, position, prev_stop, entry_price)
+    _, _, done = policy(state)
     assert done.item() is True
 
 
@@ -163,12 +164,16 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
             self.reset_called = False
             self.last_mask = torch.empty(0, dtype=torch.bool)
 
-        def masked_reset(
-            self, mask: torch.Tensor
-        ) -> None:  # pragma: no cover - simple flag
+        def reset(self, state: dict[str, torch.Tensor]) -> None:  # pragma: no cover
             self.reset_called = True
+            self.last_mask = torch.zeros_like(state["position"], dtype=torch.bool)
+            super().reset(state)
+
+        def masked_reset(
+            self, state: dict[str, torch.Tensor], mask: torch.Tensor
+        ) -> None:  # pragma: no cover - simple flag
             self.last_mask = mask.clone()
-            super().masked_reset(mask)
+            super().masked_reset(state, mask)
 
     done_policy = TrackingDonePolicy()
     trading_policy = TradingPolicy(

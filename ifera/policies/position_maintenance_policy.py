@@ -40,6 +40,15 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         raise NotImplementedError
 
 
+class _ConvertedIndex(nn.Module):  # pylint: disable=abstract-method
+    """Simple container for converted date and time indices."""
+
+    def __init__(self, date_idx: torch.Tensor, time_idx: torch.Tensor) -> None:
+        super().__init__()
+        self.register_buffer("date_idx", date_idx)
+        self.register_buffer("time_idx", time_idx)
+
+
 class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
     """A position maintenance policy that adjusts stop-loss using scaled ATR."""
 
@@ -95,24 +104,33 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         date_idx = repeat(date_idx_base, "d -> d t", t=time_idx_base.size(0))
         time_idx = repeat(time_idx_base, "t -> d t", d=date_idx_base.size(0))
 
-        self.converted_indices = [
-            self.derived_data[s].convert_indices(
-                self.derived_data[0], date_idx, time_idx
-            )
-            for s in range(len(self.derived_data))
-        ]
+        self.converted_indices = nn.ModuleList(
+            [
+                _ConvertedIndex(
+                    *self.derived_data[s].convert_indices(
+                        self.derived_data[0], date_idx, time_idx
+                    )
+                )
+                for s in range(len(self.derived_data))
+            ]
+        )
 
-        self.artr_policies = [
-            ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data
-        ]
+        self.artr_policies = nn.ModuleList(
+            [ArtrStopLossPolicy(data, self.atr_multiple) for data in self.derived_data]
+        )
         self.stage_count = len(stages)
 
         device = instrument_data.device
         dtype = instrument_data.dtype
-        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._stop = torch.empty(batch_size, dtype=dtype, device=device)
-        self._zero = torch.zeros(self.batch_size, dtype=torch.int32, device=device)
-        self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        self.register_buffer(
+            "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
+        )
+        self.register_buffer(
+            "_zero", torch.zeros(self.batch_size, dtype=torch.int32, device=device)
+        )
+        self.register_buffer(
+            "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        )
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset internal stage and base price."""
@@ -162,8 +180,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
         for s in range(1, self.stage_count):
             stage_mask = stage == s
-            conv_date_idx = self.converted_indices[s][0][date_idx, time_idx]
-            conv_time_idx = self.converted_indices[s][1][date_idx, time_idx]
+            conv_date_idx = self.converted_indices[s].date_idx[date_idx, time_idx]
+            conv_time_idx = self.converted_indices[s].time_idx[date_idx, time_idx]
             conv_state = {
                 "date_idx": conv_date_idx,
                 "time_idx": conv_time_idx,
@@ -233,7 +251,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             )
 
         self.instrument_data = instrument_data
-        self._data = instrument_data.data
+        self.register_buffer("_data", instrument_data.data)
         self.trailing_stop = trailing_stop
         self.skip_stage1 = skip_stage1
         self.keep_percent = keep_percent
@@ -243,12 +261,16 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         device = instrument_data.device
         dtype = instrument_data.dtype
         initial_stage = 1 if self.skip_stage1 else 0
-        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._stop = torch.empty(batch_size, dtype=dtype, device=device)
-        self._initial_stage = torch.full(
-            (batch_size,), initial_stage, dtype=torch.long, device=device
+        self.register_buffer(
+            "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
         )
-        self._nan = torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        self.register_buffer(
+            "_initial_stage",
+            torch.full((batch_size,), initial_stage, dtype=torch.long, device=device),
+        )
+        self.register_buffer(
+            "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
+        )
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset stage and anchor state."""

@@ -14,8 +14,8 @@ class DummyData:
         self.dtype = torch.float32
         self.backadjust = False
 
-    def convert_indices(self, *_args):
-        return _args
+    def convert_indices(self, _base, date_idx, time_idx):
+        return date_idx, time_idx
 
 
 @pytest.fixture

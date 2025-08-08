@@ -38,18 +38,18 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
 
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
-        self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        self.register_buffer(
+            "_false", torch.zeros(batch_size, dtype=torch.bool, device=device)
+        )
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """No internal state to reset."""
         _ = state
-        return None
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         """No internal state to reset."""
         _ = state
         _ = mask
-        return None
 
     def forward(
         self,
@@ -64,8 +64,10 @@ class SingleTradeDonePolicy(TradingDonePolicy):
 
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
-        self.had_position = torch.zeros(batch_size, dtype=torch.bool, device=device)
-        self._indices = torch.arange(batch_size, device=device)
+        self.register_buffer(
+            "had_position", torch.zeros(batch_size, dtype=torch.bool, device=device)
+        )
+        self.register_buffer("_indices", torch.arange(batch_size, device=device))
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset ``had_position`` for all batches."""
