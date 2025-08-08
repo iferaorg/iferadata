@@ -53,8 +53,10 @@ def test_multi_gpu_env_rollout(monkeypatch, dummy_data_three_steps_multi):
     start_d = torch.tensor([0, 0], dtype=torch.int32)
     start_t = torch.tensor([0, 0], dtype=torch.int32)
 
-    result = env.rollout(policies, start_d, start_t, max_steps=5)
-    assert result.shape == (2,)
+    total_profit, d_idx, t_idx = env.rollout(policies, start_d, start_t, max_steps=5)
+    assert total_profit.shape == (2,)
+    assert torch.all(d_idx == 0)
+    assert torch.all(t_idx == 2)
     for sub_env in env.envs:
         assert sub_env.state["done"].all().item() is True
         assert sub_env.state["position"].sum().item() == 0

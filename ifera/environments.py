@@ -176,15 +176,44 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> torch.Tensor:
-        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
+
+        Returns a tuple containing the total profit, and the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
+        episode never reaches ``done`` these indices will be ``nan``.
+        """
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
         steps = 0
+        done_date_idx = torch.full(
+            self.state["date_idx"].shape,
+            float("nan"),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        done_time_idx = torch.full(
+            self.state["time_idx"].shape,
+            float("nan"),
+            dtype=self.dtype,
+            device=self.device,
+        )
 
         while True:
             torch.compiler.cudagraph_mark_step_begin()
             step_state = self.step(trading_policy, self.state)
+
+            newly_done = (~self.state["done"]) & step_state["done"]
+            done_date_idx = torch.where(
+                newly_done,
+                self.state["date_idx"].to(self.dtype),
+                done_date_idx,
+            )
+            done_time_idx = torch.where(
+                newly_done,
+                self.state["time_idx"].to(self.dtype),
+                done_time_idx,
+            )
 
             for key in step_state:
                 if key != "done" and key in self.state:
@@ -205,7 +234,11 @@ class SingleMarketEnv:
             ):
                 break
 
-        return self.state["total_profit"].clone()
+        return (
+            self.state["total_profit"].clone(),
+            done_date_idx.clone(),
+            done_time_idx.clone(),
+        )
 
     def rollout_with_display(
         self,
@@ -213,12 +246,29 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> torch.Tensor:
-        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
+
+        Returns a tuple containing the total profit, and the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
+        episode never reaches ``done`` these indices will be ``nan``.
+        """
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
         contract_multiplier = self.instrument_data.instrument.contract_multiplier
         steps = 0
+        done_date_idx = torch.full(
+            self.state["date_idx"].shape,
+            float("nan"),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        done_time_idx = torch.full(
+            self.state["time_idx"].shape,
+            float("nan"),
+            dtype=self.dtype,
+            device=self.device,
+        )
         with Live(
             make_table(
                 self.instrument_data.data_full,
@@ -236,6 +286,18 @@ class SingleMarketEnv:
             while True:
                 # torch.compiler.cudagraph_mark_step_begin()
                 step_state = self.step(trading_policy, self.state)
+
+                newly_done = (~self.state["done"]) & step_state["done"]
+                done_date_idx = torch.where(
+                    newly_done,
+                    self.state["date_idx"].to(self.dtype),
+                    done_date_idx,
+                )
+                done_time_idx = torch.where(
+                    newly_done,
+                    self.state["time_idx"].to(self.dtype),
+                    done_time_idx,
+                )
 
                 for key in step_state:
                     if key != "done":
@@ -265,7 +327,11 @@ class SingleMarketEnv:
                     max_steps is not None and steps >= max_steps
                 ):
                     break
-        return self.state["total_profit"].clone()
+        return (
+            self.state["total_profit"].clone(),
+            done_date_idx.clone(),
+            done_time_idx.clone(),
+        )
 
 
 class MultiGPUSingleMarketEnv:
@@ -334,17 +400,52 @@ class MultiGPUSingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> torch.Tensor:
-        """Run rollouts on all devices sequentially over time."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run rollouts on all devices sequentially over time.
+
+        Returns a tuple containing the total profit, and the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
+        episode never reaches ``done`` these indices will be ``nan``.
+        """
 
         self.reset(start_date_idx, start_time_idx, trading_policies)
         steps = 0
+        done_date_idx = [
+            torch.full(
+                env.state["date_idx"].shape,
+                float("nan"),
+                dtype=env.dtype,
+                device=env.device,
+            )
+            for env in self.envs
+        ]
+        done_time_idx = [
+            torch.full(
+                env.state["time_idx"].shape,
+                float("nan"),
+                dtype=env.dtype,
+                device=env.device,
+            )
+            for env in self.envs
+        ]
 
         while True:
             torch.compiler.cudagraph_mark_step_begin()
             step_states = self.step(trading_policies)
 
-            for env, step_state in zip(self.envs, step_states):
+            for i, (env, step_state) in enumerate(zip(self.envs, step_states)):
+                newly_done = (~env.state["done"]) & step_state["done"]
+                done_date_idx[i] = torch.where(
+                    newly_done,
+                    env.state["date_idx"].to(env.dtype),
+                    done_date_idx[i],
+                )
+                done_time_idx[i] = torch.where(
+                    newly_done,
+                    env.state["time_idx"].to(env.dtype),
+                    done_time_idx[i],
+                )
+
                 for key in step_state:
                     if key != "done" and key in env.state:
                         env.state[key] = step_state[key].clone()
@@ -364,4 +465,8 @@ class MultiGPUSingleMarketEnv:
             ):
                 break
 
-        return torch.cat([env.state["total_profit"].clone() for env in self.envs])
+        return (
+            torch.cat([env.state["total_profit"].clone() for env in self.envs]),
+            torch.cat([idx.clone() for idx in done_date_idx]),
+            torch.cat([idx.clone() for idx in done_time_idx]),
+        )
