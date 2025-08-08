@@ -13,6 +13,7 @@ from .config import BaseInstrumentConfig
 from .data_models import DataManager, InstrumentData
 from .market_simulator import MarketSimulatorIntraday
 from .policies import TradingPolicy
+from .torch_utils import get_devices
 
 
 def make_table(
@@ -279,12 +280,7 @@ class MultiGPUSingleMarketEnv:
         devices: Optional[list[torch.device]] = None,
         dtype: torch.dtype = torch.float32,
     ) -> None:
-        if devices is None:
-            device_count = torch.cuda.device_count()
-            if device_count == 0:
-                devices = [torch.device("cpu")]
-            else:
-                devices = [torch.device(f"cuda:{idx}") for idx in range(device_count)]
+        devices = get_devices(devices)
 
         self.envs = [
             SingleMarketEnv(
