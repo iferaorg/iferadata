@@ -147,10 +147,49 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    result = env.rollout(trading_policy, start_d, start_t, max_steps=5)
+    total_profit, d_idx, t_idx = env.rollout(
+        trading_policy, start_d, start_t, max_steps=5
+    )
     assert env.state["done"].item() is True
     assert env.state["position"].item() == 0
-    assert result.shape == (1,)
+    assert total_profit.shape == (1,)
+    assert d_idx.item() == 0
+    assert t_idx.item() == 2
+
+
+def test_single_market_env_rollout_returns_nan_if_never_done(
+    monkeypatch, dummy_data_three_steps
+):
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps,
+    )
+
+    env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
+    trading_policy = TradingPolicy(
+        instrument_data=env.instrument_data,
+        open_position_policy=AlwaysOpenPolicy(
+            1, batch_size=1, device=env.instrument_data.device
+        ),
+        initial_stop_loss_policy=DummyInitialStopLoss(),
+        position_maintenance_policy=DummyMaintenance(),
+        trading_done_policy=AlwaysFalseDonePolicy(
+            batch_size=1, device=env.instrument_data.device
+        ),
+        batch_size=1,
+    )
+
+    start_d = torch.tensor([0], dtype=torch.int32)
+    start_t = torch.tensor([0], dtype=torch.int32)
+
+    total_profit, d_idx, t_idx = env.rollout(
+        trading_policy, start_d, start_t, max_steps=2
+    )
+
+    assert env.state["done"].item() is False
+    assert torch.isnan(d_idx).all()
+    assert torch.isnan(t_idx).all()
 
 
 def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three_steps):
