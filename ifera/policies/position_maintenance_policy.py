@@ -132,8 +132,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset internal stage and base price."""
-        state["maint_stage"] = self._zero.clone()
-        state["base_price"] = self._nan.clone()
+        state["maint_stage"] = self._zero
+        state["base_price"] = self._nan
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         state["maint_stage"] = torch.where(mask, self._zero, state["maint_stage"])
@@ -143,38 +143,52 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self,
         state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        action = self._action.clone()
+        action = self._action
         date_idx = state["date_idx"]
         time_idx = state["time_idx"]
         entry_price = state["entry_price"]
-        stop_loss = state["prev_stop_loss"].clone()
+        stop_loss = state["prev_stop_loss"]
         position = state["position"]
         base_price = state["base_price"]
         stage = state["maint_stage"]
         has_position_mask = position != 0
 
         nan_base_mask = torch.isnan(base_price) & has_position_mask
-        if self.wait_for_breakeven:
-            base_price = torch.where(nan_base_mask, entry_price, base_price)
-        else:
+
+        def breakeven_base_price() -> torch.Tensor:
+            return torch.where(nan_base_mask, entry_price, base_price)
+
+        def stoploss_base_price() -> torch.Tensor:
             finite_prev_stop = torch.isfinite(stop_loss)
             set_mask = nan_base_mask & finite_prev_stop
-            base_price = torch.where(set_mask, stop_loss, base_price)
+            return torch.where(set_mask, stop_loss, base_price)
+
+        base_price = torch.cond(
+            self.wait_for_breakeven,
+            breakeven_base_price,
+            stoploss_base_price,
+        )
 
         stage0_mask = (stage == 0) & has_position_mask
-        if self.wait_for_breakeven:
-            potential_stop = self.artr_policies[0](
-                state,
-                self._zero,
-            )
+
+        def breakeven_stage() -> Tuple[torch.Tensor, torch.Tensor]:
+            potential_stop = self.artr_policies[0](state, self._zero)
             improve_mask_subset = stage0_mask & (
                 (position > 0) & (potential_stop > entry_price)
                 | (position < 0) & (potential_stop < entry_price)
             )
-            stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
-            stage = torch.where(improve_mask_subset, 1, stage)
-        else:
-            stage = torch.where(stage0_mask, 1, stage)
+            new_stop = torch.where(improve_mask_subset, potential_stop, stop_loss)
+            new_stage = torch.where(improve_mask_subset, 1, stage)
+            return new_stage, new_stop
+
+        def default_stage() -> Tuple[torch.Tensor, torch.Tensor]:
+            return torch.where(stage0_mask, 1, stage), stop_loss
+
+        stage, stop_loss = torch.cond(
+            self.wait_for_breakeven,
+            breakeven_stage,
+            default_stage,
+        )
 
         nonzero_stage = stage[has_position_mask]
         if nonzero_stage.numel() > 0:
@@ -286,8 +300,8 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset stage and anchor state."""
-        state["maint_stage"] = self._initial_stage.clone()
-        state["maint_anchor"] = self._nan.clone()
+        state["maint_stage"] = self._initial_stage
+        state["maint_anchor"] = self._nan
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         state["maint_stage"] = torch.where(
@@ -300,7 +314,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         action = self._action
-        stop_loss = state["prev_stop"].clone()
+        stop_loss = state["prev_stop"]
         position = state["position"]
         entry_price = state["entry_price"]
         prev_stop = state["prev_stop"]
@@ -312,19 +326,45 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         has_position_mask = position != 0
 
         first_call_mask = torch.isnan(anchor) & has_position_mask
-        if self.anchor_type == "entry":
-            anchor = torch.where(first_call_mask, entry_price, anchor)
-        elif self.anchor_type == "initial_stop":
-            anchor = torch.where(first_call_mask, prev_stop, anchor)
-        elif self.anchor_type == "artificial":
+
+        def entry_anchor() -> torch.Tensor:
+            return torch.where(first_call_mask, entry_price, anchor)
+
+        def initial_stop_anchor() -> torch.Tensor:
+            return torch.where(first_call_mask, prev_stop, anchor)
+
+        def artificial_anchor() -> torch.Tensor:
             reference_channel = torch.where(position > 0, 1, 2)
             reference_price = self._data[date_idx, time_idx, reference_channel]
-            anchor = torch.where(
+            return torch.where(
                 first_call_mask,
                 (prev_stop - self.keep_percent * reference_price)
                 / (1 - self.keep_percent),
                 anchor,
             )
+
+        def anchor_identity() -> torch.Tensor:
+            return anchor
+
+        def anchor_artificial_branch() -> torch.Tensor:
+            return torch.cond(
+                self.anchor_type == "artificial",
+                artificial_anchor,
+                anchor_identity,
+            )
+
+        def anchor_initial_branch() -> torch.Tensor:
+            return torch.cond(
+                self.anchor_type == "initial_stop",
+                initial_stop_anchor,
+                anchor_artificial_branch,
+            )
+
+        anchor = torch.cond(
+            self.anchor_type == "entry",
+            entry_anchor,
+            anchor_initial_branch,
+        )
 
         stage1_mask = (stage == 0) & has_position_mask
         atr_stop = self.artr_policy(
@@ -335,22 +375,45 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             | (position < 0) & (atr_stop < entry_price)
         )
 
-        if self.anchor_type == "last_stage1_stop":
-            anchor = torch.where(move_to_stage2, atr_stop, anchor)
-        elif self.anchor_type == "artificial_stage2":
+        def last_stage1_stop_anchor() -> torch.Tensor:
+            return torch.where(move_to_stage2, atr_stop, anchor)
+
+        def artificial_stage2_anchor() -> torch.Tensor:
             reference_channel = torch.where(position > 0, 1, 2)
             reference_price = self._data[date_idx, time_idx, reference_channel]
-            anchor = torch.where(
+            return torch.where(
                 move_to_stage2,
                 (atr_stop - self.keep_percent * reference_price)
                 / (1 - self.keep_percent),
                 anchor,
             )
 
+        def anchor_artificial_stage2_branch() -> torch.Tensor:
+            return torch.cond(
+                self.anchor_type == "artificial_stage2",
+                artificial_stage2_anchor,
+                anchor_identity,
+            )
+
+        anchor = torch.cond(
+            self.anchor_type == "last_stage1_stop",
+            last_stage1_stop_anchor,
+            anchor_artificial_stage2_branch,
+        )
+
         stage = torch.where(move_to_stage2, 1, stage)
 
-        if self.trailing_stop:
-            stop_loss = torch.where(stage1_mask, atr_stop, stop_loss)
+        def trailing_stop_loss() -> torch.Tensor:
+            return torch.where(stage1_mask, atr_stop, stop_loss)
+
+        def keep_stop_loss() -> torch.Tensor:
+            return stop_loss
+
+        stop_loss = torch.cond(
+            self.trailing_stop,
+            trailing_stop_loss,
+            keep_stop_loss,
+        )
 
         stage2_mask = (stage == 1) & has_position_mask
         reference_channel = torch.where(position > 0, 1, 2)
