@@ -176,33 +176,48 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         else:
             stage = torch.where(stage0_mask, 1, stage)
 
-        for s in range(1, self.stage_count):
-            stage_mask = (stage == s) & has_position_mask
-            conv_date_idx = self.converted_indices[s].date_idx[date_idx, time_idx]
-            conv_time_idx = self.converted_indices[s].time_idx[date_idx, time_idx]
-            conv_state = {
-                "date_idx": conv_date_idx,
-                "time_idx": conv_time_idx,
-                "position": position * stage_mask,
-                "prev_stop_loss": stop_loss,
-            }
-            potential_stop = self.artr_policies[s](conv_state, self._zero)
-            improvement = torch.where(
-                position > 0,
-                potential_stop - stop_loss,
-                stop_loss - potential_stop,
-            )
-            min_improvement = self.minimum_improvement * torch.abs(
-                base_price - stop_loss
-            )
-            improve_mask_subset = (
-                stage_mask & (improvement > min_improvement) & (conv_date_idx >= 0)
-            )
-            stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
-            stage = torch.where(
-                improve_mask_subset & (s < self.stage_count - 1),
-                s + 1,
-                stage,
+        nonzero_stage = stage[has_position_mask]
+        if nonzero_stage.numel() > 0:
+            loop_start = max(1, int(nonzero_stage.min().item()))
+            loop_end = int(nonzero_stage.max().item())
+
+            def cond_fn(s, _stage_tensor, _stop_tensor):
+                return s <= loop_end
+
+            def body_fn(s, stage_tensor, stop_tensor):
+                stage_mask = (stage_tensor == s) & has_position_mask
+                conv_date_idx = self.converted_indices[s].date_idx[date_idx, time_idx]
+                conv_time_idx = self.converted_indices[s].time_idx[date_idx, time_idx]
+                conv_state = {
+                    "date_idx": conv_date_idx,
+                    "time_idx": conv_time_idx,
+                    "position": position * stage_mask,
+                    "prev_stop_loss": stop_tensor,
+                }
+                potential_stop = self.artr_policies[s](conv_state, self._zero)
+                improvement = torch.where(
+                    position > 0,
+                    potential_stop - stop_tensor,
+                    stop_tensor - potential_stop,
+                )
+                min_improvement = self.minimum_improvement * torch.abs(
+                    base_price - stop_tensor
+                )
+                improve_mask_subset = (
+                    stage_mask & (improvement > min_improvement) & (conv_date_idx >= 0)
+                )
+                stop_tensor = torch.where(
+                    improve_mask_subset, potential_stop, stop_tensor
+                )
+                stage_tensor = torch.where(
+                    improve_mask_subset & (s < self.stage_count - 1),
+                    s + 1,
+                    stage_tensor,
+                )
+                return s + 1, stage_tensor, stop_tensor
+
+            _, stage, stop_loss = torch.while_loop(
+                cond_fn, body_fn, (loop_start, stage, stop_loss)
             )
 
         state["maint_stage"] = stage
