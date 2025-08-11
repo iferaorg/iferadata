@@ -161,7 +161,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             set_mask = nan_base_mask & finite_prev_stop
             base_price = torch.where(set_mask, stop_loss, base_price)
 
-        stage0_mask = stage == 0
+        stage0_mask = (stage == 0) & has_position_mask
         if self.wait_for_breakeven:
             potential_stop = self.artr_policies[0](
                 state,
@@ -174,10 +174,10 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
             stage = torch.where(improve_mask_subset, 1, stage)
         else:
-            stage = torch.where(stage0_mask & has_position_mask, 1, stage)
+            stage = torch.where(stage0_mask, 1, stage)
 
         for s in range(1, self.stage_count):
-            stage_mask = stage == s
+            stage_mask = (stage == s) & has_position_mask
             conv_date_idx = self.converted_indices[s].date_idx[date_idx, time_idx]
             conv_time_idx = self.converted_indices[s].time_idx[date_idx, time_idx]
             conv_state = {
@@ -337,7 +337,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         if self.trailing_stop:
             stop_loss = torch.where(stage1_mask, atr_stop, stop_loss)
 
-        stage2_mask = stage == 1
+        stage2_mask = (stage == 1) & has_position_mask
         reference_channel = torch.where(position > 0, 1, 2)
         reference_price = self._data[date_idx, time_idx, reference_channel]
         candidate_stop_loss = torch.where(
