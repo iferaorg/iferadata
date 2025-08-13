@@ -228,7 +228,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         def false_branch(stage_tensor, stop_tensor, _):
             return 0, stage_tensor, stop_tensor
 
-        predicate = bool(torch.any(nonzero_mask))
+        predicate = torch.any(nonzero_mask)
         _, stage, stop_loss = torch.cond(
             predicate,
             true_branch,
