@@ -176,11 +176,15 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         else:
             stage = torch.where(stage0_mask, 1, stage)
 
-        nonzero_stage = stage[has_position_mask & ~stage0_mask]
+        nonzero_mask = has_position_mask & ~stage0_mask
 
-        def true_branch(stage_tensor, stop_tensor, nz_stage):
-            loop_start = max(1, int(nz_stage.min().item()))
-            loop_end = int(nz_stage.max().item())
+        def true_branch(stage_tensor, stop_tensor, nz_mask):
+            stage_for_min = torch.where(
+                nz_mask, stage_tensor, torch.full_like(stage_tensor, self.stage_count)
+            )
+            stage_for_max = torch.where(nz_mask, stage_tensor, self._zero)
+            loop_start = max(1, int(stage_for_min.min().item()))
+            loop_end = int(stage_for_max.max().item())
 
             def cond_fn(s, _stage_tensor, _stop_tensor):
                 return s <= loop_end
@@ -224,11 +228,12 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         def false_branch(stage_tensor, stop_tensor, _):
             return 0, stage_tensor, stop_tensor
 
+        predicate = bool(torch.any(nonzero_mask))
         _, stage, stop_loss = torch.cond(
-            nonzero_stage.numel() > 0,
+            predicate,
             true_branch,
             false_branch,
-            (stage, stop_loss, nonzero_stage),
+            (stage, stop_loss, nonzero_mask),
         )
 
         state["maint_stage"] = stage
