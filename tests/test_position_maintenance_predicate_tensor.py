@@ -4,6 +4,11 @@ import pytest
 from ifera.policies import ScaledArtrMaintenancePolicy
 from ifera.data_models import DataManager
 
+higher_ops_available = hasattr(torch, "cond") and hasattr(torch, "while_loop")
+pytestmark = pytest.mark.skipif(
+    not higher_ops_available, reason="torch._higher_order_ops not available"
+)
+
 
 class DummyData:
     def __init__(self, instrument):
