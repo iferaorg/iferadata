@@ -6,13 +6,15 @@ from abc import ABC, abstractmethod
 from typing import List, Tuple
 
 import torch
+import torch._dynamo  # pylint: disable=protected-access
 from torch import nn
 from einops import repeat
-
 from ..data_models import InstrumentData, DataManager
 from ..config import ConfigManager
 from ..file_manager import FileManager
 from .stop_loss_policy import ArtrStopLossPolicy
+
+torch._dynamo.config.capture_scalar_outputs = True  # pylint: disable=protected-access
 
 
 class PositionMaintenancePolicy(nn.Module, ABC):
