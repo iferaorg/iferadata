@@ -15,17 +15,6 @@ from ..file_manager import FileManager
 from .stop_loss_policy import ArtrStopLossPolicy
 
 
-class _IndexConversion(nn.Module):
-    def __init__(self, date_idx: torch.Tensor, time_idx: torch.Tensor) -> None:
-        super().__init__()
-        self.register_buffer("date_idx", date_idx)
-        self.register_buffer("time_idx", time_idx)
-
-    def forward(self) -> None:  # pragma: no cover
-        """_IndexConversion is a holder module and should not be called."""
-        raise NotImplementedError
-
-
 class PositionMaintenancePolicy(nn.Module, ABC):
     """Abstract base class for position maintenance policies."""
 
@@ -109,9 +98,9 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             for s in range(len(derived_data))
         ]
 
-        self.converted_indices = nn.ModuleList(
-            _IndexConversion(d_idx, t_idx) for d_idx, t_idx in converted
-        )
+        conv_date_idx, conv_time_idx = zip(*converted)
+        self.register_buffer("conv_date_idx", torch.stack(conv_date_idx))
+        self.register_buffer("conv_time_idx", torch.stack(conv_time_idx))
 
         self.artr_policies = nn.ModuleList(
             ArtrStopLossPolicy(data, self.atr_multiple) for data in derived_data
@@ -191,8 +180,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
             def body_fn(s, stage_tensor, stop_tensor):
                 stage_mask = (stage_tensor == s) & has_position_mask
-                conv_date_idx = self.converted_indices[s].date_idx[date_idx, time_idx]
-                conv_time_idx = self.converted_indices[s].time_idx[date_idx, time_idx]
+                conv_date_idx = self.conv_date_idx[s, date_idx, time_idx]
+                conv_time_idx = self.conv_time_idx[s, date_idx, time_idx]
                 conv_state = {
                     "date_idx": conv_date_idx,
                     "time_idx": conv_time_idx,
