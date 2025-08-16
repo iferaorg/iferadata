@@ -424,33 +424,40 @@ class GraphPlan:
         return next_props, next_prop_mutex
 
     @staticmethod
-    def _find_covering_set(
+    def _find_covering_sets(
         level: int,
         subgoals: torch.Tensor,
         achievers: torch.Tensor,
         action_mutex: torch.Tensor,
-        failed_cache: Dict[tuple[int, frozenset[int]], bool],
+        failed_cache: Dict[tuple[int, frozenset[int], frozenset[int]], bool],
         used: Optional[List[int]] = None,
-    ) -> Optional[List[int]]:
-        """Return indices of actions covering ``subgoals`` without mutex conflicts."""
+    ) -> List[List[int]]:
+        """Return all action index combinations covering ``subgoals`` without mutex.
+
+        The cache key additionally incorporates the currently selected action indices
+        (``used``) to avoid incorrectly pruning feasible sets when different actions
+        have already been chosen higher in the recursion stack.
+        """
 
         if used is None:
             used = []
         subkey = frozenset(torch.where(subgoals)[0].tolist())
-        cache_key = (level, subkey)
+        used_key = frozenset(used)
+        cache_key = (level, subkey, used_key)
         if cache_key in failed_cache:
-            return None
+            return []
         if not torch.any(subgoals):
-            return used
+            return [used]
         covered = torch.sum(achievers & subgoals[None, :], dim=1)
         possible_acts = torch.argsort(covered, descending=True)
+        results: List[List[int]] = []
         for act_local in possible_acts:
             if covered[act_local] == 0:
                 continue
             if any(action_mutex[act_local, u] for u in used):
                 continue
             new_subgoals = subgoals & ~achievers[act_local]
-            result = GraphPlan._find_covering_set(
+            sub_results = GraphPlan._find_covering_sets(
                 level,
                 new_subgoals,
                 achievers,
@@ -458,10 +465,10 @@ class GraphPlan:
                 failed_cache,
                 used + [act_local.item()],
             )
-            if result is not None:
-                return result
-        failed_cache[cache_key] = True
-        return None
+            results.extend(sub_results)
+        if not results:
+            failed_cache[cache_key] = True
+        return results
 
     def _extract_plan(
         self,
@@ -469,39 +476,40 @@ class GraphPlan:
         act_levels: List[Dict[str, torch.Tensor]],
         goal_props: torch.Tensor,
         level: int,
-        failed_cache: Dict[tuple[int, frozenset[int]], bool],
+        failed_cache: Dict[tuple[int, frozenset[int], frozenset[int]], bool],
     ) -> Optional[List[List[str]]]:
         """Extract a valid plan from the planning graph if possible."""
-        current_subgoals = goal_props.clone().cpu()
-        plan: List[List[str]] = []
 
-        for lv in range(level, 0, -1):
+        def backtrack(lv: int, subgoals: torch.Tensor) -> Optional[List[List[str]]]:
+            if lv == 0:
+                if torch.all(subgoals <= prop_levels[0]["props"].cpu()):
+                    return []
+                return None
+
             act_lv = act_levels[lv - 1]
             act_indices = act_lv["indices"].cpu()
             action_mutex_app = act_lv["mutex"].cpu()
             achievers_app = self.adds_cpu[act_indices]
 
-            selected_local = self._find_covering_set(
-                lv, current_subgoals, achievers_app, action_mutex_app, failed_cache
+            covering_sets = self._find_covering_sets(
+                lv, subgoals, achievers_app, action_mutex_app, failed_cache
             )
-            if selected_local is None:
-                return None
+            for selected_local in covering_sets:
+                selected_acts = act_indices[selected_local]
+                next_subgoals = torch.any(self.preconds_cpu[selected_acts], dim=0)
+                prefix = backtrack(lv - 1, next_subgoals)
+                if prefix is not None:
+                    layer = [
+                        self.all_actions[i.item()]["name"]
+                        for i in selected_acts
+                        if not self.all_actions[i.item()].get("noop")
+                    ]
+                    if layer:
+                        return prefix + [layer]
+                    return prefix
+            return None
 
-            selected_acts = act_indices[selected_local]
-            plan_layer = [
-                self.all_actions[i.item()]["name"]
-                for i in selected_acts
-                if not self.all_actions[i.item()].get("noop")
-            ]
-            if plan_layer:
-                plan.append(plan_layer)
-
-            current_subgoals = torch.any(self.preconds_cpu[selected_acts], dim=0)
-
-        if torch.all(current_subgoals <= prop_levels[0]["props"].cpu()):
-            plan.reverse()
-            return plan
-        return None
+        return backtrack(level, goal_props.clone().cpu())
 
     def run(self) -> Optional[List[List[str]]]:
         """Run the main GraphPlan algorithm and return the plan if found."""
@@ -521,7 +529,7 @@ class GraphPlan:
         ]
         act_levels: List[Dict[str, torch.Tensor]] = []
 
-        failed_cache: Dict[tuple[int, frozenset[int]], bool] = {}
+        failed_cache: Dict[tuple[int, frozenset[int], frozenset[int]], bool] = {}
 
         level = 0
         while True:
