@@ -395,16 +395,19 @@ class GraphPlan:
         prop_mux_f = prop_mutex.float()
         competing = (pre_f @ prop_mux_f @ pre_f.T) > 0
 
-        adds_b = adds[:, None, :]
+        adds_a = adds[:, None, :]
+        adds_b = adds[None, :, :]
+        dels_a = dels[:, None, :]
         dels_b = dels[None, :, :]
-        inc_effects = torch.any(adds_b & dels_b, dim=2) | torch.any(
-            adds[None, :, :] & dels[:, None, :], dim=2
+
+        inc_effects = torch.any(adds_a & dels_b, dim=2) | torch.any(
+            adds_b & dels_a, dim=2
         )
 
-        dels_b = dels[:, None, :]
+        pre_a = preconds[:, None, :]
         pre_b = preconds[None, :, :]
-        interference = torch.any(dels_b & pre_b, dim=2) | torch.any(
-            dels[None, :, :] & preconds[:, None, :], dim=2
+        interference = torch.any(dels_a & pre_b, dim=2) | torch.any(
+            dels_b & pre_a, dim=2
         )
 
         mutex = competing | inc_effects | interference
