@@ -1,0 +1,20 @@
+propositions:
+  - p1
+  - p2
+  - q1
+  - q2
+  - goal
+actions:
+  - name: achieve_goal
+    preconds:
+      - [p1, p2]
+      - [q1, q2]
+    add:
+      - goal
+initial:
+  - p1
+  - p2
+  - q1
+  - q2
+goals:
+  - goal

@@ -26,3 +26,15 @@ def test_graphplan_backtrack():
     assert plan is not None
     flattened = sorted(act for layer in plan for act in layer)
     assert flattened == ["a2", "b2"]
+
+
+def test_graphplan_disjunctive_preconditions():
+    """Actions with OR preconditions should expand into multiple variants."""
+    yaml_path = Path(__file__).with_name("test_graphplan_disjunction.yml")
+    planner = GraphPlan(str(yaml_path))
+    action_names = {a["name"] for a in planner.all_actions}
+    assert {f"achieve_goal_v{i}" for i in range(4)} <= action_names
+    plan = planner.run()
+    assert plan is not None
+    flattened = [act for layer in plan for act in layer]
+    assert any(act.startswith("achieve_goal") for act in flattened)
