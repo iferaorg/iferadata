@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+from copy import deepcopy
+from itertools import product
 from typing import Dict, List, Optional
 
 import torch
@@ -100,6 +102,30 @@ class GraphPlan:
             if new_noops.any():
                 act_mask |= new_noops
         return prop_mask, act_mask
+
+    @staticmethod
+    def _expand_disjunctive_preconditions(
+        actions: List[Dict[str, List[str]]],
+    ) -> List[Dict[str, List[str]]]:
+        """Expand actions with disjunctive preconditions into separate variants."""
+
+        new_actions: List[Dict[str, List[str]]] = []
+        for act in actions:
+            preconds = act.get("preconds", [])
+            options: List[List[str]] = []
+            for cond in preconds:
+                if isinstance(cond, list):
+                    options.append(cond)
+                else:
+                    options.append([cond])
+            combos = list(product(*options))
+            for idx, combo in enumerate(combos):
+                new_act = deepcopy(act)
+                new_act["preconds"] = list(combo)
+                if len(combos) > 1:
+                    new_act["name"] = f"{act['name']}_v{idx}"
+                new_actions.append(new_act)
+        return new_actions
 
     @staticmethod
     def _handle_variables(
@@ -254,7 +280,9 @@ class GraphPlan:
         propositions: List[str] = data["propositions"]
         prop_to_id: Dict[str, int] = {p: i for i, p in enumerate(propositions)}
 
-        actions: List[Dict[str, List[str]]] = data["actions"]
+        actions: List[Dict[str, List[str]]] = self._expand_disjunctive_preconditions(
+            data["actions"]
+        )
         initial: List[str] = data["initial"]
 
         self._handle_variables(
