@@ -270,10 +270,19 @@ class GraphPlan:
             actions, propositions, prop_to_id, initial
         )
 
+        for act in actions:
+            act["noop"] = False
+
         noop_actions = []
         for i in range(num_props):
             p = propositions[i]
-            noop = {"name": f"noop_{p}", "preconds": [p], "add": [p], "del": []}
+            noop = {
+                "name": f"noop_{p}",
+                "preconds": [p],
+                "add": [p],
+                "del": [],
+                "noop": True,
+            }
             noop_actions.append(noop)
 
         all_actions = actions + noop_actions
@@ -319,13 +328,6 @@ class GraphPlan:
             print("No reachable propositions")
             sys.exit(0)
 
-        old_to_new_prop_reach = -torch.ones(
-            num_props, dtype=torch.long, device=self.device
-        )
-        old_to_new_prop_reach[reachable_prop_ids] = torch.arange(
-            num_reach_props, device=self.device
-        )
-
         reachable_act_ids = torch.nonzero(forward_act_mask).squeeze(-1)
         num_reach_acts = reachable_act_ids.size(0)
 
@@ -347,13 +349,6 @@ class GraphPlan:
         if num_rel_props == 0:
             print("No relevant propositions")
             sys.exit(0)
-
-        old_to_new_prop = -torch.ones(
-            num_reach_props, dtype=torch.long, device=self.device
-        )
-        old_to_new_prop[relevant_prop_ids] = torch.arange(
-            num_rel_props, device=self.device
-        )
 
         relevant_act_ids = torch.nonzero(backward_act_mask).squeeze(-1)
         num_rel_acts = relevant_act_ids.size(0)
@@ -493,8 +488,13 @@ class GraphPlan:
                 return None
 
             selected_acts = act_indices[selected_local]
-            plan_layer = [self.all_actions[i.item()]["name"] for i in selected_acts]
-            plan.append(plan_layer)
+            plan_layer = [
+                self.all_actions[i.item()]["name"]
+                for i in selected_acts
+                if not self.all_actions[i.item()].get("noop")
+            ]
+            if plan_layer:
+                plan.append(plan_layer)
 
             current_subgoals = torch.any(self.preconds_cpu[selected_acts], dim=0)
 
