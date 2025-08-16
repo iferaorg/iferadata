@@ -382,6 +382,89 @@ class GraphPlan:
     # ------------------------------------------------------------------
     # Planning
     # ------------------------------------------------------------------
+    def _compute_action_mutex(
+        self,
+        preconds: torch.Tensor,
+        adds: torch.Tensor,
+        dels: torch.Tensor,
+        prop_mutex: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute mutex relationships between applicable actions."""
+
+        pre_f = preconds.float()
+        prop_mux_f = prop_mutex.float()
+        competing = (pre_f @ prop_mux_f @ pre_f.T) > 0
+
+        adds_b = adds[:, None, :]
+        dels_b = dels[None, :, :]
+        inc_effects = torch.any(adds_b & dels_b, dim=2) | torch.any(
+            adds[None, :, :] & dels[:, None, :], dim=2
+        )
+
+        dels_b = dels[:, None, :]
+        pre_b = preconds[None, :, :]
+        interference = torch.any(dels_b & pre_b, dim=2) | torch.any(
+            dels[None, :, :] & preconds[:, None, :], dim=2
+        )
+
+        mutex = competing | inc_effects | interference
+        mutex.diagonal().fill_(False)
+        return mutex
+
+    @staticmethod
+    def _compute_prop_level(
+        adds: torch.Tensor, action_mutex: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute the next proposition layer and its mutex matrix."""
+
+        next_props = torch.any(adds, dim=0)
+        ach_f = adds.float()
+        not_act_mux_f = (~action_mutex).float()
+        prop_comp = (ach_f.T @ not_act_mux_f @ ach_f) > 0
+        next_prop_mutex = ~prop_comp
+        next_prop_mutex.diagonal().fill_(False)
+        return next_props, next_prop_mutex
+
+    @staticmethod
+    def _find_covering_set(
+        level: int,
+        subgoals: torch.Tensor,
+        achievers: torch.Tensor,
+        action_mutex: torch.Tensor,
+        failed_cache: Dict[tuple[int, frozenset[int]], bool],
+        used: Optional[List[int]] = None,
+    ) -> Optional[List[int]]:
+        """Return indices of actions covering ``subgoals`` without mutex conflicts."""
+
+        if used is None:
+            used = []
+        subkey = frozenset(torch.where(subgoals)[0].tolist())
+        cache_key = (level, subkey)
+        if cache_key in failed_cache:
+            return None
+        if not torch.any(subgoals):
+            return used
+        covered = torch.sum(achievers & subgoals[None, :], dim=1)
+        possible_acts = torch.argsort(covered, descending=True)
+        for act_local in possible_acts:
+            if covered[act_local] == 0:
+                continue
+            if any(action_mutex[act_local, u] for u in used):
+                continue
+            new_subgoals = subgoals & ~achievers[act_local]
+            result = GraphPlan._find_covering_set(
+                level,
+                new_subgoals,
+                achievers,
+                action_mutex,
+                failed_cache,
+                used + [act_local.item()],
+            )
+            if result is not None:
+                return result
+        failed_cache[cache_key] = True
+        return None
+
     def _extract_plan(
         self,
         prop_levels: List[Dict[str, torch.Tensor]],
@@ -391,8 +474,6 @@ class GraphPlan:
         failed_cache: Dict[tuple[int, frozenset[int]], bool],
     ) -> Optional[List[List[str]]]:
         """Extract a valid plan from the planning graph if possible."""
-
-        # pylint: disable=cell-var-from-loop
         current_subgoals = goal_props.clone().cpu()
         plan: List[List[str]] = []
 
@@ -402,32 +483,9 @@ class GraphPlan:
             action_mutex_app = act_lv["mutex"].cpu()
             achievers_app = self.adds_cpu[act_indices]
 
-            def find_covering_set(
-                subgoals: torch.Tensor, used: Optional[List[int]] = None
-            ) -> Optional[List[int]]:
-                if used is None:
-                    used = []
-                subkey = frozenset(torch.where(subgoals)[0].tolist())
-                cache_key = (lv, subkey)
-                if cache_key in failed_cache:
-                    return None
-                if not torch.any(subgoals):
-                    return used
-                covered = torch.sum(achievers_app & subgoals[None, :], dim=1)
-                possible_acts = torch.argsort(covered, descending=True)
-                for act_local in possible_acts:
-                    if covered[act_local] == 0:
-                        continue
-                    if any(action_mutex_app[act_local, u] for u in used):
-                        continue
-                    new_subgoals = subgoals & ~achievers_app[act_local]
-                    result = find_covering_set(new_subgoals, used + [act_local.item()])
-                    if result is not None:
-                        return result
-                failed_cache[cache_key] = True
-                return None
-
-            selected_local = find_covering_set(current_subgoals)
+            selected_local = self._find_covering_set(
+                lv, current_subgoals, achievers_app, action_mutex_app, failed_cache
+            )
             if selected_local is None:
                 return None
 
@@ -478,33 +536,15 @@ class GraphPlan:
             adds_app = self.adds[act_indices]
             dels_app = self.dels[act_indices]
 
-            pre_app_f = pre_app.float()
-            prop_mux_f = current_prop_mutex.float()
-            competing_app = (pre_app_f @ prop_mux_f @ pre_app_f.T) > 0
-
-            adds_app_b = adds_app[:, None, :]
-            dels_app_b = dels_app[None, :, :]
-            inc_effects_app = torch.any(adds_app_b & dels_app_b, dim=2) | torch.any(
-                adds_app[None, :, :] & dels_app[:, None, :], dim=2
+            action_mutex_app = self._compute_action_mutex(
+                pre_app, adds_app, dels_app, current_prop_mutex
             )
-
-            dels_app_b = dels_app[:, None, :]
-            pre_app_b = pre_app[None, :, :]
-            interf_app = torch.any(dels_app_b & pre_app_b, dim=2) | torch.any(
-                dels_app[None, :, :] & pre_app[:, None, :], dim=2
-            )
-
-            action_mutex_app = competing_app | inc_effects_app | interf_app
-            action_mutex_app.diagonal().fill_(False)
 
             act_levels.append({"indices": act_indices, "mutex": action_mutex_app})
 
-            next_props = torch.any(adds_app, dim=0)
-            ach_app_f = adds_app.float()
-            not_act_mux_app_f = (~action_mutex_app).float()
-            prop_comp = (ach_app_f.T @ not_act_mux_app_f @ ach_app_f) > 0
-            next_prop_mutex = ~prop_comp
-            next_prop_mutex.diagonal().fill_(False)
+            next_props, next_prop_mutex = self._compute_prop_level(
+                adds_app, action_mutex_app
+            )
 
             leveled_off = torch.all(next_props == current_props) and torch.all(
                 next_prop_mutex == current_prop_mutex
