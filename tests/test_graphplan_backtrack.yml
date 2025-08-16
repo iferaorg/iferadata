@@ -1,0 +1,36 @@
+propositions:
+  - A
+  - B
+  - p
+  - q
+actions:
+  - name: a1
+    preconds:
+      - q
+    add:
+      - A
+    del:
+      - p
+  - name: a2
+    preconds:
+      - q
+    add:
+      - A
+  - name: b1
+    preconds:
+      - p
+    add:
+      - B
+    del:
+      - q
+  - name: b2
+    preconds:
+      - p
+    add:
+      - B
+initial:
+  - p
+  - q
+goals:
+  - A
+  - B
