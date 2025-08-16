@@ -1,0 +1,49 @@
+propositions:
+  - danger
+  - safe
+variables:
+  color:
+    type: enum
+    values:
+      - red
+      - green
+      - blue
+  counter:
+    type: int
+    min_value: 0
+    max_value: 3
+actions:
+  - name: paint_green
+    var_precond:
+      - "color != blue"
+    set:
+      - [color, green]
+  - name: increment_to_1
+    var_precond:
+      - "color == red"
+      - "counter == 0"
+    set:
+      - [counter, 1]
+  - name: increment_to_2
+    var_precond:
+      - "counter == 1"
+    set:
+      - [counter, 2]
+  - name: set_to_3
+    var_precond:
+      - "counter >= 1"
+      - "counter <= 2"
+    set:
+      - [counter, 3]
+  - name: make_safe
+    neg_preconds:
+      - danger
+    add:
+      - safe
+initial:
+  - color_eq_red
+  - counter_eq_0
+goals:
+  - safe
+  - color_eq_green
+  - counter_eq_3
