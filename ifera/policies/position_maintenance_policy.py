@@ -175,7 +175,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             )
             stage_for_max = torch.where(nz_mask, stage_tensor, self._zero)
             loop_start = int(torch.clamp_min(stage_for_min.min(), 1).item())
-            loop_end = int(stage_for_max.max().item().item())
+            loop_end = int(stage_for_max.max().item())
 
             def cond_fn(s, _stage_tensor, _stop_tensor):
                 return s <= loop_end
