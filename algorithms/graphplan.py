@@ -401,6 +401,8 @@ class GraphPlan:
 
         self.preconds_cpu = self.preconds.cpu()
         self.adds_cpu = self.adds.cpu()
+        self.init_props_cpu = self.init_props.cpu()
+        self.goal_props_cpu = self.goal_props.cpu()
 
     # ------------------------------------------------------------------
     # Planning
@@ -510,13 +512,13 @@ class GraphPlan:
 
         def backtrack(lv: int, subgoals: torch.Tensor) -> Optional[List[List[str]]]:
             if lv == 0:
-                if torch.all(subgoals <= prop_levels[0]["props"].cpu()):
+                if torch.all(subgoals <= prop_levels[0]["props"]):
                     return []
                 return None
 
             act_lv = act_levels[lv - 1]
-            act_indices = act_lv["indices"].cpu()
-            action_mutex_app = act_lv["mutex"].cpu()
+            act_indices = act_lv["indices"]
+            action_mutex_app = act_lv["mutex"]
             achievers_app = self.adds_cpu[act_indices]
 
             covering_sets = self._find_covering_sets(
@@ -537,7 +539,7 @@ class GraphPlan:
                     return prefix
             return None
 
-        return backtrack(level, goal_props.clone().cpu())
+        return backtrack(level, goal_props.clone())
 
     def run(self) -> Optional[List[List[str]]]:
         """Run the main GraphPlan algorithm and return the plan if found."""
@@ -545,15 +547,12 @@ class GraphPlan:
         if torch.all(self.goal_props <= self.init_props):
             return []
 
+        current_props = self.init_props
+        current_prop_mutex = torch.zeros(
+            (self.num_props, self.num_props), dtype=torch.bool, device=self.device
+        )
         prop_levels = [
-            {
-                "props": self.init_props,
-                "mutex": torch.zeros(
-                    (self.num_props, self.num_props),
-                    dtype=torch.bool,
-                    device=self.device,
-                ),
-            }
+            {"props": self.init_props_cpu, "mutex": current_prop_mutex.cpu()}
         ]
         act_levels: List[Dict[str, torch.Tensor]] = []
 
@@ -562,13 +561,10 @@ class GraphPlan:
         level = 0
         while True:
             level += 1
-            current_props = prop_levels[-1]["props"]
-            current_prop_mutex = prop_levels[-1]["mutex"]
 
             applicable = torch.all(self.preconds <= current_props[None, :], dim=1)
             act_indices = torch.where(applicable)[0]
-            num_app = act_indices.shape[0]
-            if num_app == 0:
+            if act_indices.shape[0] == 0:
                 return None
 
             pre_app = self.preconds[act_indices]
@@ -579,7 +575,9 @@ class GraphPlan:
                 pre_app, adds_app, dels_app, current_prop_mutex
             )
 
-            act_levels.append({"indices": act_indices, "mutex": action_mutex_app})
+            act_levels.append(
+                {"indices": act_indices.cpu(), "mutex": action_mutex_app.cpu()}
+            )
 
             next_props, next_prop_mutex = self._compute_prop_level(
                 adds_app, action_mutex_app
@@ -591,7 +589,9 @@ class GraphPlan:
             if leveled_off:
                 return None
 
-            prop_levels.append({"props": next_props, "mutex": next_prop_mutex})
+            prop_levels.append(
+                {"props": next_props.cpu(), "mutex": next_prop_mutex.cpu()}
+            )
 
             if torch.all(self.goal_props <= next_props):
                 goal_indices = torch.where(self.goal_props)[0]
@@ -599,10 +599,17 @@ class GraphPlan:
                     goal_indices[:, None], goal_indices[None, :]
                 ].any():
                     plan = self._extract_plan(
-                        prop_levels, act_levels, self.goal_props, level, failed_cache
+                        prop_levels,
+                        act_levels,
+                        self.goal_props_cpu,
+                        level,
+                        failed_cache,
                     )
                     if plan:
                         return plan
+
+            current_props = next_props
+            current_prop_mutex = next_prop_mutex
 
     # ------------------------------------------------------------------
     # Convenience wrapper for command-line usage
