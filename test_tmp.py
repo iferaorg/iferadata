@@ -344,7 +344,7 @@ env = ifera.MultiGPUSingleMarketEnv(
     dtype=torch.float32,
 )
 base_env = env.envs[0]
-batch_size = base_env.instrument_data.data.shape[0] - 250
+batch_size = 32 #base_env.instrument_data.data.shape[0] - 250
 
 date_idx = torch.arange(0, batch_size, dtype=torch.int32)
 time_idx = torch.zeros_like(date_idx, dtype=torch.int32)
