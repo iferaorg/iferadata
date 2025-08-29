@@ -26,5 +26,5 @@ def test_calculate_artr(monkeypatch, base_instrument_config, ohlcv_single_date):
     mask = torch.ones(dummy_data.shape[:-1], dtype=torch.bool)
     expected = masked_artr(dummy_data[..., 4:], mask, alpha=0.5, acrossday=False)
 
-    torch.testing.assert_close(result, expected)
-    torch.testing.assert_close(data.artr, expected)
+    torch.testing.assert_close(result, expected.to(result.device))
+    torch.testing.assert_close(data.artr, expected.to(result.device))

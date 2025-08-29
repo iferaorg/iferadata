@@ -130,10 +130,18 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         """Fully reset internal stage and base price."""
         state["maint_stage"] = self._zero.clone()
         state["base_price"] = self._nan.clone()
+        state["entry_date_idx"] = torch.full_like(self._zero, -1)
+        state["entry_time_idx"] = torch.full_like(self._zero, -1)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         state["maint_stage"] = torch.where(mask, self._zero, state["maint_stage"])
         state["base_price"] = torch.where(mask, self._nan, state["base_price"])
+        state["entry_date_idx"] = torch.where(
+            mask, state["date_idx"], state["entry_date_idx"]
+        )
+        state["entry_time_idx"] = torch.where(
+            mask, state["time_idx"], state["entry_time_idx"]
+        )
 
     def forward(
         self,
@@ -147,6 +155,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         position = state["position"]
         base_price = state["base_price"]
         stage = state["maint_stage"]
+        entry_date_idx = state["entry_date_idx"]
+        entry_time_idx = state["entry_time_idx"]
         has_position_mask = position != 0
 
         nan_base_mask = torch.isnan(base_price) & has_position_mask
@@ -158,6 +168,25 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             base_price = torch.where(set_mask, stop_loss, base_price)
 
         stage0_mask = (stage == 0) & has_position_mask
+
+        # Check time condition for stage 0 -> 1 transition
+        conv_entry_date_idx = self.conv_date_idx[:, entry_date_idx, entry_time_idx]
+        conv_entry_time_idx = self.conv_time_idx[:, entry_date_idx, entry_time_idx]
+        conv_date_idx = self.conv_date_idx[:, date_idx, time_idx]
+        conv_time_idx = self.conv_time_idx[:, date_idx, time_idx]
+
+        # Ensure a full period of the next stage has passed since entry
+        time_condition = (
+            (conv_entry_date_idx[1] >= 0)
+            & (
+                (conv_date_idx[1] > conv_entry_date_idx[1])
+                | (
+                    (conv_date_idx[1] == conv_entry_date_idx[1])
+                    & (conv_time_idx[1] > conv_entry_time_idx[1])
+                )
+            )
+        )
+
         if self.wait_for_breakeven:
             potential_stop = self.artr_policies[0](
                 state,
@@ -167,18 +196,17 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 (position > 0) & (potential_stop > entry_price)
                 | (position < 0) & (potential_stop < entry_price)
             )
+            improve_mask_subset = improve_mask_subset & time_condition
             stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
             stage = torch.where(improve_mask_subset, 1, stage)
         else:
-            stage = torch.where(stage0_mask, 1, stage)
+            stage = torch.where(stage0_mask & time_condition, 1, stage)
 
         for s in range(1, self.stage_count):
             stage_mask = (stage == s) & has_position_mask
-            conv_date_idx = self.conv_date_idx[s, date_idx, time_idx]
-            conv_time_idx = self.conv_time_idx[s, date_idx, time_idx]
             conv_state = {
-                "date_idx": conv_date_idx,
-                "time_idx": conv_time_idx,
+                "date_idx": conv_date_idx[s],
+                "time_idx": conv_time_idx[s],
                 "position": position * stage_mask,
                 "prev_stop_loss": stop_loss,
             }
@@ -192,11 +220,24 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 base_price - stop_loss
             )
             improve_mask_subset = (
-                stage_mask & (improvement > min_improvement) & (conv_date_idx >= 0)
+                stage_mask & (improvement > min_improvement) & (conv_date_idx[s] >= 0)
             )
-            stop_loss = torch.where(
-                improve_mask_subset, potential_stop, stop_loss
-            )
+
+            # Check time condition for stage s -> s+1 transition (if not last stage)
+            if s < self.stage_count - 1:
+                time_condition = (
+                    (conv_entry_date_idx[s + 1] >= 0)
+                    & (
+                        (conv_date_idx[s + 1] > conv_entry_date_idx[s + 1])
+                        | (
+                            (conv_date_idx[s + 1] == conv_entry_date_idx[s + 1])
+                            & (conv_time_idx[s + 1] > conv_entry_time_idx[s + 1])
+                        )
+                    )
+                )
+                improve_mask_subset = improve_mask_subset & time_condition
+
+            stop_loss = torch.where(improve_mask_subset, potential_stop, stop_loss)
             stage = torch.where(
                 improve_mask_subset & (s < self.stage_count - 1),
                 s + 1,
@@ -205,6 +246,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
         state["maint_stage"] = stage
         state["base_price"] = base_price
+        # Note: entry_date_idx and entry_time_idx are set in masked_reset and should not be modified here
 
         return action, stop_loss
 
