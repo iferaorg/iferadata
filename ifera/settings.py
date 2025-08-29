@@ -3,6 +3,7 @@ Settings module for the ifera package.
 Contains configuration settings that can be loaded from environment variables or .env file.
 """
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -17,10 +18,7 @@ class Settings(BaseSettings):
     S3_BUCKET: str = "s3bucket"
     GITHUB_TOKEN: str = ""
 
-    class Config:
-        """Configuration class for pydantic settings"""
-
-        env_file = ".env"
+    model_config = ConfigDict(env_file=".env")
 
 
 settings = Settings()
