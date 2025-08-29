@@ -35,6 +35,7 @@ class AlwaysOpenPolicy(OpenPositionPolicy):
     def __init__(self, direction: int, batch_size: int, device: torch.device) -> None:
         super().__init__()
         _ = batch_size
+        self.direction: torch.Tensor
         self.register_buffer(
             "direction", torch.tensor(direction, dtype=torch.int32, device=device)
         )
@@ -58,6 +59,7 @@ class OpenOncePolicy(OpenPositionPolicy):
 
     def __init__(self, direction: int, batch_size: int, device: torch.device) -> None:
         super().__init__()
+        self.direction: torch.Tensor
         self.register_buffer(
             "direction", torch.tensor(direction, dtype=torch.int32, device=device)
         )

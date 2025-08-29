@@ -38,6 +38,7 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
 
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
+        self._false: torch.Tensor
         self.register_buffer(
             "_false", torch.zeros(batch_size, dtype=torch.bool, device=device)
         )
@@ -64,6 +65,7 @@ class SingleTradeDonePolicy(TradingDonePolicy):
 
     def __init__(self, batch_size: int, device: torch.device) -> None:
         super().__init__()
+        self.had_position: torch.Tensor
         self.register_buffer(
             "had_position", torch.zeros(batch_size, dtype=torch.bool, device=device)
         )

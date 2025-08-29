@@ -101,7 +101,9 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         ]
 
         conv_date_idx, conv_time_idx = zip(*converted)
+        self.conv_date_idx: torch.Tensor
         self.register_buffer("conv_date_idx", torch.stack(conv_date_idx))
+        self.conv_time_idx: torch.Tensor
         self.register_buffer("conv_time_idx", torch.stack(conv_time_idx))
 
         self.artr_policies = nn.ModuleList(
@@ -111,12 +113,15 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
         device = instrument_data.device
         dtype = instrument_data.dtype
+        self._action: torch.Tensor
         self.register_buffer(
             "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
         )
+        self._zero: torch.Tensor
         self.register_buffer(
             "_zero", torch.zeros(batch_size, dtype=torch.int32, device=device)
         )
+        self._nan: torch.Tensor
         self.register_buffer(
             "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
         )
@@ -241,6 +246,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
                 "'artificial_stage2' anchor_types"
             )
 
+        self._data: torch.Tensor
         self.register_buffer("_data", instrument_data.data)
         self.trailing_stop = trailing_stop
         self.skip_stage1 = skip_stage1
@@ -251,13 +257,16 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         device = instrument_data.device
         dtype = instrument_data.dtype
         initial_stage = 1 if self.skip_stage1 else 0
+        self._action: torch.Tensor
         self.register_buffer(
             "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
         )
+        self._initial_stage: torch.Tensor
         self.register_buffer(
             "_initial_stage",
             torch.full((batch_size,), initial_stage, dtype=torch.long, device=device),
         )
+        self._nan: torch.Tensor
         self.register_buffer(
             "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
         )
