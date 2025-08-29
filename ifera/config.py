@@ -9,7 +9,7 @@ import datetime
 import yaml
 
 import pandas as pd
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from .decorators import singleton
 
 SECONDS_IN_DAY = 86400
@@ -180,11 +180,11 @@ class BaseInstrumentConfig(BaseModel):
             raise ValueError(f"Error computing derived fields: {exc}") from exc
         return self
 
-    model_config = {
-        "arbitrary_types_allowed": True,  # allow pandas.Timedelta
-        "alias_generator": to_camel,  # snake_case -> camelCase
-        "populate_by_name": True,  # allow field population by pythonic names
-    }
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,  # allow pandas.Timedelta
+        alias_generator=to_camel,  # snake_case -> camelCase
+        populate_by_name=True,  # allow field population by pythonic names
+    )
 
 
 class BrokerInstrumentConfig(BaseModel):
@@ -202,10 +202,10 @@ class BrokerInstrumentConfig(BaseModel):
     min_slippage: float = Field(..., alias="minSlippage")
     reference_price: float = Field(..., alias="referencePrice")
 
-    model_config = {
-        "alias_generator": to_camel,
-        "populate_by_name": True,
-    }
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class InstrumentConfig(BaseInstrumentConfig, BrokerInstrumentConfig):
@@ -215,11 +215,11 @@ class InstrumentConfig(BaseInstrumentConfig, BrokerInstrumentConfig):
 
     broker_name: str = Field("", description="Name of the broker")
 
-    model_config = {
-        "arbitrary_types_allowed": True,
-        "alias_generator": to_camel,
-        "populate_by_name": True,
-    }
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 class BrokerConfig(BaseModel):
@@ -230,10 +230,10 @@ class BrokerConfig(BaseModel):
     name: str
     instruments: Dict[str, BrokerInstrumentConfig]
 
-    model_config = {
-        "alias_generator": to_camel,
-        "populate_by_name": True,
-    }
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
 
 
 @singleton
