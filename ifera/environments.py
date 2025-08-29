@@ -157,10 +157,14 @@ class SingleMarketEnv:
         new_position = torch.where(done, position, new_position)
         execution_price = torch.where(done, entry_price, execution_price)
 
-        entry_mask = (position == 0) & (new_position != 0)
+        entry_mask = (position == 0) & (action != 0)
         entry_price = torch.where(entry_mask, execution_price, entry_price)
 
-        return {
+        had_position = state.get("had_position")
+        if had_position is not None:
+            had_position = had_position | (action != 0)
+
+        result = {
             "profit": profit,
             "position": new_position,
             "date_idx": next_date_idx,
@@ -169,6 +173,10 @@ class SingleMarketEnv:
             "prev_stop_loss": stop_loss,
             "done": done,
         }
+        if had_position is not None:
+            result["had_position"] = had_position
+
+        return result
 
     def rollout(
         self,
