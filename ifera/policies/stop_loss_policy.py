@@ -50,6 +50,54 @@ class ArtrStopLossPolicy(StopLossPolicy):
         self._artr: torch.Tensor
         self.register_buffer("_artr", instrument_data.artr)
 
+        # Pre-calculate potential stops for all combinations
+        self._cached_potential_stops: torch.Tensor
+        self.register_buffer(
+            "_cached_potential_stops", self._precompute_potential_stops()
+        )
+
+    def _precompute_potential_stops(self) -> torch.Tensor:
+        """Pre-compute potential stop values for all combinations of position and direction."""
+        dates, times = self._artr.shape
+
+        # Calculate artr for all positions
+        artr = self._artr * self.atr_multiple + 1.0  # Shape: [dates, times]
+
+        # Create tensor with shape [dates, times, 2, 2]
+        # Dimension 2: position == 0 (index 0 = False, index 1 = True)
+        # Dimension 3: direction > 0 (index 0 = False, index 1 = True)
+        potential_stops = torch.zeros(
+            dates, times, 2, 2, dtype=self._data.dtype, device=self._data.device
+        )
+
+        # For each combination of (position==0, direction>0):
+        for pos_is_zero in [0, 1]:  # 0 = position != 0, 1 = position == 0
+            for dir_positive in [0, 1]:  # 0 = direction <= 0, 1 = direction > 0
+
+                # Determine reference channel
+                if pos_is_zero == 1:  # position == 0
+                    reference_channel = 0  # Open price
+                else:  # position != 0
+                    if dir_positive == 1:  # direction > 0
+                        reference_channel = 1  # High price
+                    else:  # direction <= 0
+                        reference_channel = 2  # Low price
+
+                # Get reference prices for all dates/times
+                reference_prices = self._data[
+                    :, :, reference_channel
+                ]  # Shape: [dates, times]
+
+                # Calculate potential stop
+                if dir_positive == 1:  # direction > 0
+                    potential_stop = reference_prices / artr
+                else:  # direction <= 0
+                    potential_stop = reference_prices * artr
+
+                potential_stops[:, :, pos_is_zero, dir_positive] = potential_stop
+
+        return potential_stops
+
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """ArtrStopLossPolicy does not maintain state."""
         return None
@@ -72,17 +120,19 @@ class ArtrStopLossPolicy(StopLossPolicy):
             prev_stop,
         )
 
-        artr = self._artr[date_idx, time_idx] * self.atr_multiple + 1.0
+        # Use cached potential stops instead of recalculating
+        pos_is_zero = (position == 0).long()  # Convert boolean to 0/1
+        dir_positive = (direction > 0).long()  # Convert boolean to 0/1
 
-        reference_channel = torch.where(
-            position == 0, 0, torch.where(direction > 0, 1, 2)
-        )
-        reference_price = self._data[date_idx, time_idx, reference_channel]
+        # Index into cached tensor
+        potential_stop = self._cached_potential_stops[
+            date_idx, time_idx, pos_is_zero, dir_positive
+        ]
 
         stop_price = torch.where(
             direction > 0,
-            torch.maximum(prev_stop, reference_price / artr),
-            torch.minimum(prev_stop, reference_price * artr),
+            torch.maximum(prev_stop, potential_stop),
+            torch.minimum(prev_stop, potential_stop),
         )
         stop_price = torch.where(
             torch.isnan(stop_price) | (direction == 0), prev_stop, stop_price
