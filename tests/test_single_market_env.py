@@ -243,6 +243,7 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
 
 
 def test_step_entry_price_immediate_stop(monkeypatch, dummy_data_three_steps):
+    torch._dynamo.reset()
     monkeypatch.setattr(
         DataManager,
         "get_instrument_data",
@@ -281,6 +282,7 @@ def test_step_entry_price_immediate_stop(monkeypatch, dummy_data_three_steps):
 
 
 def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_steps):
+    torch._dynamo.reset()
     monkeypatch.setattr(
         DataManager,
         "get_instrument_data",
