@@ -45,7 +45,9 @@ class ArtrStopLossPolicy(StopLossPolicy):
         self.atr_multiple = atr_multiple
         if len(instrument_data.artr) == 0:
             instrument_data.calculate_artr(alpha=alpha, acrossday=acrossday)
+        self._data: torch.Tensor
         self.register_buffer("_data", instrument_data.data)
+        self._artr: torch.Tensor
         self.register_buffer("_artr", instrument_data.artr)
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
