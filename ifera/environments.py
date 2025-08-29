@@ -157,10 +157,13 @@ class SingleMarketEnv:
         new_position = torch.where(done, position, new_position)
         execution_price = torch.where(done, entry_price, execution_price)
 
-        entry_mask = (position == 0) & (new_position != 0)
+        # Entry occurs when starting with no position and taking a non-zero action
+        # This should be detected even if the position gets immediately stopped out
+        entry_mask = (position == 0) & (action != 0)
         entry_price = torch.where(entry_mask, execution_price, entry_price)
 
-        return {
+        # Create the step result first
+        step_result = {
             "profit": profit,
             "position": new_position,
             "date_idx": next_date_idx,
@@ -169,6 +172,27 @@ class SingleMarketEnv:
             "prev_stop_loss": stop_loss,
             "done": done,
         }
+
+        # Update had_position in state for SingleTradeDonePolicy if it exists
+        # A position was "had" if we either have a non-zero position now, or if we opened one this step
+        # but it was immediately stopped out (entry_mask=True but new_position=0)
+        if "had_position" in state:
+            immediate_stop_out = entry_mask & (new_position == 0)
+            state["had_position"] = torch.where(
+                (new_position != 0) | immediate_stop_out, True, state["had_position"]
+            )
+
+            # Re-evaluate done condition when there was an immediate stop out
+            # Update the state with new position for re-evaluating done condition
+            temp_state = state.copy()
+            temp_state["position"] = new_position
+
+            # Re-evaluate done condition with updated had_position and position
+            updated_done = trading_policy.trading_done_policy(temp_state)
+            # Only apply updated_done when immediate_stop_out is True
+            step_result["done"] = done | (immediate_stop_out & updated_done)
+
+        return step_result
 
     def rollout(
         self,
