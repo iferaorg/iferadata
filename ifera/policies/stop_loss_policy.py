@@ -75,7 +75,7 @@ class ArtrStopLossPolicy(StopLossPolicy):
         artr = self._artr[date_idx, time_idx] * self.atr_multiple + 1.0
 
         reference_channel = torch.where(
-            position == 0, 3, torch.where(direction > 0, 1, 2)
+            position == 0, 0, torch.where(direction > 0, 1, 2)
         )
         reference_price = self._data[date_idx, time_idx, reference_channel]
 
