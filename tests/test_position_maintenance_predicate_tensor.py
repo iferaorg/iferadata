@@ -58,6 +58,8 @@ def test_scaled_artr_cond_predicate_is_tensor(monkeypatch, dummy_instrument_data
         "position": torch.tensor([1]),
         "base_price": torch.tensor([1.0]),
         "maint_stage": torch.tensor([0]),
+        "entry_date_idx": torch.tensor([0]),
+        "entry_time_idx": torch.tensor([0]),
     }
 
     policy(state)

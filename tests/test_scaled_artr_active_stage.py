@@ -52,6 +52,8 @@ def test_scaled_artr_active_position(monkeypatch, dummy_instrument_data):
         "position": torch.tensor([1, 0]),
         "base_price": torch.tensor([1.0, 1.0]),
         "maint_stage": torch.tensor([1, 0]),
+        "entry_date_idx": torch.tensor([0, 0]),
+        "entry_time_idx": torch.tensor([0, 0]),
     }
 
     _, stop_loss = policy(state)
