@@ -28,7 +28,6 @@ def dummy_instrument_data(base_instrument_config):
     return DummyData(base_instrument_config)
 
 
-@pytest.mark.xfail(reason="torch.compile not available for while_loop execution")
 def test_scaled_artr_active_position(monkeypatch, dummy_instrument_data):
     def dummy_get(self, instrument_config, **_):
         return DummyData(instrument_config)

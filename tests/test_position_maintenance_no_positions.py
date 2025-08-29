@@ -30,7 +30,6 @@ def dummy_instrument_data(base_instrument_config):
     return DummyData(base_instrument_config)
 
 
-@pytest.mark.xfail(reason="torch.while_loop cannot be captured in eager mode")
 def test_scaled_artr_no_position(monkeypatch, dummy_instrument_data):
     def dummy_get(self, instrument_config, **_):
         return DummyData(instrument_config)
