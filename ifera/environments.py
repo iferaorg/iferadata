@@ -404,7 +404,6 @@ class MultiGPUSingleMarketEnv:
             step_states.append(env.step(policy, env.state))
         return step_states
 
-    @torch.compile(mode="reduce-overhead")
     def _rollout_inner(
         self,
         trading_policies: list[TradingPolicy],
