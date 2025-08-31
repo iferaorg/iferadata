@@ -35,9 +35,9 @@ jobs:
         
     - name: Install code quality tools
       run: |
-        pip install black pylint pyright bandit
+        pip install pytest black pylint pyright bandit
         
     - name: Verify installations
       run: |
         python --version
-        pip list | grep -E "(black|pylint|pyright|bandit|numpy|pandas|torch)" || echo "Some packages may not be installed"
+        pip list | grep -E "(black|pylint|pyright|bandit|numpy|pandas|torch|pytest)" || echo "Some packages may not be installed"

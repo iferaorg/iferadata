@@ -344,7 +344,7 @@ env = ifera.MultiGPUSingleMarketEnv(
     dtype=torch.float32,
 )
 base_env = env.envs[0]
-batch_size = 32 #base_env.instrument_data.data.shape[0] - 250
+batch_size = base_env.instrument_data.data.shape[0] - 250
 
 date_idx = torch.arange(0, batch_size, dtype=torch.int32)
 time_idx = torch.zeros_like(date_idx, dtype=torch.int32)
@@ -383,10 +383,13 @@ base_policy = ifera.TradingPolicy(
 )
 trading_policies = ifera.clone_trading_policy_for_devices(base_policy, env.devices)
 
+# Warm up
+total_profit, _, _, steps = env.rollout(trading_policies, date_idx, time_idx, max_steps=100)
+
 print(f"Starting simulation for {symbol}")
 t = time.time()
 
-total_profit, _, _ = env.rollout(trading_policies, date_idx, time_idx)
+total_profit, _, _, steps = env.rollout(trading_policies, date_idx, time_idx, max_steps=10000)
 # total_profit, _, _ = env.rollout_with_display(
 #     trading_policies, date_idx, time_idx, max_steps=2000
 # )
@@ -399,11 +402,11 @@ profit_perc = torch.cat(
     ]
 )
 
-print(f"Simulation completed in {time.time() - t:.2f} seconds.")
+print(f"Simulation completed in {time.time() - t:.2f} seconds. Steps: {steps}")
 
-max_idx = total_profit.argmax()
+max_idx = profit_perc.argmax()
 print(
-    f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, "
+    f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, Profit %: {profit_perc[max_idx].item() * 100:.4f}% "
     f"date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
 )
-print(f"Expected return: {(profit_perc.mean().item() - 1.0) * 100:.4f} %")
+print(f"Expected return: {profit_perc.mean().item() * 100:.4f}%")

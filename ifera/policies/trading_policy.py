@@ -83,8 +83,14 @@ class TradingPolicy(BaseTradingPolicy):
         time_idx = state["time_idx"]
         position = state["position"]
 
-        no_position_mask = position == 0
-        has_position_mask = position != 0
+        done = state["done"] | self.trading_done_policy(state)
+        last_bar_mask = (date_idx == self._last_date_idx) & (
+            time_idx == self._last_time_idx
+        )
+        done = done | last_bar_mask
+
+        no_position_mask = (position == 0) & ~done
+        has_position_mask = (position != 0) & ~done
 
         action = self.open_position_policy(state, no_position_mask)
 
@@ -96,12 +102,6 @@ class TradingPolicy(BaseTradingPolicy):
         maintenance_actions, maintenance_stops = self.position_maintenance_policy(state)
         action = torch.where(has_position_mask, maintenance_actions, action)
         stop_loss = torch.where(has_position_mask, maintenance_stops, stop_loss)
-
-        done = self.trading_done_policy(state)
-        last_bar_mask = (date_idx == self._last_date_idx) & (
-            time_idx == self._last_time_idx
-        )
-        done = done | last_bar_mask
 
         return action, stop_loss, done
 
