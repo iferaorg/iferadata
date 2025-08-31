@@ -6,6 +6,7 @@ from typing import Optional
 
 import datetime as dt
 import torch
+from torch.compiler import nested_compile_region
 from rich.live import Live
 from rich.table import Table
 
@@ -134,6 +135,7 @@ class SingleMarketEnv:
         if trading_policy is not None:
             trading_policy.reset(self.state)
 
+    @nested_compile_region
     @torch.compile(mode="max-autotune", fullgraph=True)
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
         """Run one simulation step using ``trading_policy``."""
@@ -402,41 +404,15 @@ class MultiGPUSingleMarketEnv:
             step_states.append(env.step(policy, env.state))
         return step_states
 
-    def rollout(
+    @torch.compile(mode="reduce-overhead")
+    def _rollout_inner(
         self,
         trading_policies: list[TradingPolicy],
-        start_date_idx: torch.Tensor,
-        start_time_idx: torch.Tensor,
+        done_date_idx: list[torch.Tensor],
+        done_time_idx: list[torch.Tensor],
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Run rollouts on all devices sequentially over time.
-
-        Returns a tuple containing the total profit, and the ``date_idx`` and
-        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
-        episode never reaches ``done`` these indices will be ``nan``.
-        """
-
-        self.reset(start_date_idx, start_time_idx, trading_policies)
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         steps = 0
-        done_date_idx = [
-            torch.full(
-                env.state["date_idx"].shape,
-                float("nan"),
-                dtype=env.dtype,
-                device=env.device,
-            )
-            for env in self.envs
-        ]
-        done_time_idx = [
-            torch.full(
-                env.state["time_idx"].shape,
-                float("nan"),
-                dtype=env.dtype,
-                device=env.device,
-            )
-            for env in self.envs
-        ]
-
         while True:
             torch.compiler.cudagraph_mark_step_begin()
             step_states = self.step(trading_policies)
@@ -477,4 +453,42 @@ class MultiGPUSingleMarketEnv:
             torch.cat([env.state["total_profit"].clone() for env in self.envs]),
             torch.cat([idx.clone() for idx in done_date_idx]),
             torch.cat([idx.clone() for idx in done_time_idx]),
+            steps,
         )
+
+    def rollout(
+        self,
+        trading_policies: list[TradingPolicy],
+        start_date_idx: torch.Tensor,
+        start_time_idx: torch.Tensor,
+        max_steps: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        """Run rollouts on all devices sequentially over time.
+
+        Returns a tuple containing the total profit, and the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
+        episode never reaches ``done`` these indices will be ``nan``.
+        """
+
+        self.reset(start_date_idx, start_time_idx, trading_policies)
+        done_date_idx = [
+            torch.full(
+                env.state["date_idx"].shape,
+                float("nan"),
+                dtype=env.dtype,
+                device=env.device,
+            )
+            for env in self.envs
+        ]
+        done_time_idx = [
+            torch.full(
+                env.state["time_idx"].shape,
+                float("nan"),
+                dtype=env.dtype,
+                device=env.device,
+            )
+            for env in self.envs
+        ]
+
+        return self._rollout_inner(trading_policies, done_date_idx, done_time_idx, max_steps)
+
