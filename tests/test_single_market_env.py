@@ -147,7 +147,7 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    total_profit, d_idx, t_idx = env.rollout(
+    total_profit, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=5
     )
     assert env.state["done"].item() is True
@@ -155,6 +155,8 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     assert total_profit.shape == (1,)
     assert d_idx.item() == 0
     assert t_idx.item() == 2
+    assert isinstance(steps, int)
+    assert steps > 0
 
 
 def test_single_market_env_rollout_returns_nan_if_never_done(
@@ -183,13 +185,15 @@ def test_single_market_env_rollout_returns_nan_if_never_done(
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    total_profit, d_idx, t_idx = env.rollout(
+    total_profit, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=2
     )
 
     assert env.state["done"].item() is False
     assert torch.isnan(d_idx).all()
     assert torch.isnan(t_idx).all()
+    assert isinstance(steps, int)
+    assert steps == 2  # Should match max_steps when not done
 
 
 def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three_steps):
