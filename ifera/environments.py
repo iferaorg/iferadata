@@ -7,6 +7,7 @@ from typing import Optional
 import datetime as dt
 from concurrent.futures import ProcessPoolExecutor
 import copy
+import multiprocessing
 import torch
 from torch.compiler import nested_compile_region
 from rich.live import Live
@@ -509,6 +510,15 @@ class MultiGPUSingleMarketEnv:
         the maximum number of steps taken across all workers. If an episode never
         reaches ``done`` these indices will be ``nan``.
         """
+        # Set multiprocessing start method to 'spawn' if any device is CUDA
+        # This prevents CUDA re-initialization errors in forked subprocesses
+        has_cuda_device = any(device.type == "cuda" for device in self.devices)
+        if (
+            has_cuda_device
+            and multiprocessing.get_start_method(allow_none=True) != "spawn"
+        ):
+            multiprocessing.set_start_method("spawn", force=True)
+
         # Move trading policy to CPU to ensure clean pickling
         trading_policy = trading_policy.to(torch.device("cpu"))
 
