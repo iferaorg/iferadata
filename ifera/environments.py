@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Optional
 
 import datetime as dt
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import torch
 from torch.compiler import nested_compile_region
 from rich.live import Live
@@ -344,6 +346,39 @@ class SingleMarketEnv:
         )
 
 
+def _run_rollout_worker(
+    instrument_config: BaseInstrumentConfig,
+    broker_name: str,
+    backadjust: bool,
+    device: torch.device,
+    dtype: torch.dtype,
+    start_date_idx_chunk: torch.Tensor,
+    start_time_idx_chunk: torch.Tensor,
+    trading_policy: TradingPolicy,
+    max_steps: Optional[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """Worker function to run a full rollout on a single device."""
+    trading_policy.to(device)  # Move policy to the worker's device
+
+    env = SingleMarketEnv(
+        instrument_config,
+        broker_name,
+        backadjust=backadjust,
+        device=device,
+        dtype=dtype,
+    )
+    total_profit, done_date_idx, done_time_idx = env.rollout(
+        trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
+    )
+    steps = getattr(env, "steps_taken", 0)  # Track steps
+    return (
+        total_profit.cpu(),
+        done_date_idx.cpu(),
+        done_time_idx.cpu(),
+        steps,
+    )  # Move to CPU for pickling
+
+
 class MultiGPUSingleMarketEnv:
     """Run a :class:`SingleMarketEnv` on multiple devices by splitting the batch."""
 
@@ -369,6 +404,10 @@ class MultiGPUSingleMarketEnv:
             for device in devices
         ]
         self.devices = devices
+        self.instrument_config = instrument_config
+        self.broker_name = broker_name
+        self.backadjust = backadjust
+        self.dtype = dtype
 
     def _chunk_tensor(self, tensor: torch.Tensor) -> list[torch.Tensor]:
         batch_size = tensor.shape[0]
@@ -461,33 +500,51 @@ class MultiGPUSingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        """Run rollouts on all devices sequentially over time.
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run rollouts on all devices in parallel.
 
         Returns a tuple containing the total profit, and the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
         episode never reaches ``done`` these indices will be ``nan``.
         """
+        if len(trading_policies) != len(self.devices):
+            raise ValueError("Mismatch between policies and devices")
 
-        self.reset(start_date_idx, start_time_idx, trading_policies)
-        done_date_idx = [
-            torch.full(
-                env.state["date_idx"].shape,
-                float("nan"),
-                dtype=env.dtype,
-                device=env.device,
-            )
-            for env in self.envs
-        ]
-        done_time_idx = [
-            torch.full(
-                env.state["time_idx"].shape,
-                float("nan"),
-                dtype=env.dtype,
-                device=env.device,
-            )
-            for env in self.envs
-        ]
+        # Chunk the inputs
+        d_chunks = self._chunk_tensor(start_date_idx)
+        t_chunks = self._chunk_tensor(start_time_idx)
 
-        return self._rollout_inner(trading_policies, done_date_idx, done_time_idx, max_steps)
+        # Submit parallel rollouts
+        with ProcessPoolExecutor(max_workers=len(self.devices)) as executor:
+            futures = [
+                executor.submit(
+                    _run_rollout_worker,
+                    self.instrument_config,
+                    self.broker_name,
+                    self.backadjust,
+                    device,
+                    self.dtype,
+                    d_chunk,
+                    t_chunk,
+                    policy,
+                    max_steps,
+                )
+                for device, d_chunk, t_chunk, policy in zip(
+                    self.devices, d_chunks, t_chunks, trading_policies
+                )
+            ]
 
+            # Collect results in order to maintain chunk ordering
+            results = [future.result() for future in futures]
+
+        # Sort results by original order (if needed) and concatenate
+        total_profits = [r[0] for r in results]
+        done_date_idxs = [r[1] for r in results]
+        done_time_idxs = [r[2] for r in results]
+
+        # Concatenate tensors
+        total_profit = torch.cat(total_profits)
+        done_date_idx = torch.cat(done_date_idxs)
+        done_time_idx = torch.cat(done_time_idxs)
+
+        return total_profit, done_date_idx, done_time_idx
