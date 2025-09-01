@@ -60,3 +60,54 @@ def test_multi_gpu_env_rollout(monkeypatch, dummy_data_three_steps_multi):
     for sub_env in env.envs:
         assert sub_env.state["done"].all().item() is True
         assert sub_env.state["position"].sum().item() == 0
+
+
+def test_multi_gpu_env_parallel_chunking(monkeypatch, dummy_data_three_steps_multi):
+    """Test that parallel implementation correctly chunks inputs across devices."""
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps_multi,
+    )
+
+    devices = [torch.device("cpu"), torch.device("cpu")]
+    env = MultiGPUSingleMarketEnv(
+        dummy_data_three_steps_multi.instrument, "IBKR", devices=devices
+    )
+
+    base_env = env.envs[0]
+    base_policy = TradingPolicy(
+        instrument_data=base_env.instrument_data,
+        open_position_policy=AlwaysOpenPolicy(
+            1, batch_size=2, device=base_env.instrument_data.device
+        ),
+        initial_stop_loss_policy=DummyInitialStopLoss(),
+        position_maintenance_policy=CloseAfterOneStep(),
+        trading_done_policy=SingleTradeDonePolicy(
+            batch_size=2, device=base_env.instrument_data.device
+        ),
+        batch_size=2,
+    )
+    policies = clone_trading_policy_for_devices(base_policy, env.devices)
+
+    # Test with larger batch size to verify chunking
+    start_d = torch.tensor([0, 0, 0, 0], dtype=torch.int32)
+    start_t = torch.tensor([0, 0, 0, 0], dtype=torch.int32)
+
+    total_profit, d_idx, t_idx = env.rollout(policies, start_d, start_t, max_steps=5)
+
+    # Verify results have correct shape and structure
+    assert total_profit.shape == (4,), f"Expected shape (4,), got {total_profit.shape}"
+    assert d_idx.shape == (4,), f"Expected shape (4,), got {d_idx.shape}"
+    assert t_idx.shape == (4,), f"Expected shape (4,), got {t_idx.shape}"
+
+    # Test chunking function directly
+    chunks = env._chunk_tensor(start_d)
+    assert len(chunks) == 2, f"Expected 2 chunks for 2 devices, got {len(chunks)}"
+    # Each chunk should have 2 elements (4 total / 2 devices = 2 per device)
+    assert (
+        chunks[0].shape[0] == 2
+    ), f"First chunk should have 2 elements, got {chunks[0].shape[0]}"
+    assert (
+        chunks[1].shape[0] == 2
+    ), f"Second chunk should have 2 elements, got {chunks[1].shape[0]}"
