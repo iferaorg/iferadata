@@ -381,15 +381,16 @@ base_policy = ifera.TradingPolicy(
     trading_done_policy=done_policy,
     batch_size=batch_size,
 )
-trading_policies = ifera.clone_trading_policy_for_devices(base_policy, env.devices)
 
 # Warm up
-total_profit, _, _, steps = env.rollout(trading_policies, date_idx, time_idx, max_steps=100)
+total_profit, _, _, steps = env.rollout(base_policy, date_idx, time_idx, max_steps=100)
 
 print(f"Starting simulation for {symbol}")
 t = time.time()
 
-total_profit, _, _, steps = env.rollout(trading_policies, date_idx, time_idx, max_steps=10000)
+total_profit, _, _, steps = env.rollout(
+    base_policy, date_idx, time_idx, max_steps=10000
+)
 # total_profit, _, _ = env.rollout_with_display(
 #     trading_policies, date_idx, time_idx, max_steps=2000
 # )

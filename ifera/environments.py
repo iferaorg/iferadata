@@ -6,6 +6,7 @@ from typing import Optional
 
 import datetime as dt
 from concurrent.futures import ProcessPoolExecutor
+import copy
 import torch
 from torch.compiler import nested_compile_region
 from rich.live import Live
@@ -495,7 +496,7 @@ class MultiGPUSingleMarketEnv:
 
     def rollout(
         self,
-        trading_policies: list[TradingPolicy],
+        trading_policy: TradingPolicy,
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
@@ -506,8 +507,8 @@ class MultiGPUSingleMarketEnv:
         ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
         episode never reaches ``done`` these indices will be ``nan``.
         """
-        if len(trading_policies) != len(self.devices):
-            raise ValueError("Mismatch between policies and devices")
+        # Move trading policy to CPU to ensure clean pickling
+        trading_policy = trading_policy.to(torch.device("cpu"))
 
         # Chunk the inputs
         d_chunks = self._chunk_tensor(start_date_idx)
@@ -525,12 +526,10 @@ class MultiGPUSingleMarketEnv:
                     self.dtype,
                     d_chunk,
                     t_chunk,
-                    policy,
+                    copy.deepcopy(trading_policy),  # Deep copy for each worker
                     max_steps,
                 )
-                for device, d_chunk, t_chunk, policy in zip(
-                    self.devices, d_chunks, t_chunks, trading_policies
-                )
+                for device, d_chunk, t_chunk in zip(self.devices, d_chunks, t_chunks)
             ]
 
             # Collect results in order to maintain chunk ordering
