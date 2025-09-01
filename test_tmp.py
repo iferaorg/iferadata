@@ -321,93 +321,94 @@ import torch
 import ifera
 from einops import rearrange
 
-fm = ifera.FileManager()
-cm = ifera.ConfigManager()
-dm = ifera.DataManager()
+if __name__ == '__main__':
+    fm = ifera.FileManager()
+    cm = ifera.ConfigManager()
+    dm = ifera.DataManager()
 
-broker = cm.get_broker_config("IBKR")
+    broker = cm.get_broker_config("IBKR")
 
-devices = (
-    [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
-    if torch.cuda.is_available()
-    else [torch.device("cpu")]
-)
-symbol = "CL"
-iconfig = cm.get_base_instrument_config(symbol, "30m")
+    devices = (
+        [torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())]
+        if torch.cuda.is_available()
+        else [torch.device("cpu")]
+    )
+    symbol = "CL"
+    iconfig = cm.get_base_instrument_config(symbol, "30m")
 
-base_config = cm.get_base_instrument_config(symbol, "1m")
-env = ifera.MultiGPUSingleMarketEnv(
-    instrument_config=base_config,
-    broker_name="IBKR",
-    backadjust=True,
-    devices=devices,
-    dtype=torch.float32,
-)
-base_env = env.envs[0]
-batch_size = base_env.instrument_data.data.shape[0] - 250
+    base_config = cm.get_base_instrument_config(symbol, "1m")
+    env = ifera.MultiGPUSingleMarketEnv(
+        instrument_config=base_config,
+        broker_name="IBKR",
+        backadjust=True,
+        devices=devices,
+        dtype=torch.float32,
+    )
+    base_env = env.envs[0]
+    batch_size = base_env.instrument_data.data.shape[0] - 250
 
-date_idx = torch.arange(0, batch_size, dtype=torch.int32)
-time_idx = torch.zeros_like(date_idx, dtype=torch.int32)
-# date_idx = torch.tensor(
-#     [base_env.instrument_data.data.shape[0] - 1], dtype=torch.int32
-# )
-# time_idx = torch.tensor(
-#     [base_env.instrument_data.data.shape[1] - 4], dtype=torch.int32
-# )
-# batch_size = date_idx.shape[0]
+    date_idx = torch.arange(0, batch_size, dtype=torch.int32)
+    time_idx = torch.zeros_like(date_idx, dtype=torch.int32)
+    # date_idx = torch.tensor(
+    #     [base_env.instrument_data.data.shape[0] - 1], dtype=torch.int32
+    # )
+    # time_idx = torch.tensor(
+    #     [base_env.instrument_data.data.shape[1] - 4], dtype=torch.int32
+    # )
+    # batch_size = date_idx.shape[0]
 
-open_policy = ifera.OpenOncePolicy(
-    direction=1, batch_size=batch_size, device=base_env.device
-)
-init_stop_policy = ifera.InitialArtrStopLossPolicy(
-    instrument_data=base_env.instrument_data, atr_multiple=3.0, batch_size=batch_size
-)
-maintenance_policy = ifera.ScaledArtrMaintenancePolicy(
-    instrument_data=base_env.instrument_data,
-    stages=["1m", "5m", "15m", "1h", "4h", "1d"],
-    atr_multiple=3.0,
-    wait_for_breakeven=True,
-    minimum_improvement=0.0,
-    batch_size=batch_size,
-)
+    open_policy = ifera.OpenOncePolicy(
+        direction=1, batch_size=batch_size, device=base_env.device
+    )
+    init_stop_policy = ifera.InitialArtrStopLossPolicy(
+        instrument_data=base_env.instrument_data, atr_multiple=3.0, batch_size=batch_size
+    )
+    maintenance_policy = ifera.ScaledArtrMaintenancePolicy(
+        instrument_data=base_env.instrument_data,
+        stages=["1m", "5m", "15m", "1h", "4h", "1d"],
+        atr_multiple=3.0,
+        wait_for_breakeven=True,
+        minimum_improvement=0.0,
+        batch_size=batch_size,
+    )
 
-done_policy = ifera.SingleTradeDonePolicy(batch_size=batch_size, device=base_env.device)
+    done_policy = ifera.SingleTradeDonePolicy(batch_size=batch_size, device=base_env.device)
 
-base_policy = ifera.TradingPolicy(
-    instrument_data=base_env.instrument_data,
-    open_position_policy=open_policy,
-    initial_stop_loss_policy=init_stop_policy,
-    position_maintenance_policy=maintenance_policy,
-    trading_done_policy=done_policy,
-    batch_size=batch_size,
-)
+    base_policy = ifera.TradingPolicy(
+        instrument_data=base_env.instrument_data,
+        open_position_policy=open_policy,
+        initial_stop_loss_policy=init_stop_policy,
+        position_maintenance_policy=maintenance_policy,
+        trading_done_policy=done_policy,
+        batch_size=batch_size,
+    )
 
-# Warm up
-total_profit, _, _, steps = env.rollout(base_policy, date_idx, time_idx, max_steps=100)
+    # Warm up
+    total_profit, _, _, steps = env.rollout(base_policy, date_idx, time_idx, max_steps=100)
 
-print(f"Starting simulation for {symbol}")
-t = time.time()
+    print(f"Starting simulation for {symbol}")
+    t = time.time()
 
-total_profit, _, _, steps = env.rollout(
-    base_policy, date_idx, time_idx, max_steps=10000
-)
-# total_profit, _, _ = env.rollout_with_display(
-#     trading_policies, date_idx, time_idx, max_steps=2000
-# )
+    total_profit, _, _, steps = env.rollout(
+        base_policy, date_idx, time_idx, max_steps=10000
+    )
+    # total_profit, _, _ = env.rollout_with_display(
+    #     trading_policies, date_idx, time_idx, max_steps=2000
+    # )
 
-profit_perc = torch.cat(
-    [
-        sub_env.state["total_profit"]
-        / (sub_env.state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
-        for sub_env in env.envs
-    ]
-)
+    profit_perc = torch.cat(
+        [
+            sub_env.state["total_profit"]
+            / (sub_env.state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
+            for sub_env in env.envs
+        ]
+    )
 
-print(f"Simulation completed in {time.time() - t:.2f} seconds. Steps: {steps}")
+    print(f"Simulation completed in {time.time() - t:.2f} seconds. Steps: {steps}")
 
-max_idx = profit_perc.argmax()
-print(
-    f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, Profit %: {profit_perc[max_idx].item() * 100:.4f}% "
-    f"date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
-)
-print(f"Expected return: {profit_perc.mean().item() * 100:.4f}%")
+    max_idx = profit_perc.argmax()
+    print(
+        f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, Profit %: {profit_perc[max_idx].item() * 100:.4f}% "
+        f"date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
+    )
+    print(f"Expected return: {profit_perc.mean().item() * 100:.4f}%")
