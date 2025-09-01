@@ -188,12 +188,13 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
-        Returns a tuple containing the total profit, and the ``date_idx`` and
-        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
-        episode never reaches ``done`` these indices will be ``nan``.
+        Returns a tuple containing the total profit, the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
+        the number of steps taken. If an episode never reaches ``done`` these
+        indices will be ``nan``.
         """
 
         self.reset(start_date_idx, start_time_idx, trading_policy)
@@ -250,6 +251,7 @@ class SingleMarketEnv:
             self.state["total_profit"].clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
+            steps,
         )
 
     def rollout_with_display(
@@ -367,10 +369,9 @@ def _run_rollout_worker(
         device=device,
         dtype=dtype,
     )
-    total_profit, done_date_idx, done_time_idx = env.rollout(
+    total_profit, done_date_idx, done_time_idx, steps = env.rollout(
         trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
     )
-    steps = getattr(env, "steps_taken", 0)  # Track steps
     return (
         total_profit.cpu(),
         done_date_idx.cpu(),
@@ -500,12 +501,13 @@ class MultiGPUSingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Run rollouts on all devices in parallel.
 
-        Returns a tuple containing the total profit, and the ``date_idx`` and
-        ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
-        episode never reaches ``done`` these indices will be ``nan``.
+        Returns a tuple containing the total profit, the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
+        the maximum number of steps taken across all workers. If an episode never
+        reaches ``done`` these indices will be ``nan``.
         """
         # Move trading policy to CPU to ensure clean pickling
         trading_policy = trading_policy.to(torch.device("cpu"))
@@ -539,10 +541,12 @@ class MultiGPUSingleMarketEnv:
         total_profits = [r[0] for r in results]
         done_date_idxs = [r[1] for r in results]
         done_time_idxs = [r[2] for r in results]
+        steps_list = [r[3] for r in results]
 
         # Concatenate tensors
         total_profit = torch.cat(total_profits)
         done_date_idx = torch.cat(done_date_idxs)
         done_time_idx = torch.cat(done_time_idxs)
+        max_steps = max(steps_list)
 
-        return total_profit, done_date_idx, done_time_idx
+        return total_profit, done_date_idx, done_time_idx, max_steps
