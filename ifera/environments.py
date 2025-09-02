@@ -10,6 +10,7 @@ import copy
 import multiprocessing
 import torch
 from torch.compiler import nested_compile_region
+from torch.compiler import nested_compile_region
 from rich.live import Live
 from rich.table import Table
 
@@ -138,6 +139,7 @@ class SingleMarketEnv:
         if trading_policy is not None:
             trading_policy.reset(self.state)
 
+    @nested_compile_region
     @nested_compile_region
     @torch.compile(mode="max-autotune", fullgraph=True)
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
@@ -488,11 +490,15 @@ class MultiGPUSingleMarketEnv:
         return step_states
 
     def _rollout_inner(
+    def _rollout_inner(
         self,
         trading_policies: list[TradingPolicy],
         done_date_idx: list[torch.Tensor],
         done_time_idx: list[torch.Tensor],
+        done_date_idx: list[torch.Tensor],
+        done_time_idx: list[torch.Tensor],
         max_steps: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         steps = 0
         while True:
@@ -535,6 +541,7 @@ class MultiGPUSingleMarketEnv:
             torch.cat([env.state["total_profit"].clone() for env in self.envs]),
             torch.cat([idx.clone() for idx in done_date_idx]),
             torch.cat([idx.clone() for idx in done_time_idx]),
+            steps,
             steps,
         )
 
