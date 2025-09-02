@@ -7,6 +7,7 @@ from typing import Optional
 import datetime as dt
 from concurrent.futures import ProcessPoolExecutor
 import copy
+import multiprocessing
 import torch
 from torch.compiler import nested_compile_region
 from rich.live import Live
@@ -189,8 +190,13 @@ class SingleMarketEnv:
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
+        Returns a tuple containing the total profit, the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
+        the number of steps taken. If an episode never reaches ``done`` these
+        indices will be ``nan``.
         Returns a tuple containing the total profit, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the number of steps taken. If an episode never reaches ``done`` these
@@ -251,6 +257,7 @@ class SingleMarketEnv:
             self.state["total_profit"].clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
+            steps,
             steps,
         )
 
@@ -380,6 +387,38 @@ def _run_rollout_worker(
     )  # Move to CPU for pickling
 
 
+def _run_rollout_worker(
+    instrument_config: BaseInstrumentConfig,
+    broker_name: str,
+    backadjust: bool,
+    device: torch.device,
+    dtype: torch.dtype,
+    start_date_idx_chunk: torch.Tensor,
+    start_time_idx_chunk: torch.Tensor,
+    trading_policy: TradingPolicy,
+    max_steps: Optional[int],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """Worker function to run a full rollout on a single device."""
+    trading_policy.to(device)  # Move policy to the worker's device
+
+    env = SingleMarketEnv(
+        instrument_config,
+        broker_name,
+        backadjust=backadjust,
+        device=device,
+        dtype=dtype,
+    )
+    total_profit, done_date_idx, done_time_idx, steps = env.rollout(
+        trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
+    )
+    return (
+        total_profit.cpu(),
+        done_date_idx.cpu(),
+        done_time_idx.cpu(),
+        steps,
+    )  # Move to CPU for pickling
+
+
 class MultiGPUSingleMarketEnv:
     """Run a :class:`SingleMarketEnv` on multiple devices by splitting the batch."""
 
@@ -405,6 +444,10 @@ class MultiGPUSingleMarketEnv:
             for device in devices
         ]
         self.devices = devices
+        self.instrument_config = instrument_config
+        self.broker_name = broker_name
+        self.backadjust = backadjust
+        self.dtype = dtype
         self.instrument_config = instrument_config
         self.broker_name = broker_name
         self.backadjust = backadjust
@@ -498,17 +541,32 @@ class MultiGPUSingleMarketEnv:
     def rollout(
         self,
         trading_policy: TradingPolicy,
+        trading_policy: TradingPolicy,
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        """Run rollouts on all devices in parallel.
         """Run rollouts on all devices in parallel.
 
         Returns a tuple containing the total profit, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the maximum number of steps taken across all workers. If an episode never
         reaches ``done`` these indices will be ``nan``.
+        Returns a tuple containing the total profit, the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
+        the maximum number of steps taken across all workers. If an episode never
+        reaches ``done`` these indices will be ``nan``.
         """
+        # Set multiprocessing start method to 'spawn' if any device is CUDA
+        # This prevents CUDA re-initialization errors in forked subprocesses
+        has_cuda_device = any(device.type == "cuda" for device in self.devices)
+        if (
+            has_cuda_device
+            and multiprocessing.get_start_method(allow_none=True) != "spawn"
+        ):
+            multiprocessing.set_start_method("spawn", force=True)
+
         # Move trading policy to CPU to ensure clean pickling
         trading_policy = trading_policy.to(torch.device("cpu"))
 
