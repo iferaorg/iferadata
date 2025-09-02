@@ -321,11 +321,20 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
         trading_policy,
     )
     step_state = env.step(trading_policy, env.state)
-    for key in step_state:
-        if key != "done":
-            env.state[key] = step_state[key].clone()
-    env.state["total_profit"] += step_state["profit"]
-    env.state["done"] = env.state["done"] | step_state["done"]
+    # Use TensorDict update method like in the rollout
+    state_updates = {
+        key: val for key, val in step_state.items() if key != "done" and key != "profit"
+    }
+
+    state_updates["total_profit"] = env.state["total_profit"] + step_state["profit"]
+    state_updates["done"] = env.state["done"] | step_state["done"]
+
+    # Update using TensorDict
+    from tensordict import TensorDict
+
+    env.state = env.state.update(
+        TensorDict(state_updates, batch_size=env.state.batch_size)
+    )
 
     _, _, done = trading_policy(env.state)
     assert done.item() is True
