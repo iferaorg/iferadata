@@ -10,7 +10,6 @@ import copy
 import multiprocessing
 import torch
 from torch.compiler import nested_compile_region
-from torch.compiler import nested_compile_region
 from rich.live import Live
 from rich.table import Table
 
@@ -140,7 +139,6 @@ class SingleMarketEnv:
             trading_policy.reset(self.state)
 
     @nested_compile_region
-    @nested_compile_region
     @torch.compile(mode="max-autotune", fullgraph=True)
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
         """Run one simulation step using ``trading_policy``."""
@@ -192,13 +190,8 @@ class SingleMarketEnv:
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
-        Returns a tuple containing the total profit, the ``date_idx`` and
-        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
-        the number of steps taken. If an episode never reaches ``done`` these
-        indices will be ``nan``.
         Returns a tuple containing the total profit, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the number of steps taken. If an episode never reaches ``done`` these
@@ -259,7 +252,6 @@ class SingleMarketEnv:
             self.state["total_profit"].clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
-            steps,
             steps,
         )
 
@@ -389,38 +381,6 @@ def _run_rollout_worker(
     )  # Move to CPU for pickling
 
 
-def _run_rollout_worker(
-    instrument_config: BaseInstrumentConfig,
-    broker_name: str,
-    backadjust: bool,
-    device: torch.device,
-    dtype: torch.dtype,
-    start_date_idx_chunk: torch.Tensor,
-    start_time_idx_chunk: torch.Tensor,
-    trading_policy: TradingPolicy,
-    max_steps: Optional[int],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-    """Worker function to run a full rollout on a single device."""
-    trading_policy.to(device)  # Move policy to the worker's device
-
-    env = SingleMarketEnv(
-        instrument_config,
-        broker_name,
-        backadjust=backadjust,
-        device=device,
-        dtype=dtype,
-    )
-    total_profit, done_date_idx, done_time_idx, steps = env.rollout(
-        trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
-    )
-    return (
-        total_profit.cpu(),
-        done_date_idx.cpu(),
-        done_time_idx.cpu(),
-        steps,
-    )  # Move to CPU for pickling
-
-
 class MultiGPUSingleMarketEnv:
     """Run a :class:`SingleMarketEnv` on multiple devices by splitting the batch."""
 
@@ -446,10 +406,6 @@ class MultiGPUSingleMarketEnv:
             for device in devices
         ]
         self.devices = devices
-        self.instrument_config = instrument_config
-        self.broker_name = broker_name
-        self.backadjust = backadjust
-        self.dtype = dtype
         self.instrument_config = instrument_config
         self.broker_name = broker_name
         self.backadjust = backadjust
@@ -490,15 +446,11 @@ class MultiGPUSingleMarketEnv:
         return step_states
 
     def _rollout_inner(
-    def _rollout_inner(
         self,
         trading_policies: list[TradingPolicy],
         done_date_idx: list[torch.Tensor],
         done_time_idx: list[torch.Tensor],
-        done_date_idx: list[torch.Tensor],
-        done_time_idx: list[torch.Tensor],
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         steps = 0
         while True:
@@ -542,24 +494,17 @@ class MultiGPUSingleMarketEnv:
             torch.cat([idx.clone() for idx in done_date_idx]),
             torch.cat([idx.clone() for idx in done_time_idx]),
             steps,
-            steps,
         )
 
     def rollout(
         self,
-        trading_policy: TradingPolicy,
         trading_policy: TradingPolicy,
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Run rollouts on all devices in parallel.
-        """Run rollouts on all devices in parallel.
 
-        Returns a tuple containing the total profit, the ``date_idx`` and
-        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
-        the maximum number of steps taken across all workers. If an episode never
-        reaches ``done`` these indices will be ``nan``.
         Returns a tuple containing the total profit, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the maximum number of steps taken across all workers. If an episode never
