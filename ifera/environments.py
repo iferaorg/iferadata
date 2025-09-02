@@ -12,6 +12,7 @@ import torch
 from torch.compiler import nested_compile_region
 from rich.live import Live
 from rich.table import Table
+from tensordict import TensorDict
 
 from .config import BaseInstrumentConfig
 from .data_models import DataManager, InstrumentData
@@ -101,15 +102,20 @@ class SingleMarketEnv:
         self.max_date_idx = self.instrument_data.data.shape[0] - 1
 
         # State tensors populated in reset
-        self.state = {
-            "date_idx": torch.tensor((), dtype=torch.int32, device=self.device),
-            "time_idx": torch.tensor((), dtype=torch.int32, device=self.device),
-            "position": torch.tensor((), dtype=torch.int32, device=self.device),
-            "prev_stop_loss": torch.tensor((), dtype=self.dtype, device=self.device),
-            "entry_price": torch.tensor((), dtype=self.dtype, device=self.device),
-            "total_profit": torch.tensor((), dtype=self.dtype, device=self.device),
-            "done": torch.tensor((), dtype=torch.bool, device=self.device),
-        }
+        self.state = TensorDict(
+            {
+                "date_idx": torch.tensor((), dtype=torch.int32, device=self.device),
+                "time_idx": torch.tensor((), dtype=torch.int32, device=self.device),
+                "position": torch.tensor((), dtype=torch.int32, device=self.device),
+                "prev_stop_loss": torch.tensor(
+                    (), dtype=self.dtype, device=self.device
+                ),
+                "entry_price": torch.tensor((), dtype=self.dtype, device=self.device),
+                "total_profit": torch.tensor((), dtype=self.dtype, device=self.device),
+                "done": torch.tensor((), dtype=torch.bool, device=self.device),
+            },
+            device=self.device,
+        )
 
     def reset(
         self,
@@ -120,23 +126,28 @@ class SingleMarketEnv:
         """Reset the environment state for a new simulation."""
 
         batch_size = start_date_idx.shape[0]
-        self.state = {
-            "date_idx": start_date_idx.to(torch.int32).to(self.device),
-            "time_idx": start_time_idx.to(torch.int32).to(self.device),
-            "position": torch.zeros(batch_size, dtype=torch.int32, device=self.device),
-            "prev_stop_loss": torch.full(
-                (batch_size,), float("nan"), dtype=self.dtype, device=self.device
-            ),
-            "entry_price": torch.full(
-                (batch_size,), float("nan"), dtype=self.dtype, device=self.device
-            ),
-            "total_profit": torch.zeros(
-                batch_size, dtype=self.dtype, device=self.device
-            ),
-            "done": torch.zeros(batch_size, dtype=torch.bool, device=self.device),
-        }
+        self.state = TensorDict(
+            {
+                "date_idx": start_date_idx.to(torch.int32).to(self.device),
+                "time_idx": start_time_idx.to(torch.int32).to(self.device),
+                "position": torch.zeros(
+                    batch_size, dtype=torch.int32, device=self.device
+                ),
+                "prev_stop_loss": torch.full(
+                    (batch_size,), float("nan"), dtype=self.dtype, device=self.device
+                ),
+                "entry_price": torch.full(
+                    (batch_size,), float("nan"), dtype=self.dtype, device=self.device
+                ),
+                "total_profit": torch.zeros(
+                    batch_size, dtype=self.dtype, device=self.device
+                ),
+                "done": torch.zeros(batch_size, dtype=torch.bool, device=self.device),
+            },
+            device=self.device,
+        )
         if trading_policy is not None:
-            trading_policy.reset(self.state)
+            trading_policy.reset(self.state)  # type: ignore
 
     @nested_compile_region
     @torch.compile(mode="max-autotune", fullgraph=True)
@@ -147,7 +158,7 @@ class SingleMarketEnv:
         position = state["position"]
         entry_price = state["entry_price"]
 
-        action, stop_loss, done = trading_policy(state)
+        action, stop_loss, done = trading_policy(state)  # type: ignore
 
         next_date_idx, next_time_idx = self.instrument_data.get_next_indices(
             date_idx, time_idx
@@ -169,15 +180,18 @@ class SingleMarketEnv:
         if had_position is not None:
             had_position = had_position | (action != 0)
 
-        result = {
-            "profit": profit,
-            "position": new_position,
-            "date_idx": next_date_idx,
-            "time_idx": next_time_idx,
-            "entry_price": entry_price,
-            "prev_stop_loss": stop_loss,
-            "done": done,
-        }
+        result = TensorDict(
+            {
+                "profit": profit,
+                "position": new_position,
+                "date_idx": next_date_idx,
+                "time_idx": next_time_idx,
+                "entry_price": entry_price,
+                "prev_stop_loss": stop_loss,
+                "done": done,
+            },
+            device=self.device,
+        )
         if had_position is not None:
             result["had_position"] = had_position
 
@@ -215,7 +229,7 @@ class SingleMarketEnv:
 
         while True:
             torch.compiler.cudagraph_mark_step_begin()
-            step_state = self.step(trading_policy, self.state)
+            step_state = self.step(trading_policy, self.state)  # type: ignore
 
             newly_done = (~self.state["done"]) & step_state["done"]
             done_date_idx = torch.where(
@@ -229,18 +243,22 @@ class SingleMarketEnv:
                 done_time_idx,
             )
 
-            for key in step_state:
+            # Create update dictionary for efficient batch update
+            updates = {}
+            for key in list(step_state.keys()):  # type: ignore
                 if key != "done" and key in self.state:
-                    self.state[key] = step_state[key].clone()
+                    updates[key] = step_state[key].clone()
 
-            for key in self.state:
+            for key in list(self.state.keys()):  # type: ignore
                 if key not in step_state:
-                    self.state[key] = self.state[key].clone()
+                    updates[key] = self.state[key].clone()
 
-            self.state["total_profit"] = (
-                self.state["total_profit"] + step_state["profit"]
-            )
-            self.state["done"] = self.state["done"] | step_state["done"]
+            # Add computed fields
+            updates["total_profit"] = self.state["total_profit"] + step_state["profit"]
+            updates["done"] = self.state["done"] | step_state["done"]
+
+            # Functionally update the state
+            self.state = self.state.clone().update(updates)
             steps += 1
 
             if self.state["done"].all() or (
@@ -300,7 +318,7 @@ class SingleMarketEnv:
         ) as live:
             while True:
                 # torch.compiler.cudagraph_mark_step_begin()
-                step_state = self.step(trading_policy, self.state)
+                step_state = self.step(trading_policy, self.state)  # type: ignore
 
                 newly_done = (~self.state["done"]) & step_state["done"]
                 done_date_idx = torch.where(
@@ -314,14 +332,20 @@ class SingleMarketEnv:
                     done_time_idx,
                 )
 
-                for key in step_state:
+                # Create update dictionary for efficient batch update
+                updates = {}
+                for key in list(step_state.keys()):  # type: ignore
                     if key != "done":
-                        self.state[key] = step_state[key].clone()
+                        updates[key] = step_state[key].clone()
 
-                self.state["total_profit"] = (
+                # Add computed fields
+                updates["total_profit"] = (
                     self.state["total_profit"] + step_state["profit"]
                 )
-                self.state["done"] = self.state["done"] | step_state["done"]
+                updates["done"] = self.state["done"] | step_state["done"]
+
+                # Functionally update the state
+                self.state = self.state.clone().update(updates)
                 steps += 1
 
                 live.update(
@@ -435,66 +459,6 @@ class MultiGPUSingleMarketEnv:
             self.envs, d_chunks, t_chunks, trading_policies
         ):
             env.reset(d_chunk.to(env.device), t_chunk.to(env.device), policy)
-
-    def step(
-        self, trading_policies: list[TradingPolicy]
-    ) -> list[dict[str, torch.Tensor]]:
-        """Execute one step for each environment."""
-        step_states = []
-        for env, policy in zip(self.envs, trading_policies):
-            step_states.append(env.step(policy, env.state))
-        return step_states
-
-    def _rollout_inner(
-        self,
-        trading_policies: list[TradingPolicy],
-        done_date_idx: list[torch.Tensor],
-        done_time_idx: list[torch.Tensor],
-        max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        steps = 0
-        while True:
-            torch.compiler.cudagraph_mark_step_begin()
-            step_states = self.step(trading_policies)
-
-            for i, (env, step_state) in enumerate(zip(self.envs, step_states)):
-                newly_done = (~env.state["done"]) & step_state["done"]
-                done_date_idx[i] = torch.where(
-                    newly_done,
-                    env.state["date_idx"].to(env.dtype),
-                    done_date_idx[i],
-                )
-                done_time_idx[i] = torch.where(
-                    newly_done,
-                    env.state["time_idx"].to(env.dtype),
-                    done_time_idx[i],
-                )
-
-                for key in step_state:
-                    if key != "done" and key in env.state:
-                        env.state[key] = step_state[key].clone()
-
-                for key in env.state:
-                    if key not in step_state:
-                        env.state[key] = env.state[key].clone()
-
-                env.state["total_profit"] = (
-                    env.state["total_profit"] + step_state["profit"]
-                )
-                env.state["done"] = env.state["done"] | step_state["done"]
-
-            steps += 1
-            if all(env.state["done"].all() for env in self.envs) or (
-                max_steps is not None and steps >= max_steps
-            ):
-                break
-
-        return (
-            torch.cat([env.state["total_profit"].clone() for env in self.envs]),
-            torch.cat([idx.clone() for idx in done_date_idx]),
-            torch.cat([idx.clone() for idx in done_time_idx]),
-            steps,
-        )
 
     def rollout(
         self,

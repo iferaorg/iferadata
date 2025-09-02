@@ -321,11 +321,13 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
         trading_policy,
     )
     step_state = env.step(trading_policy, env.state)
-    for key in step_state:
+    updates = {}
+    for key in step_state.keys():
         if key != "done":
-            env.state[key] = step_state[key].clone()
-    env.state["total_profit"] += step_state["profit"]
-    env.state["done"] = env.state["done"] | step_state["done"]
+            updates[key] = step_state[key].clone()
+    updates["total_profit"] = env.state["total_profit"] + step_state["profit"]
+    updates["done"] = env.state["done"] | step_state["done"]
+    env.state = env.state.clone().update(updates)
 
     _, _, done = trading_policy(env.state)
     assert done.item() is True

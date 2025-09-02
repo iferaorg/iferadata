@@ -5,6 +5,7 @@ boto3==1.40.21
 pydantic==2.11.7
 pydantic-settings==2.10.1 
 torch==2.8.0
+tensordict==0.9.1
 einops==0.8.1
 PyGithub==2.7.0
 PyYAML==6.0.2
