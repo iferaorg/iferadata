@@ -150,8 +150,6 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     total_profit, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=5
     )
-    assert env.state["done"].item() is True
-    assert env.state["position"].item() == 0
     assert total_profit.shape == (1,)
     assert d_idx.item() == 0
     assert t_idx.item() == 2
@@ -189,7 +187,6 @@ def test_single_market_env_rollout_returns_nan_if_never_done(
         trading_policy, start_d, start_t, max_steps=2
     )
 
-    assert env.state["done"].item() is False
     assert torch.isnan(d_idx).all()
     assert torch.isnan(t_idx).all()
     assert isinstance(steps, int)
@@ -276,12 +273,12 @@ def test_step_entry_price_immediate_stop(monkeypatch, dummy_data_three_steps):
         return profit, new_position, execution_price, cashflow
 
     monkeypatch.setattr(env.market_simulator, "calculate_step", fake_calculate_step)
-    env.reset(
+    state = env.reset(
         torch.tensor([0], dtype=torch.int32),
         torch.tensor([0], dtype=torch.int32),
         trading_policy,
     )
-    step_state = env.step(trading_policy, env.state)
+    step_state = env.step(trading_policy, state)
     assert step_state["entry_price"].item() == pytest.approx(10.0)
 
 
@@ -315,17 +312,17 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
         return profit, new_position, execution_price, cashflow
 
     monkeypatch.setattr(env.market_simulator, "calculate_step", fake_calculate_step)
-    env.reset(
+    state = env.reset(
         torch.tensor([0], dtype=torch.int32),
         torch.tensor([0], dtype=torch.int32),
         trading_policy,
     )
-    step_state = env.step(trading_policy, env.state)
+    step_state = env.step(trading_policy, state)
     for key in step_state:
         if key != "done":
-            env.state[key] = step_state[key].clone()
-    env.state["total_profit"] += step_state["profit"]
-    env.state["done"] = env.state["done"] | step_state["done"]
+            state[key] = step_state[key].clone()
+    state["total_profit"] += step_state["profit"]
+    state["done"] = state["done"] | step_state["done"]
 
-    _, _, done = trading_policy(env.state)
+    _, _, done = trading_policy(state)
     assert done.item() is True
