@@ -321,7 +321,7 @@ import torch
 import ifera
 from einops import rearrange
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     fm = ifera.FileManager()
     cm = ifera.ConfigManager()
     dm = ifera.DataManager()
@@ -361,7 +361,9 @@ if __name__ == '__main__':
         direction=1, batch_size=batch_size, device=base_env.device
     )
     init_stop_policy = ifera.InitialArtrStopLossPolicy(
-        instrument_data=base_env.instrument_data, atr_multiple=3.0, batch_size=batch_size
+        instrument_data=base_env.instrument_data,
+        atr_multiple=3.0,
+        batch_size=batch_size,
     )
     maintenance_policy = ifera.ScaledArtrMaintenancePolicy(
         instrument_data=base_env.instrument_data,
@@ -372,7 +374,9 @@ if __name__ == '__main__':
         batch_size=batch_size,
     )
 
-    done_policy = ifera.SingleTradeDonePolicy(batch_size=batch_size, device=base_env.device)
+    done_policy = ifera.SingleTradeDonePolicy(
+        batch_size=batch_size, device=base_env.device
+    )
 
     base_policy = ifera.TradingPolicy(
         instrument_data=base_env.instrument_data,
@@ -384,7 +388,9 @@ if __name__ == '__main__':
     )
 
     # Warm up
-    total_profit, _, _, steps = env.rollout(base_policy, date_idx, time_idx, max_steps=100)
+    total_profit, _, _, steps = env.rollout(
+        base_policy, date_idx, time_idx, max_steps=100
+    )
 
     print(f"Starting simulation for {symbol}")
     t = time.time()
@@ -398,9 +404,9 @@ if __name__ == '__main__':
 
     profit_perc = torch.cat(
         [
-            sub_env.state["total_profit"]
-            / (sub_env.state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
-            for sub_env in env.envs
+            state["total_profit"]
+            / (state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
+            for state in env.states
         ]
     )
 
