@@ -5,10 +5,14 @@ from __future__ import annotations
 import sys
 from copy import deepcopy
 from itertools import product
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 import yaml
+
+
+# Type aliases for better readability
+ActionDict = Dict[str, Any]  # Actions can have various value types
 
 
 class GraphPlan:
@@ -30,7 +34,7 @@ class GraphPlan:
         )
 
         # These members are populated by the preprocessing step
-        self.all_actions: List[Dict[str, List[str]]]
+        self.all_actions: List[ActionDict]
         self.preconds: torch.Tensor
         self.adds: torch.Tensor
         self.dels: torch.Tensor
@@ -105,11 +109,11 @@ class GraphPlan:
 
     @staticmethod
     def _expand_disjunctive_preconditions(
-        actions: List[Dict[str, List[str]]],
-    ) -> List[Dict[str, List[str]]]:
+        actions: List[ActionDict],
+    ) -> List[ActionDict]:
         """Expand actions with disjunctive preconditions into separate variants."""
 
-        new_actions: List[Dict[str, List[str]]] = []
+        new_actions: List[ActionDict] = []
         for act in actions:
             preconds = act.get("preconds", [])
             options: List[List[str]] = []
@@ -129,10 +133,10 @@ class GraphPlan:
 
     @staticmethod
     def _handle_variables(
-        actions: List[Dict[str, List[str]]],
+        actions: List[ActionDict],
         propositions: List[str],
         prop_to_id: Dict[str, int],
-        variables: Dict[str, Dict[str, object]],
+        variables: Dict[str, Dict[str, Any]],
     ) -> None:
         """Expand variable definitions into propositions and effects."""
 
@@ -141,8 +145,8 @@ class GraphPlan:
             return
 
         var_to_eqs: Dict[str, List[str]] = {}
-        var_to_values: Dict[str, List[object]] = {}
-        var_defs: Dict[str, Dict[str, object]] = {}
+        var_to_values: Dict[str, List[Any]] = {}
+        var_defs: Dict[str, Dict[str, Any]] = {}
 
         for varname, vardef in variables.items():
             vtype = vardef["type"]
@@ -150,7 +154,7 @@ class GraphPlan:
             if vtype == "enum":
                 values = vardef["values"]
             elif vtype == "int":
-                values = list(range(vardef["min_value"], vardef["max_value"] + 1))
+                values = list(range(int(vardef["min_value"]), int(vardef["max_value"]) + 1))
             else:
                 raise ValueError(f"Unknown variable type: {vtype}")
             var_to_values[varname] = values
@@ -183,9 +187,19 @@ class GraphPlan:
                     eq = f"{var}_eq_{val}"
                     if eq not in prop_to_id:
                         raise ValueError(f"Invalid value {val} for variable {var}")
-                    act["add"] = act.get("add", []) + [eq]
+                    
+                    # Ensure "add" is always a list
+                    add_list = act.get("add", [])
+                    if isinstance(add_list, str):
+                        add_list = [add_list]
+                    act["add"] = add_list + [eq]
+                    
+                    # Ensure "del" is always a list
+                    del_list = act.get("del", [])
+                    if isinstance(del_list, str):
+                        del_list = [del_list]
                     other_eqs = [e for e in var_to_eqs[var] if e != eq]
-                    act["del"] = act.get("del", []) + other_eqs
+                    act["del"] = del_list + other_eqs
                 del act["set"]
 
             if "var_precond" in act:
@@ -205,10 +219,16 @@ class GraphPlan:
                         val = str_val
                     if op == "==":
                         eq = f"{var}_eq_{val}"
-                        act["preconds"] = act.get("preconds", []) + [eq]
+                        preconds_list = act.get("preconds", [])
+                        if isinstance(preconds_list, str):
+                            preconds_list = [preconds_list]
+                        act["preconds"] = preconds_list + [eq]
                     elif op == "!=":
                         eq = f"{var}_eq_{val}"
-                        act["neg_preconds"] = act.get("neg_preconds", []) + [eq]
+                        neg_preconds_list = act.get("neg_preconds", [])
+                        if isinstance(neg_preconds_list, str):
+                            neg_preconds_list = [neg_preconds_list]
+                        act["neg_preconds"] = neg_preconds_list + [eq]
                     elif op in ["<=", ">="]:
                         if vtype != "int":
                             raise ValueError(
@@ -218,14 +238,18 @@ class GraphPlan:
                         for v in values:
                             if (op == "<=" and v > val) or (op == ">=" and v < val):
                                 neg_eqs.append(f"{var}_eq_{v}")
-                        act["neg_preconds"] = act.get("neg_preconds", []) + neg_eqs
+                        neg_preconds_list = act.get("neg_preconds", [])
+                        if isinstance(neg_preconds_list, str):
+                            neg_preconds_list = [neg_preconds_list]
+                        act["neg_preconds"] = neg_preconds_list + neg_eqs
                     else:
                         raise ValueError(f"Unknown operator in var_precond: {op}")
                 del act["var_precond"]
 
     @staticmethod
+    @staticmethod
     def _handle_negated_preconditions(
-        actions: List[Dict[str, List[str]]],
+        actions: List[ActionDict],
         propositions: List[str],
         prop_to_id: Dict[str, int],
         initial: List[str],
@@ -244,22 +268,36 @@ class GraphPlan:
                     if neg_name not in prop_to_id:
                         propositions.append(neg_name)
                         prop_to_id[neg_name] = len(propositions) - 1
-                    act["preconds"] = act.get("preconds", []) + [neg_name]
+                    preconds_list = act.get("preconds", [])
+                    if isinstance(preconds_list, str):
+                        preconds_list = [preconds_list]
+                    act["preconds"] = preconds_list + [neg_name]
                 del act["neg_preconds"]
 
         for act in actions:
             adds_to_add: List[str] = []
             dels_to_add: List[str] = []
-            for add_p in act.get("add", []):
+            
+            # Handle "add" list - ensure it's always a list
+            add_list = act.get("add", [])
+            if isinstance(add_list, str):
+                add_list = [add_list]
+            for add_p in add_list:
                 neg_name = f"not_{add_p}"
                 if neg_name in prop_to_id:
                     dels_to_add.append(neg_name)
-            for del_p in act.get("del", []):
+            
+            # Handle "del" list - ensure it's always a list  
+            del_list = act.get("del", [])
+            if isinstance(del_list, str):
+                del_list = [del_list]
+            for del_p in del_list:
                 neg_name = f"not_{del_p}"
                 if neg_name in prop_to_id:
                     adds_to_add.append(neg_name)
-            act["add"] = act.get("add", []) + adds_to_add
-            act["del"] = act.get("del", []) + dels_to_add
+            
+            act["add"] = add_list + adds_to_add
+            act["del"] = del_list + dels_to_add
 
         for p in list(prop_to_id.keys()):
             if p.startswith("not_"):
@@ -280,7 +318,7 @@ class GraphPlan:
         propositions: List[str] = data["propositions"]
         prop_to_id: Dict[str, int] = {p: i for i, p in enumerate(propositions)}
 
-        actions: List[Dict[str, List[str]]] = self._expand_disjunctive_preconditions(
+        actions: List[ActionDict] = self._expand_disjunctive_preconditions(
             data["actions"]
         )
         initial: List[str] = data["initial"]
@@ -294,7 +332,7 @@ class GraphPlan:
             prop_to_id,
             num_props,
             initial,
-        ) = self._handle_negated_preconditions(
+        ) = GraphPlan._handle_negated_preconditions(
             actions, propositions, prop_to_id, initial
         )
 
@@ -366,7 +404,7 @@ class GraphPlan:
         init_reach = init_props[reachable_prop_ids]
         goal_reach = goal_props[reachable_prop_ids]
 
-        all_actions_reach = [all_actions[i.item()] for i in reachable_act_ids]
+        all_actions_reach = [all_actions[int(i.item())] for i in reachable_act_ids]
 
         backward_prop_mask, backward_act_mask = self._backward_pruning(
             preconds_reach, adds_reach, dels_reach, goal_reach, num_reach_acts
@@ -391,7 +429,7 @@ class GraphPlan:
         init_rel = init_reach[relevant_prop_ids]
         goal_rel = goal_reach[relevant_prop_ids]
 
-        self.all_actions = [all_actions_reach[i.item()] for i in relevant_act_ids]
+        self.all_actions = [all_actions_reach[int(i.item())] for i in relevant_act_ids]
         self.preconds = preconds_rel
         self.adds = adds_rel
         self.dels = dels_rel
@@ -493,7 +531,7 @@ class GraphPlan:
                 achievers,
                 action_mutex,
                 failed_cache,
-                used + [act_local.item()],
+                used + [int(act_local.item())],
             )
             results.extend(sub_results)
         if not results:
@@ -530,9 +568,9 @@ class GraphPlan:
                 prefix = backtrack(lv - 1, next_subgoals)
                 if prefix is not None:
                     layer = [
-                        self.all_actions[i.item()]["name"]
+                        self.all_actions[int(i.item())]["name"]
                         for i in selected_acts
-                        if not self.all_actions[i.item()].get("noop")
+                        if not self.all_actions[int(i.item())].get("noop")
                     ]
                     if layer:
                         return prefix + [layer]
