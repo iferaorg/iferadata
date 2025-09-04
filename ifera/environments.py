@@ -259,7 +259,7 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
         Returns a tuple containing the total profit, and the ``date_idx`` and
