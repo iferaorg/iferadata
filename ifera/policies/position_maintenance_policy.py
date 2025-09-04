@@ -147,7 +147,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self,
         state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        action = self._action.clone()
+        action = self._action
         date_idx = state["date_idx"]
         time_idx = state["time_idx"]
         entry_price = state["entry_price"]

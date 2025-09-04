@@ -319,7 +319,8 @@ def make_table(
 
 import torch
 import ifera
-from einops import rearrange
+from einops import rearrange, repeat
+from torch.profiler import schedule, profile, record_function, ProfilerActivity
 
 if __name__ == "__main__":
     fm = ifera.FileManager()
@@ -337,18 +338,32 @@ if __name__ == "__main__":
     iconfig = cm.get_base_instrument_config(symbol, "30m")
 
     base_config = cm.get_base_instrument_config(symbol, "1m")
-    env = ifera.MultiGPUSingleMarketEnv(
+    # env = ifera.MultiGPUSingleMarketEnv(
+    #     instrument_config=base_config,
+    #     broker_name="IBKR",
+    #     backadjust=True,
+    #     devices=devices,
+    #     dtype=torch.float32,
+    # )
+    # base_env = env.envs[0]
+    env = ifera.SingleMarketEnv(
         instrument_config=base_config,
         broker_name="IBKR",
         backadjust=True,
-        devices=devices,
         dtype=torch.float32,
+        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
     )
-    base_env = env.envs[0]
-    batch_size = base_env.instrument_data.data.shape[0] - 250
+    base_env = env
+    date_n = base_env.instrument_data.data.shape[0] - 250
+    time_n = base_env.instrument_data.data.shape[1] 
 
-    date_idx = torch.arange(0, batch_size, dtype=torch.int32)
-    time_idx = torch.zeros_like(date_idx, dtype=torch.int32)
+    batch_size = date_n * time_n
+
+    date_idx = torch.arange(0, date_n, dtype=torch.int32)
+    time_idx = torch.arange(0, time_n, dtype=torch.int32)
+    date_idx = repeat(date_idx, "d -> (d t)", t=time_n)
+    time_idx = repeat(time_idx, "t -> (d t)", d=date_n)
+
     # date_idx = torch.tensor(
     #     [base_env.instrument_data.data.shape[0] - 1], dtype=torch.int32
     # )
@@ -387,34 +402,71 @@ if __name__ == "__main__":
         batch_size=batch_size,
     )
 
+    date_idx = date_idx.to(base_env.device)
+    time_idx = time_idx.to(base_env.device)
+
+    my_schedule = schedule(
+        wait=1,  # Skip 1 iteration (warm-up)
+        warmup=1,  # Warm up for 1 iteration
+        active=1,  # Profile 1 iteration
+        repeat=1   # Repeat the cycle twice
+    )
+
     # Warm up
     total_profit, _, _, steps = env.rollout(
         base_policy, date_idx, time_idx, max_steps=100
     )
 
-    print(f"Starting simulation for {symbol}")
-    t = time.time()
-
     total_profit, _, _, steps = env.rollout(
-        base_policy, date_idx, time_idx, max_steps=10000
+        base_policy, date_idx, time_idx, max_steps=100
     )
+
+    # with profile(
+    #     activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Profile both CPU and GPU
+    #     schedule=my_schedule,  # For looped/long-running code
+    #     on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/trace'),  # For TensorBoard
+    #     record_shapes=True,  # Record tensor shapes for ops
+    #     profile_memory=True,  # Track memory usage
+    #     with_stack=True,  # Include call stacks (for drilling down to lines/functions)
+    #     with_flops=True,  # Estimate FLOPs (useful for compute-heavy parts)
+    #     with_modules=True  # Aggregate stats by module (useful for NN models)
+    # ) as prof:
+    #     for i in range(3):
+    #         print(f"Iteration {i+1}/3")
+    #         t = time.time()
+
+    #         total_profit, _, _, steps = env.rollout(
+    #             base_policy, date_idx, time_idx, max_steps=10000
+    #         )
+    #         print(f"Iteration {i+1} completed in {time.time() - t:.2f} seconds. Steps: {steps}")
+            
+    #         prof.step()  # Notify the profiler of the end of an iteration
+
+    # prof.export_chrome_trace("profile_trace.json")
+
+    print ("Starting main rollout...")
+    t = time.time()
+    total_profit, _, _, steps = env.rollout(
+        base_policy, date_idx, time_idx, max_steps=100000
+    )
+    
     # total_profit, _, _ = env.rollout_with_display(
     #     trading_policies, date_idx, time_idx, max_steps=2000
     # )
 
-    profit_perc = torch.cat(
-        [
-            state["total_profit"]
-            / (state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
-            for state in env.states
-        ]
-    )
+    # profit_perc = torch.cat(
+    #     [
+    #         state["total_profit"]
+    #         / (state["entry_price"].nan_to_num(1) * base_config.contract_multiplier)
+    #         for state in env.states
+    #     ]
+    # )
 
     print(f"Simulation completed in {time.time() - t:.2f} seconds. Steps: {steps}")
 
-    max_idx = profit_perc.argmax()
+    max_idx = total_profit.argmax()
     print(
-        f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, Profit %: {profit_perc[max_idx].item() * 100:.4f}% "
+        f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f} " #, Profit %: {profit_perc[max_idx].item() * 100:.4f}% "
         f"date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
     )
-    print(f"Expected return: {profit_perc.mean().item() * 100:.4f}%")
+    # print(f"Expected return: {profit_perc.mean().item() * 100:.4f}%")

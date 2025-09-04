@@ -128,8 +128,6 @@ class SingleMarketEnv:
             trading_policy.reset(state)
         return state
 
-    @nested_compile_region
-    @torch.compile(mode="max-autotune", fullgraph=True)
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
         """Run one simulation step using ``trading_policy``."""
         date_idx = state["date_idx"]
@@ -173,11 +171,11 @@ class SingleMarketEnv:
 
         return result
 
-    def rollout(
+    @torch.compile()
+    def _rollout_inner(
         self,
         trading_policy: TradingPolicy,
-        start_date_idx: torch.Tensor,
-        start_time_idx: torch.Tensor,
+        state: dict[str, torch.Tensor],
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
@@ -188,7 +186,6 @@ class SingleMarketEnv:
         indices will be ``nan``.
         """
 
-        state = self.reset(start_date_idx, start_time_idx, trading_policy)
         steps = 0
         done_date_idx = torch.full(
             state["date_idx"].shape,
@@ -221,11 +218,7 @@ class SingleMarketEnv:
 
             for key in step_state:
                 if key != "done" and key in state:
-                    state[key] = step_state[key].clone()
-
-            for key in state:
-                if key not in step_state:
-                    state[key] = state[key].clone()
+                    state[key] = step_state[key]
 
             state["total_profit"] = state["total_profit"] + step_state["profit"]
             state["done"] = state["done"] | step_state["done"]
@@ -240,6 +233,25 @@ class SingleMarketEnv:
             done_time_idx.clone(),
             steps,
         )
+
+    def rollout(
+        self,
+        trading_policy: TradingPolicy,
+        start_date_idx: torch.Tensor,
+        start_time_idx: torch.Tensor,
+        max_steps: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
+
+        Returns a tuple containing the total profit, the ``date_idx`` and
+        ``time_idx`` at which ``done`` first became ``True`` for each batch, and
+        the number of steps taken. If an episode never reaches ``done`` these
+        indices will be ``nan``.
+        """
+
+        state = self.reset(start_date_idx, start_time_idx, trading_policy)
+
+        return self._rollout_inner(trading_policy, state, max_steps)
 
     def rollout_with_display(
         self,
@@ -302,7 +314,7 @@ class SingleMarketEnv:
 
                 for key in step_state:
                     if key != "done":
-                        state[key] = step_state[key].clone()
+                        state[key] = step_state[key]
 
                 state["total_profit"] = state["total_profit"] + step_state["profit"]
                 state["done"] = state["done"] | step_state["done"]
@@ -330,6 +342,7 @@ class SingleMarketEnv:
             state["total_profit"].clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
+            steps,
         )
 
 
@@ -422,65 +435,6 @@ class MultiGPUSingleMarketEnv:
         ):
             state = env.reset(d_chunk.to(env.device), t_chunk.to(env.device), policy)
             self.states.append(state)
-
-    def step(
-        self, trading_policies: list[TradingPolicy]
-    ) -> list[dict[str, torch.Tensor]]:
-        """Execute one step for each environment."""
-        step_states = []
-        for i, (env, policy) in enumerate(zip(self.envs, trading_policies)):
-            step_states.append(env.step(policy, self.states[i]))
-        return step_states
-
-    def _rollout_inner(
-        self,
-        trading_policies: list[TradingPolicy],
-        done_date_idx: list[torch.Tensor],
-        done_time_idx: list[torch.Tensor],
-        max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
-        steps = 0
-        while True:
-            torch.compiler.cudagraph_mark_step_begin()
-            step_states = self.step(trading_policies)
-
-            for i, step_state in enumerate(step_states):
-                state = self.states[i]
-                newly_done = (~state["done"]) & step_state["done"]
-                done_date_idx[i] = torch.where(
-                    newly_done,
-                    state["date_idx"].to(self.dtype),
-                    done_date_idx[i],
-                )
-                done_time_idx[i] = torch.where(
-                    newly_done,
-                    state["time_idx"].to(self.dtype),
-                    done_time_idx[i],
-                )
-
-                for key in step_state:
-                    if key != "done" and key in state:
-                        state[key] = step_state[key].clone()
-
-                for key in state:
-                    if key not in step_state:
-                        state[key] = state[key].clone()
-
-                state["total_profit"] = state["total_profit"] + step_state["profit"]
-                state["done"] = state["done"] | step_state["done"]
-
-            steps += 1
-            if all(state["done"].all() for state in self.states) or (
-                max_steps is not None and steps >= max_steps
-            ):
-                break
-
-        return (
-            torch.cat([state["total_profit"].clone() for state in self.states]),
-            torch.cat([idx.clone() for idx in done_date_idx]),
-            torch.cat([idx.clone() for idx in done_time_idx]),
-            steps,
-        )
 
     def rollout(
         self,

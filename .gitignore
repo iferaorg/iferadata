@@ -5,3 +5,4 @@ data/*/
 report/jscpd-report.md
 .vscode/
 pytest_err.log
+log/
