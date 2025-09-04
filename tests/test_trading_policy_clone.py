@@ -17,7 +17,7 @@ from ifera.config import BaseInstrumentConfig
 def test_clone_trading_policy_for_devices(base_instrument_config: BaseInstrumentConfig):
     dummy_data = DummyData(base_instrument_config, steps=3)
     base_policy = TradingPolicy(
-        instrument_data=dummy_data,
+        instrument_data=dummy_data,  # type: ignore[arg-type]
         open_position_policy=AlwaysOpenPolicy(
             1, batch_size=1, device=dummy_data.device
         ),

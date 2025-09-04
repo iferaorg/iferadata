@@ -3,7 +3,7 @@ Data models for financial instruments.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import datetime
 import yaml
@@ -67,8 +67,8 @@ class BaseInstrumentConfig(BaseModel):
     last_update: Optional[float] = Field(default=None)
 
     # Derived Fields
-    time_step: pd.Timedelta = pd.Timedelta(0)
-    end_time: pd.Timedelta = pd.Timedelta(0)
+    time_step: pd.Timedelta = pd.Timedelta(0)  # type: ignore[assignment]
+    end_time: pd.Timedelta = pd.Timedelta(0)  # type: ignore[assignment]
     rollover_offset: int = 0
     total_steps: int = 0
 
@@ -150,9 +150,13 @@ class BaseInstrumentConfig(BaseModel):
             all_steps = pd.timedelta_range(
                 start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=self.time_step
             )
-            self.end_time = all_steps[
+            filtered_steps = all_steps[
                 all_steps < self.trading_end - self.trading_start
-            ][-1]
+            ]
+            if len(filtered_steps) > 0:
+                self.end_time = pd.Timedelta(filtered_steps[-1])  # type: ignore[assignment]
+            else:
+                self.end_time = pd.Timedelta(0)  # type: ignore[assignment]
             total_seconds = self.end_time.total_seconds()
             step_seconds = self.time_step.total_seconds()
 
@@ -508,10 +512,14 @@ class ConfigManager:
             all_steps = pd.timedelta_range(
                 start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=time_step
             )
-            end_time = all_steps[
+            filtered_end_steps = all_steps[
                 all_steps < parent_config.trading_end - parent_config.trading_start
-            ][-1]
-            total_seconds = end_time.total_seconds()
+            ]
+            if len(filtered_end_steps) > 0:
+                end_time = pd.Timedelta(filtered_end_steps[-1])
+            else:
+                end_time = pd.Timedelta(0)
+            total_seconds = end_time.total_seconds()  # type: ignore[attr-defined]
             step_seconds = time_step.total_seconds()
 
             if step_seconds <= 0:

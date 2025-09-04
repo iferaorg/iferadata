@@ -7,6 +7,7 @@ from ifera.policies import (
     AlwaysFalseDonePolicy,
     SingleTradeDonePolicy,
     PositionMaintenancePolicy,
+    StopLossPolicy,
 )
 from ifera.data_models import DataManager
 from ifera.config import BaseInstrumentConfig
@@ -35,7 +36,7 @@ class DummyData:
         return next_date, next_time
 
 
-class DummyInitialStopLoss(torch.nn.Module):
+class DummyInitialStopLoss(StopLossPolicy):
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         _ = state
         return None
@@ -216,11 +217,11 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
             super().reset(state)
 
         def masked_reset(
-            self, mask: torch.Tensor
+            self, state: dict[str, torch.Tensor], mask: torch.Tensor
         ) -> None:  # pragma: no cover - simple flag
             self.reset_called = True
             self.last_mask = mask.clone()
-            super().masked_reset(mask)
+            super().masked_reset(state, mask)
 
     done_policy = TrackingDonePolicy()
     trading_policy = TradingPolicy(
