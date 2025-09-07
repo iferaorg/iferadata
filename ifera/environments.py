@@ -99,6 +99,7 @@ class SingleMarketEnv:
         self.device = self.instrument_data.device
         self.dtype = self.instrument_data.dtype
         self.max_date_idx = self.instrument_data.data.shape[0] - 1
+        self.contract_multiplier = self.instrument_data.instrument.contract_multiplier
 
     def reset(
         self,
@@ -119,7 +120,14 @@ class SingleMarketEnv:
             "entry_price": torch.full(
                 (batch_size,), float("nan"), dtype=self.dtype, device=self.device
             ),
+            "entry_position": torch.zeros(batch_size, dtype=torch.int32, device=self.device),
+            "entry_cost": torch.full(
+                (batch_size,), float("nan"), dtype=self.dtype, device=self.device
+            ),
             "total_profit": torch.zeros(
+                batch_size, dtype=self.dtype, device=self.device
+            ),
+            "total_profit_percent": torch.zeros(
                 batch_size, dtype=self.dtype, device=self.device
             ),
             "done": torch.zeros(batch_size, dtype=torch.bool, device=self.device),
@@ -134,6 +142,7 @@ class SingleMarketEnv:
         time_idx = state["time_idx"]
         position = state["position"]
         entry_price = state["entry_price"]
+        entry_position = state["entry_position"]
 
         action, stop_loss, done = trading_policy(state)
 
@@ -168,13 +177,50 @@ class SingleMarketEnv:
         ) / (old_weight + new_weight)
         entry_price = torch.where(add_to_position_mask, weighted_avg_price, entry_price)
 
+        # Update entry_position when entering or adding to position
+        position_update_mask = entry_mask | add_to_position_mask
+        new_entry_position = torch.where(
+            entry_mask,
+            action,  # New position
+            torch.where(
+                add_to_position_mask,
+                position + action,  # Adding to existing position
+                entry_position  # Keep existing
+            )
+        )
+        entry_position = torch.where(position_update_mask, new_entry_position, entry_position)
+
+        # Calculate entry_cost for convenience (before potential reset)
+        entry_cost = entry_price * torch.abs(entry_position.float()) * self.contract_multiplier
+
+        # Calculate profit percent for this step
+        # profit / (entry_price * abs(entry_position) * contract_multiplier)
+        # Handle division by zero case (when entry_cost is 0 or nan)
+        profit_percent = torch.where(
+            (entry_cost > 0) & (~entry_price.isnan()) & (entry_position != 0),
+            profit / entry_cost,
+            torch.zeros_like(profit)
+        )
+
+        # Reset entry_position, entry_cost when position becomes 0 (closed position)
+        # But only if we're not in the edge case where we just entered and got stopped out
+        position_closed_mask = new_position == 0
+        not_entry_step_mask = ~(entry_mask | add_to_position_mask)  # Don't reset on entry/add step
+        reset_mask = position_closed_mask & not_entry_step_mask
+        
+        entry_position = torch.where(reset_mask, torch.zeros_like(entry_position), entry_position)
+        entry_cost = torch.where(reset_mask, torch.full_like(entry_cost, float("nan")), entry_cost)
+
         had_position = state.get("had_position")
         if had_position is not None:
             had_position = had_position | (action != 0)
 
         result = {
             "profit": profit,
+            "profit_percent": profit_percent,
             "position": new_position,
+            "entry_position": entry_position,
+            "entry_cost": entry_cost,
             "date_idx": next_date_idx,
             "time_idx": next_time_idx,
             "entry_price": entry_price,
@@ -192,10 +238,10 @@ class SingleMarketEnv:
         trading_policy: TradingPolicy,
         state: dict[str, torch.Tensor],
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
-        Returns a tuple containing the total profit, the ``date_idx`` and
+        Returns a tuple containing the total profit, total profit percent, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the number of steps taken. If an episode never reaches ``done`` these
         indices will be ``nan``.
@@ -236,6 +282,7 @@ class SingleMarketEnv:
                     state[key] = step_state[key]
 
             state["total_profit"] = state["total_profit"] + step_state["profit"]
+            state["total_profit_percent"] = state["total_profit_percent"] + step_state["profit_percent"]
             state["done"] = state["done"] | step_state["done"]
             steps += 1
 
@@ -244,6 +291,7 @@ class SingleMarketEnv:
 
         return (
             state["total_profit"].clone(),
+            state["total_profit_percent"].clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
             steps,
@@ -255,10 +303,10 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
-        Returns a tuple containing the total profit, the ``date_idx`` and
+        Returns a tuple containing the total profit, total profit percent, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the number of steps taken. If an episode never reaches ``done`` these
         indices will be ``nan``.
@@ -274,10 +322,10 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
 
-        Returns a tuple containing the total profit, and the ``date_idx`` and
+        Returns a tuple containing the total profit, total profit percent, and the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch. If an
         episode never reaches ``done`` these indices will be ``nan``.
         """
@@ -332,6 +380,7 @@ class SingleMarketEnv:
                         state[key] = step_state[key]
 
                 state["total_profit"] = state["total_profit"] + step_state["profit"]
+                state["total_profit_percent"] = state["total_profit_percent"] + step_state["profit_percent"]
                 state["done"] = state["done"] | step_state["done"]
                 steps += 1
 
@@ -355,6 +404,7 @@ class SingleMarketEnv:
                     break
         return (
             state["total_profit"].clone(),
+            state["total_profit_percent"].clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
             steps,
@@ -371,7 +421,7 @@ def _run_rollout_worker(
     start_time_idx_chunk: torch.Tensor,
     trading_policy: TradingPolicy,
     max_steps: Optional[int],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
     """Worker function to run a full rollout on a single device."""
     trading_policy.to(device)  # Move policy to the worker's device
 
@@ -382,11 +432,12 @@ def _run_rollout_worker(
         device=device,
         dtype=dtype,
     )
-    total_profit, done_date_idx, done_time_idx, steps = env.rollout(
+    total_profit, total_profit_percent, done_date_idx, done_time_idx, steps = env.rollout(
         trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
     )
     return (
         total_profit.cpu(),
+        total_profit_percent.cpu(),
         done_date_idx.cpu(),
         done_time_idx.cpu(),
         steps,
@@ -457,10 +508,10 @@ class MultiGPUSingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Run rollouts on all devices in parallel.
 
-        Returns a tuple containing the total profit, the ``date_idx`` and
+        Returns a tuple containing the total profit, total profit percent, the ``date_idx`` and
         ``time_idx`` at which ``done`` first became ``True`` for each batch, and
         the maximum number of steps taken across all workers. If an episode never
         reaches ``done`` these indices will be ``nan``.
@@ -504,14 +555,16 @@ class MultiGPUSingleMarketEnv:
 
         # Sort results by original order (if needed) and concatenate
         total_profits = [r[0] for r in results]
-        done_date_idxs = [r[1] for r in results]
-        done_time_idxs = [r[2] for r in results]
-        steps_list = [r[3] for r in results]
+        total_profit_percents = [r[1] for r in results]
+        done_date_idxs = [r[2] for r in results]
+        done_time_idxs = [r[3] for r in results]
+        steps_list = [r[4] for r in results]
 
         # Concatenate tensors
         total_profit = torch.cat(total_profits)
+        total_profit_percent = torch.cat(total_profit_percents)
         done_date_idx = torch.cat(done_date_idxs)
         done_time_idx = torch.cat(done_time_idxs)
         max_steps = max(steps_list)
 
-        return total_profit, done_date_idx, done_time_idx, max_steps
+        return total_profit, total_profit_percent, done_date_idx, done_time_idx, max_steps

@@ -59,8 +59,10 @@ def test_multiprocessing_start_method_setting_cpu_only(
     with patch("ifera.environments.ProcessPoolExecutor") as mock_executor:
         mock_executor.return_value.__enter__.return_value.submit.return_value.result.return_value = (
             torch.tensor([1.0]),
-            torch.tensor([0]),
-            torch.tensor([2]),
+            torch.tensor([0.01]),  # profit_percent
+            torch.tensor([0.01]),  # profit_percent
+            torch.tensor([0]),  # done_date_idx
+                torch.tensor([2]),  # done_time_idx
             3,
         )
 
@@ -118,8 +120,9 @@ def test_multiprocessing_start_method_setting_cuda(
         with patch("ifera.environments.ProcessPoolExecutor") as mock_executor:
             mock_executor.return_value.__enter__.return_value.submit.return_value.result.return_value = (
                 torch.tensor([1.0]),
-                torch.tensor([0]),
-                torch.tensor([2]),
+                torch.tensor([0.01]),  # profit_percent
+                torch.tensor([0]),  # done_date_idx
+                torch.tensor([2]),  # done_time_idx
                 3,
             )
 
@@ -181,8 +184,9 @@ def test_multiprocessing_start_method_already_spawn(
         with patch("ifera.environments.ProcessPoolExecutor") as mock_executor:
             mock_executor.return_value.__enter__.return_value.submit.return_value.result.return_value = (
                 torch.tensor([1.0]),
-                torch.tensor([0]),
-                torch.tensor([2]),
+                torch.tensor([0.01]),  # profit_percent
+                torch.tensor([0]),  # done_date_idx
+                torch.tensor([2]),  # done_time_idx
                 3,
             )
 

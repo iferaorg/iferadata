@@ -148,7 +148,7 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    total_profit, d_idx, t_idx, steps = env.rollout(
+    total_profit, total_profit_percent, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=5
     )
     assert total_profit.shape == (1,)
@@ -184,7 +184,7 @@ def test_single_market_env_rollout_returns_nan_if_never_done(
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    total_profit, d_idx, t_idx, steps = env.rollout(
+    total_profit, total_profit_percent, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=2
     )
 
