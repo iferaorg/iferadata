@@ -583,3 +583,162 @@ def test_entry_price_no_weighted_average_opposite_signs(
     assert step_state["entry_price"].item() == pytest.approx(
         10.0
     )  # Should remain unchanged
+
+
+def test_profit_percent_calculation(monkeypatch, dummy_data_three_steps):
+    """Test profit percent calculation functionality."""
+    torch._dynamo.reset()
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps,
+    )
+    env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
+
+    class TestTradingPolicy:
+        def __init__(self):
+            self.step_count = 0
+
+        def __call__(self, state):
+            if self.step_count == 0:
+                action = torch.tensor([1], dtype=torch.int32, device=env.device)  # Buy 1
+            elif self.step_count == 1:
+                action = torch.tensor([-1], dtype=torch.int32, device=env.device)  # Sell 1
+            else:
+                action = torch.tensor([0], dtype=torch.int32, device=env.device)  # No action
+            
+            stop_loss = torch.tensor([float("nan")], dtype=env.dtype, device=env.device)
+            done = torch.tensor([False], dtype=torch.bool, device=env.device)
+            self.step_count += 1
+            return action, stop_loss, done
+
+        def reset(self, state):
+            pass
+
+    policy = TestTradingPolicy()
+
+    # Mock market simulator
+    def mock_calculate_step(date_idx, time_idx, position, action, stop_loss):
+        if action.item() == 1:  # Entry
+            profit = torch.tensor([0.0], dtype=env.dtype, device=env.device)
+            new_position = torch.tensor([1], dtype=torch.int32, device=env.device)
+            execution_price = torch.tensor([100.0], dtype=env.dtype, device=env.device)
+        elif action.item() == -1:  # Exit with profit
+            profit = torch.tensor([500.0], dtype=env.dtype, device=env.device)  # $500 profit
+            new_position = torch.tensor([0], dtype=torch.int32, device=env.device)
+            execution_price = torch.tensor([105.0], dtype=env.dtype, device=env.device)
+        else:
+            profit = torch.tensor([0.0], dtype=env.dtype, device=env.device)
+            new_position = position
+            execution_price = torch.tensor([0.0], dtype=env.dtype, device=env.device)
+        
+        cashflow = torch.zeros_like(profit)
+        return profit, new_position, execution_price, cashflow
+
+    monkeypatch.setattr(env.market_simulator, "calculate_step", mock_calculate_step)
+
+    # Reset and run
+    state = env.reset(
+        torch.tensor([0], dtype=torch.int32),
+        torch.tensor([0], dtype=torch.int32),
+        policy,
+    )
+
+    # Check initial state has new fields
+    assert "total_profit_percent" in state
+    assert "entry_position" in state
+    assert "entry_cost" in state
+
+    # Step 1: Enter position
+    step_state = env.step(policy, state)
+    assert "profit_percent" in step_state
+    assert step_state["profit_percent"].item() == 0.0  # No profit on entry
+    assert step_state["entry_position"].item() == 1
+    # Contract multiplier from test config is 1000
+    assert step_state["entry_cost"].item() == 100.0 * 1 * 1000  # price * position * multiplier
+
+    # Update state
+    for key in step_state:
+        if key in state:
+            state[key] = step_state[key]
+
+    # Step 2: Exit with profit
+    step_state = env.step(policy, state)
+    
+    # Expected profit percent: 500 / (100 * 1 * 1000) = 500 / 100000 = 0.005 = 0.5%
+    expected_profit_percent = 500.0 / (100.0 * 1 * 1000)
+    assert step_state["profit_percent"].item() == pytest.approx(expected_profit_percent)
+    
+    # Position should be closed
+    assert step_state["position"].item() == 0
+    assert step_state["entry_position"].item() == 0  # Reset after position close
+    assert torch.isnan(step_state["entry_cost"]).item()
+
+
+def test_profit_percent_edge_case_enter_and_stop(monkeypatch, dummy_data_three_steps):
+    """Test edge case where we enter and stop out in same step."""
+    torch._dynamo.reset()
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps,
+    )
+    env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
+
+    class TestTradingPolicy:
+        def __init__(self):
+            self.step_count = 0
+
+        def __call__(self, state):
+            if self.step_count == 0:
+                action = torch.tensor([2], dtype=torch.int32, device=env.device)  # Buy 2
+            else:
+                action = torch.tensor([0], dtype=torch.int32, device=env.device)  # No action
+            
+            stop_loss = torch.tensor([float("nan")], dtype=env.dtype, device=env.device)
+            done = torch.tensor([False], dtype=torch.bool, device=env.device)
+            self.step_count += 1
+            return action, stop_loss, done
+
+        def reset(self, state):
+            pass
+
+    policy = TestTradingPolicy()
+
+    # Mock market simulator - enter and immediately stop out
+    def mock_calculate_step(date_idx, time_idx, position, action, stop_loss):
+        if action.item() == 2:  # Enter 2 contracts but get stopped out immediately
+            profit = torch.tensor([-400.0], dtype=env.dtype, device=env.device)  # Loss
+            new_position = torch.tensor([0], dtype=torch.int32, device=env.device)  # Stopped out
+            execution_price = torch.tensor([150.0], dtype=env.dtype, device=env.device)  # Entry price
+        else:
+            profit = torch.tensor([0.0], dtype=env.dtype, device=env.device)
+            new_position = position
+            execution_price = torch.tensor([0.0], dtype=env.dtype, device=env.device)
+        
+        cashflow = torch.zeros_like(profit)
+        return profit, new_position, execution_price, cashflow
+
+    monkeypatch.setattr(env.market_simulator, "calculate_step", mock_calculate_step)
+
+    # Reset and run
+    state = env.reset(
+        torch.tensor([0], dtype=torch.int32),
+        torch.tensor([0], dtype=torch.int32),
+        policy,
+    )
+
+    # Step 1: Enter and stop out in same step
+    step_state = env.step(policy, state)
+    
+    # Even though final position is 0, entry_position should reflect the original entry
+    assert step_state["entry_position"].item() == 2
+    expected_entry_cost = 150.0 * 2 * 1000  # entry_price * abs(entry_position) * multiplier
+    assert step_state["entry_cost"].item() == expected_entry_cost
+    
+    # Profit percent should be calculated correctly
+    expected_profit_percent = -400.0 / expected_entry_cost
+    assert step_state["profit_percent"].item() == pytest.approx(expected_profit_percent)
+    
+    # Final position should be 0 due to stop out
+    assert step_state["position"].item() == 0
