@@ -160,7 +160,8 @@ class SingleMarketEnv:
             & (torch.sign(position) == torch.sign(action))
         )
         if add_to_position_mask.any():
-            # Calculate weighted average: (old_entry_price * abs(position) + execution_price * abs(action)) / (abs(position) + abs(action))
+            # Calculate weighted average: (old_entry_price * abs(position) + execution_price * abs(action))
+            # divided by (abs(position) + abs(action))
             old_weight = torch.abs(position.float())
             new_weight = torch.abs(action.float())
             weighted_avg_price = (
