@@ -413,11 +413,11 @@ if __name__ == "__main__":
     )
 
     # Warm up
-    total_profit, _, _, steps = env.rollout(
+    total_profit, total_profit_percent, _, _, steps = env.rollout(
         base_policy, date_idx, time_idx, max_steps=100
     )
 
-    total_profit, _, _, steps = env.rollout(
+    total_profit, total_profit_percent, _, _, steps = env.rollout(
         base_policy, date_idx, time_idx, max_steps=100
     )
 
@@ -446,7 +446,7 @@ if __name__ == "__main__":
 
     print ("Starting main rollout...")
     t = time.time()
-    total_profit, _, _, steps = env.rollout(
+    total_profit, total_profit_percent, _, _, steps = env.rollout(
         base_policy, date_idx, time_idx, max_steps=100000
     )
     
@@ -464,9 +464,9 @@ if __name__ == "__main__":
 
     print(f"Simulation completed in {time.time() - t:.2f} seconds. Steps: {steps}")
 
-    max_idx = total_profit.argmax()
+    max_idx = total_profit_percent.argmax()
     print(
-        f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f} " #, Profit %: {profit_perc[max_idx].item() * 100:.4f}% "
+        f"Max index: {max_idx}, Total profit: {total_profit[max_idx].item():.4f}, Profit %: {total_profit_percent[max_idx].item() * 100:.4f}%, "
         f"date_idx: {date_idx[max_idx].item()}, time_idx: {time_idx[max_idx].item()}"
     )
-    # print(f"Expected return: {profit_perc.mean().item() * 100:.4f}%")
+    print(f"Expected return: {total_profit_percent.mean().item() * 100:.4f}%")
