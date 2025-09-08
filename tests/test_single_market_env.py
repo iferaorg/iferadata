@@ -117,6 +117,9 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
         "prev_stop_loss": prev_stop,
         "entry_price": entry_price,
         "total_profit": torch.zeros(1),
+        "total_profit_percent": torch.zeros(1),
+        "entry_position": torch.zeros(1, dtype=torch.int32),
+        "entry_cost": torch.zeros(1),
         "done": torch.zeros(1, dtype=torch.bool),
     }
 
@@ -148,10 +151,11 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    total_profit, d_idx, t_idx, steps = env.rollout(
+    total_profit, total_profit_percent, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=5
     )
     assert total_profit.shape == (1,)
+    assert total_profit_percent.shape == (1,)
     assert d_idx.item() == 0
     assert t_idx.item() == 2
     assert isinstance(steps, int)
@@ -184,7 +188,7 @@ def test_single_market_env_rollout_returns_nan_if_never_done(
     start_d = torch.tensor([0], dtype=torch.int32)
     start_t = torch.tensor([0], dtype=torch.int32)
 
-    total_profit, d_idx, t_idx, steps = env.rollout(
+    total_profit, total_profit_percent, d_idx, t_idx, steps = env.rollout(
         trading_policy, start_d, start_t, max_steps=2
     )
 
@@ -244,7 +248,7 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
     assert done_policy.last_mask.shape[0] == start_d.shape[0]
 
 
-def test_step_entry_price_immediate_stop(monkeypatch, dummy_data_three_steps):
+def test_step_profit_percent_calculation(monkeypatch, dummy_data_three_steps):
     torch._dynamo.reset()
     monkeypatch.setattr(
         DataManager,
@@ -265,10 +269,55 @@ def test_step_entry_price_immediate_stop(monkeypatch, dummy_data_three_steps):
         batch_size=1,
     )
 
+    cm = env.instrument_data.instrument.contract_multiplier
+
     def fake_calculate_step(date_idx, time_idx, position, action, stop_loss):
         _ = date_idx, time_idx, position, stop_loss
         execution_price = torch.tensor([10.0], device=env.device, dtype=env.dtype)
-        profit = torch.zeros(1, dtype=env.dtype, device=env.device)
+        profit = torch.tensor([cm], dtype=env.dtype, device=env.device)
+        new_position = torch.tensor([1], dtype=torch.int32, device=env.device)
+        cashflow = torch.zeros(1, dtype=env.dtype, device=env.device)
+        return profit, new_position, execution_price, cashflow
+
+    monkeypatch.setattr(env.market_simulator, "calculate_step", fake_calculate_step)
+    state = env.reset(
+        torch.tensor([0], dtype=torch.int32),
+        torch.tensor([0], dtype=torch.int32),
+        trading_policy,
+    )
+    step_state = env.step(trading_policy, state)
+    assert step_state["profit_percent"].item() == pytest.approx(0.1)
+    assert step_state["entry_cost"].item() == pytest.approx(10.0 * cm)
+    assert step_state["entry_position"].item() == 1
+
+
+def test_profit_percent_immediate_stop(monkeypatch, dummy_data_three_steps):
+    torch._dynamo.reset()
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps,
+    )
+    env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
+    trading_policy = TradingPolicy(
+        instrument_data=env.instrument_data,
+        open_position_policy=AlwaysOpenPolicy(
+            1, batch_size=1, device=env.instrument_data.device
+        ),
+        initial_stop_loss_policy=DummyInitialStopLoss(),
+        position_maintenance_policy=DummyMaintenance(),
+        trading_done_policy=AlwaysFalseDonePolicy(
+            batch_size=1, device=env.instrument_data.device
+        ),
+        batch_size=1,
+    )
+
+    cm = env.instrument_data.instrument.contract_multiplier
+
+    def fake_calculate_step(date_idx, time_idx, position, action, stop_loss):
+        _ = date_idx, time_idx, position, stop_loss
+        execution_price = torch.tensor([10.0], device=env.device, dtype=env.dtype)
+        profit = torch.tensor([-cm], dtype=env.dtype, device=env.device)
         new_position = torch.zeros(1, dtype=torch.int32, device=env.device)
         cashflow = torch.zeros(1, dtype=env.dtype, device=env.device)
         return profit, new_position, execution_price, cashflow
@@ -281,6 +330,9 @@ def test_step_entry_price_immediate_stop(monkeypatch, dummy_data_three_steps):
     )
     step_state = env.step(trading_policy, state)
     assert step_state["entry_price"].item() == pytest.approx(10.0)
+    assert step_state["profit_percent"].item() == pytest.approx(-0.1)
+    assert step_state["entry_position"].item() == 0
+    assert step_state["entry_cost"].item() == pytest.approx(0.0)
 
 
 def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_steps):
@@ -323,6 +375,7 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
         if key != "done":
             state[key] = step_state[key].clone()
     state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
     state["done"] = state["done"] | step_state["done"]
 
     _, _, done = trading_policy(state)
