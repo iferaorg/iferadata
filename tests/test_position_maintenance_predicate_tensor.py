@@ -40,7 +40,7 @@ def test_scaled_artr_cond_predicate_is_tensor(monkeypatch, dummy_instrument_data
         atr_multiple=1.0,
         wait_for_breakeven=False,
         minimum_improvement=0.1,
-        batch_size=1,
+        
     )
 
     def fake_cond(pred, true_fn, false_fn, operands):

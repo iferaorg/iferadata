@@ -52,7 +52,6 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         atr_multiple: float,
         wait_for_breakeven: bool,
         minimum_improvement: float,
-        batch_size: int,
     ) -> None:
         super().__init__()
         self.atr_multiple = atr_multiple
@@ -111,23 +110,23 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         )
         self.stage_count = len(stages)
 
-        device = instrument_data.device
-        dtype = instrument_data.dtype
-        self._action: torch.Tensor
-        self.register_buffer(
-            "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
-        )
-        self._zero: torch.Tensor
-        self.register_buffer(
-            "_zero", torch.zeros(batch_size, dtype=torch.int32, device=device)
-        )
-        self._nan: torch.Tensor
-        self.register_buffer(
-            "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
-        )
+        # Store device and dtype for lazy buffer creation
+        self._device = instrument_data.device
+        self._dtype = instrument_data.dtype
+        self._action: torch.Tensor | None = None
+        self._zero: torch.Tensor | None = None
+        self._nan: torch.Tensor | None = None
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset internal stage and base price."""
+        batch_size = next(iter(state.values())).shape[0]
+        
+        # Create or recreate helper buffers if needed
+        if self._zero is None or self._zero.shape[0] != batch_size:
+            self._action = torch.zeros(batch_size, dtype=torch.int32, device=self._device)
+            self._zero = torch.zeros(batch_size, dtype=torch.int32, device=self._device)
+            self._nan = torch.full((batch_size,), float("nan"), dtype=self._dtype, device=self._device)
+        
         state["maint_stage"] = self._zero.clone()
         state["base_price"] = self._nan.clone()
         state["entry_date_idx"] = torch.full_like(self._zero, -1)
@@ -147,6 +146,10 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         self,
         state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Ensure buffers are initialized
+        if self._action is None:
+            self.reset(state)
+            
         action = self._action
         date_idx = state["date_idx"]
         time_idx = state["time_idx"]
@@ -252,7 +255,6 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         skip_stage1: bool,
         keep_percent: float,
         anchor_type: str,
-        batch_size: int,
     ) -> None:
         super().__init__()
         if anchor_type not in [
@@ -286,25 +288,24 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         self.anchor_type = anchor_type
         self.artr_policy = ArtrStopLossPolicy(instrument_data, stage1_atr_multiple)
 
-        device = instrument_data.device
-        dtype = instrument_data.dtype
-        initial_stage = 1 if self.skip_stage1 else 0
-        self._action: torch.Tensor
-        self.register_buffer(
-            "_action", torch.zeros(batch_size, dtype=torch.int32, device=device)
-        )
-        self._initial_stage: torch.Tensor
-        self.register_buffer(
-            "_initial_stage",
-            torch.full((batch_size,), initial_stage, dtype=torch.long, device=device),
-        )
-        self._nan: torch.Tensor
-        self.register_buffer(
-            "_nan", torch.full((batch_size,), float("nan"), dtype=dtype, device=device)
-        )
+        # Store device, dtype and initial stage for lazy buffer creation
+        self._device = instrument_data.device
+        self._dtype = instrument_data.dtype
+        self._initial_stage_value = 1 if self.skip_stage1 else 0
+        self._action: torch.Tensor | None = None
+        self._initial_stage: torch.Tensor | None = None
+        self._nan: torch.Tensor | None = None
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset stage and anchor state."""
+        batch_size = next(iter(state.values())).shape[0]
+        
+        # Create buffers if needed
+        if self._action is None or self._action.shape[0] != batch_size:
+            self._action = torch.zeros(batch_size, dtype=torch.int32, device=self._device)
+            self._initial_stage = torch.full((batch_size,), self._initial_stage_value, dtype=torch.long, device=self._device)
+            self._nan = torch.full((batch_size,), float("nan"), dtype=self._dtype, device=self._device)
+        
         state["maint_stage"] = self._initial_stage.clone()
         state["maint_anchor"] = self._nan.clone()
 
@@ -318,6 +319,10 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         self,
         state: dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Ensure buffers are initialized
+        if self._action is None:
+            self.reset(state)
+            
         action = self._action
         stop_loss = state["prev_stop"].clone()
         position = state["position"]
