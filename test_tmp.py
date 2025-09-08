@@ -338,22 +338,22 @@ if __name__ == "__main__":
     iconfig = cm.get_base_instrument_config(symbol, "30m")
 
     base_config = cm.get_base_instrument_config(symbol, "1m")
-    # env = ifera.MultiGPUSingleMarketEnv(
-    #     instrument_config=base_config,
-    #     broker_name="IBKR",
-    #     backadjust=True,
-    #     devices=devices,
-    #     dtype=torch.float32,
-    # )
-    # base_env = env.envs[0]
-    env = ifera.SingleMarketEnv(
+    env = ifera.MultiGPUSingleMarketEnv(
         instrument_config=base_config,
         broker_name="IBKR",
         backadjust=True,
+        devices=devices,
         dtype=torch.float32,
-        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
     )
-    base_env = env
+    base_env = env.envs[0]
+    # env = ifera.SingleMarketEnv(
+    #     instrument_config=base_config,
+    #     broker_name="IBKR",
+    #     backadjust=True,
+    #     dtype=torch.float32,
+    #     device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+    # )
+    # base_env = env
     date_n = base_env.instrument_data.data.shape[0] - 250
     time_n = base_env.instrument_data.data.shape[1] 
 
