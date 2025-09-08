@@ -111,8 +111,12 @@ class SingleMarketEnv:
         """Create and return the initial environment state for a new simulation."""
 
         batch_size = start_date_idx.shape[0]
-        self._zero = torch.tensor(0, dtype=self.dtype, device=self.device).expand(batch_size)
-        self._zero_int = torch.tensor(0, dtype=torch.int32, device=self.device).expand(batch_size)
+        self._zero = torch.tensor(0, dtype=self.dtype, device=self.device).expand(
+            batch_size
+        )
+        self._zero_int = torch.tensor(0, dtype=torch.int32, device=self.device).expand(
+            batch_size
+        )
         state = {
             "date_idx": start_date_idx.to(torch.int32).to(self.device),
             "time_idx": start_time_idx.to(torch.int32).to(self.device),
@@ -195,12 +199,8 @@ class SingleMarketEnv:
             profit / entry_cost,
             _zero,
         )
-        entry_position = torch.where(
-            new_position == 0, _zero_int, entry_position
-        )
-        entry_cost = torch.where(
-            new_position == 0, _zero, entry_cost
-        )
+        entry_position = torch.where(new_position == 0, _zero_int, entry_position)
+        entry_cost = torch.where(new_position == 0, _zero, entry_cost)
 
         had_position = state.get("had_position")
         if had_position is not None:
@@ -421,6 +421,10 @@ def _run_rollout_worker(
     """Worker function to run a full rollout on a single device."""
     trading_policy.to(device)  # Move policy to the worker's device
 
+    # Move input chunks to the target device (they come in as CPU tensors)
+    start_date_idx_chunk = start_date_idx_chunk.to(device)
+    start_time_idx_chunk = start_time_idx_chunk.to(device)
+
     env = SingleMarketEnv(
         instrument_config,
         broker_name,
@@ -541,8 +545,8 @@ class MultiGPUSingleMarketEnv:
                     self.backadjust,
                     device,
                     self.dtype,
-                    d_chunk,
-                    t_chunk,
+                    d_chunk.cpu(),  # Move chunk to CPU for pickling
+                    t_chunk.cpu(),  # Move chunk to CPU for pickling
                     copy.deepcopy(trading_policy),  # Deep copy for each worker
                     max_steps,
                 )
