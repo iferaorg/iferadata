@@ -99,6 +99,8 @@ class SingleMarketEnv:
         self.dtype = self.instrument_data.dtype
         self.max_date_idx = self.instrument_data.data.shape[0] - 1
         self.contract_multiplier = instrument_config.contract_multiplier
+        self._zero = torch.tensor(0, dtype=dtype, device=self.device)
+        self._zero_int = torch.tensor(0, dtype=torch.int32, device=self.device)
 
     def reset(
         self,
@@ -109,6 +111,8 @@ class SingleMarketEnv:
         """Create and return the initial environment state for a new simulation."""
 
         batch_size = start_date_idx.shape[0]
+        self._zero = torch.tensor(0, dtype=self.dtype, device=self.device).expand(batch_size)
+        self._zero_int = torch.tensor(0, dtype=torch.int32, device=self.device).expand(batch_size)
         state = {
             "date_idx": start_date_idx.to(torch.int32).to(self.device),
             "time_idx": start_time_idx.to(torch.int32).to(self.device),
@@ -142,6 +146,9 @@ class SingleMarketEnv:
         position = state["position"]
         entry_price = state["entry_price"]
         entry_position = state["entry_position"]
+        dtype = self.dtype
+        _zero = self._zero
+        _zero_int = self._zero_int
 
         action, stop_loss, done = trading_policy(state)
 
@@ -154,24 +161,20 @@ class SingleMarketEnv:
         profit, new_position, execution_price, _ = self.market_simulator.calculate_step(
             next_date_idx, next_time_idx, position, action, stop_loss
         )
-        profit = torch.where(done, torch.zeros_like(profit), profit)
+        profit = torch.where(done, _zero, profit)
         new_position = torch.where(done, position, new_position)
         execution_price = torch.where(done, entry_price, execution_price)
 
         entry_mask = (position == 0) & (action != 0)
         entry_price = torch.where(entry_mask, execution_price, entry_price)
 
-        # Handle adding to existing position: calculate weighted average entry price
         add_to_position_mask = (
             (position != 0)
             & (action != 0)
             & (torch.sign(position) == torch.sign(action))
         )
-        # Calculate weighted average:
-        # (old_entry_price * abs(position) + execution_price * abs(action))
-        # divided by (abs(position) + abs(action))
-        old_weight = torch.abs(position.float())
-        new_weight = torch.abs(action.float())
+        old_weight = position.to(dtype).abs()
+        new_weight = action.to(dtype).abs()
         weighted_avg_price = (
             entry_price * old_weight + execution_price * new_weight
         ) / (old_weight + new_weight)
@@ -184,19 +187,19 @@ class SingleMarketEnv:
 
         entry_cost = (
             entry_price.nan_to_num(0.0)
-            * entry_position.abs().to(self.dtype)
+            * entry_position.to(dtype).abs()
             * self.contract_multiplier
         )
         profit_percent = torch.where(
             entry_cost != 0,
             profit / entry_cost,
-            torch.zeros_like(profit),
+            _zero,
         )
         entry_position = torch.where(
-            new_position == 0, torch.zeros_like(new_position), entry_position
+            new_position == 0, _zero_int, entry_position
         )
         entry_cost = torch.where(
-            new_position == 0, torch.zeros_like(entry_cost), entry_cost
+            new_position == 0, _zero, entry_cost
         )
 
         had_position = state.get("had_position")
