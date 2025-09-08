@@ -183,3 +183,87 @@ def test_multi_gpu_env_parallel_chunking(monkeypatch, dummy_data_three_steps_mul
             assert (
                 chunks[1].shape[0] == 2
             ), f"Second chunk should have 2 elements, got {chunks[1].shape[0]}"
+
+
+def test_multi_gpu_env_uneven_chunks_broadcasting_fix(
+    monkeypatch, dummy_data_three_steps_multi
+):
+    """Test that uneven chunk sizes don't cause broadcasting errors (regression test)."""
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps_multi,
+    )
+
+    # Use 8 devices to create uneven chunks like the original issue
+    devices = [torch.device("cpu") for _ in range(8)]
+
+    # Mock the environment creation to avoid GitHub API calls in workers
+    with patch("ifera.environments.SingleMarketEnv") as mock_env_class:
+        mock_env_instance = MagicMock()
+        mock_env_class.return_value = mock_env_instance
+        mock_env_instance.instrument_data = dummy_data_three_steps_multi
+
+        env = MultiGPUSingleMarketEnv(
+            dummy_data_three_steps_multi.instrument, "IBKR", devices=devices
+        )
+
+        # Use a batch size that creates uneven chunks to trigger the original issue
+        batch_size = 5192940  # Creates 7 chunks of 649118 and 1 chunk of 649114
+
+        base_policy = TradingPolicy(
+            instrument_data=dummy_data_three_steps_multi,
+            open_position_policy=AlwaysOpenPolicy(
+                1, batch_size=batch_size, device=dummy_data_three_steps_multi.device
+            ),
+            initial_stop_loss_policy=DummyInitialStopLoss(),
+            position_maintenance_policy=CloseAfterOneStep(),
+            trading_done_policy=SingleTradeDonePolicy(
+                batch_size=batch_size, device=dummy_data_three_steps_multi.device
+            ),
+            batch_size=batch_size,
+        )
+
+        # Create start indices with the problematic batch size
+        start_d = torch.randint(0, 2, (batch_size,), dtype=torch.int32)
+        start_t = torch.randint(0, 3, (batch_size,), dtype=torch.int32)
+
+        # Mock the ProcessPoolExecutor to simulate workers with uneven chunks
+        def mock_submit(*args, **kwargs):
+            # Extract the policy and chunk from args
+            policy = args[8]  # trading_policy is the 9th argument
+            d_chunk = args[6]  # d_chunk is the 7th argument
+
+            chunk_size = d_chunk.shape[0]
+
+            # Verify that the policy's buffers have been resized to match chunk size
+            if hasattr(policy.trading_done_policy, "had_position"):
+                assert (
+                    policy.trading_done_policy.had_position.shape[0] == chunk_size
+                ), f"Policy buffer size {policy.trading_done_policy.had_position.shape[0]} != chunk size {chunk_size}"
+
+            mock_future = MagicMock()
+            mock_future.result.return_value = (
+                torch.zeros(chunk_size),  # profit chunk
+                torch.zeros(chunk_size),  # profit_percent chunk
+                torch.zeros(chunk_size, dtype=torch.int32),  # date_idx chunk
+                torch.full((chunk_size,), 2, dtype=torch.int32),  # time_idx chunk
+                3,  # steps
+            )
+            return mock_future
+
+        with patch("ifera.environments.ProcessPoolExecutor") as mock_executor:
+            mock_executor.return_value.__enter__.return_value.submit = mock_submit
+
+            # This should NOT raise a broadcasting error anymore
+            total_profit, total_profit_percent, d_idx, t_idx, steps = env.rollout(
+                base_policy, start_d, start_t, max_steps=5
+            )
+
+            # Verify results have correct shape
+            assert total_profit.shape == (batch_size,)
+            assert total_profit_percent.shape == (batch_size,)
+            assert d_idx.shape == (batch_size,)
+            assert t_idx.shape == (batch_size,)
+            assert isinstance(steps, int)
+            assert steps > 0
