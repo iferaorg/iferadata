@@ -218,3 +218,85 @@ def test_multiprocessing_start_method_already_spawn(
 
                     # set_start_method should NOT be called since it's already 'spawn'
                     mock_set_method.assert_not_called()
+
+
+def test_cuda_tensor_chunks_moved_to_cpu_before_multiprocessing(
+    monkeypatch, dummy_data_three_steps_cuda
+):
+    """Test that CUDA tensor chunks are moved to CPU before being passed to workers."""
+    monkeypatch.setattr(
+        DataManager,
+        "get_instrument_data",
+        lambda self, config, **_: dummy_data_three_steps_cuda,
+    )
+
+    # Use CUDA devices (mocked)
+    devices = [torch.device("cuda:0")]
+
+    # Mock the environment creation to avoid actual CUDA initialization
+    with patch("ifera.environments.SingleMarketEnv") as mock_env_class:
+        mock_env_instance = MagicMock()
+        mock_env_class.return_value = mock_env_instance
+        mock_env_instance.instrument_data = dummy_data_three_steps_cuda
+
+        env = MultiGPUSingleMarketEnv(
+            dummy_data_three_steps_cuda.instrument, "IBKR", devices=devices
+        )
+
+        # Create test tensors
+        start_date_idx = torch.tensor([0, 1], dtype=torch.int32)
+        start_time_idx = torch.tensor([0, 1], dtype=torch.int32)
+
+        # Create trading policy
+        trading_policy = TradingPolicy(
+            instrument_data=dummy_data_three_steps_cuda,
+            open_position_policy=AlwaysOpenPolicy(
+                1, batch_size=2, device=dummy_data_three_steps_cuda.device
+            ),
+            initial_stop_loss_policy=DummyInitialStopLoss(),
+            position_maintenance_policy=CloseAfterOneStep(),
+            trading_done_policy=SingleTradeDonePolicy(
+                batch_size=2, device=dummy_data_three_steps_cuda.device
+            ),
+            batch_size=2,
+        )
+
+        # Mock the ProcessPoolExecutor to capture what gets passed to workers
+        submitted_args = []
+
+        def mock_submit(*args, **kwargs):
+            submitted_args.append(args)
+            # Mock the result
+            mock_future = MagicMock()
+            mock_future.result.return_value = (
+                torch.tensor([1.0]),
+                torch.tensor([0.0]),
+                torch.tensor([0]),
+                torch.tensor([2]),
+                3,
+            )
+            return mock_future
+
+        with patch("ifera.environments.ProcessPoolExecutor") as mock_executor:
+            mock_executor.return_value.__enter__.return_value.submit = mock_submit
+
+            # Call rollout
+            env.rollout(trading_policy, start_date_idx, start_time_idx, max_steps=5)
+
+            # Verify that workers were called
+            assert len(submitted_args) == len(devices)
+
+            # Check that the tensor chunks passed to workers are CPU tensors
+            for args in submitted_args:
+                # Args are: (worker_func, instrument_config, broker_name, backadjust,
+                #           device, dtype, d_chunk, t_chunk, policy, max_steps)
+                d_chunk = args[6]  # d_chunk argument
+                t_chunk = args[7]  # t_chunk argument
+
+                # Verify chunks are CPU tensors (not CUDA)
+                assert d_chunk.device == torch.device(
+                    "cpu"
+                ), f"d_chunk should be on CPU, got {d_chunk.device}"
+                assert t_chunk.device == torch.device(
+                    "cpu"
+                ), f"t_chunk should be on CPU, got {t_chunk.device}"
