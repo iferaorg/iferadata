@@ -323,10 +323,7 @@ from einops import rearrange, repeat
 from torch.profiler import schedule, profile, record_function, ProfilerActivity
 
 if __name__ == "__main__":
-    fm = ifera.FileManager()
     cm = ifera.ConfigManager()
-    dm = ifera.DataManager()
-
     broker = cm.get_broker_config("IBKR")
 
     devices = (
@@ -364,14 +361,6 @@ if __name__ == "__main__":
     date_idx = repeat(date_idx, "d -> (d t)", t=time_n)
     time_idx = repeat(time_idx, "t -> (d t)", d=date_n)
 
-    # date_idx = torch.tensor(
-    #     [base_env.instrument_data.data.shape[0] - 1], dtype=torch.int32
-    # )
-    # time_idx = torch.tensor(
-    #     [base_env.instrument_data.data.shape[1] - 4], dtype=torch.int32
-    # )
-    # batch_size = date_idx.shape[0]
-
     open_policy = ifera.OpenOncePolicy(
         direction=1, batch_size=batch_size, device=base_env.device
     )
@@ -405,21 +394,21 @@ if __name__ == "__main__":
     date_idx = date_idx.to(base_env.device)
     time_idx = time_idx.to(base_env.device)
 
-    my_schedule = schedule(
-        wait=1,  # Skip 1 iteration (warm-up)
-        warmup=1,  # Warm up for 1 iteration
-        active=1,  # Profile 1 iteration
-        repeat=1   # Repeat the cycle twice
-    )
+    # my_schedule = schedule(
+    #     wait=1,  # Skip 1 iteration (warm-up)
+    #     warmup=1,  # Warm up for 1 iteration
+    #     active=1,  # Profile 1 iteration
+    #     repeat=1   # Repeat the cycle twice
+    # )
 
     # Warm up
-    total_profit, total_profit_percent, _, _, steps = env.rollout(
-        base_policy, date_idx, time_idx, max_steps=100
-    )
+    # total_profit, total_profit_percent, _, _, steps = env.rollout(
+    #     base_policy, date_idx, time_idx, max_steps=100
+    # )
 
-    total_profit, total_profit_percent, _, _, steps = env.rollout(
-        base_policy, date_idx, time_idx, max_steps=100
-    )
+    # total_profit, total_profit_percent, _, _, steps = env.rollout(
+    #     base_policy, date_idx, time_idx, max_steps=100
+    # )
 
     # with profile(
     #     activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],  # Profile both CPU and GPU
