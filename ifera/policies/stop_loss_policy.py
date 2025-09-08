@@ -145,11 +145,10 @@ class InitialArtrStopLossPolicy(StopLossPolicy):
     """Stop loss policy for setting initial stops using ATR."""
 
     def __init__(
-        self, instrument_data: InstrumentData, atr_multiple: float, batch_size: int
+        self, instrument_data: InstrumentData, atr_multiple: float
     ) -> None:
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
-        _ = batch_size
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """InitialArtrStopLossPolicy holds no state to reset."""

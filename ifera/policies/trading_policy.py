@@ -47,14 +47,12 @@ class TradingPolicy(BaseTradingPolicy):
         initial_stop_loss_policy: StopLossPolicy,
         position_maintenance_policy: PositionMaintenancePolicy,
         trading_done_policy: TradingDonePolicy,
-        batch_size: int,
     ) -> None:
         super().__init__()
         self.open_position_policy = open_position_policy
         self.initial_stop_loss_policy = initial_stop_loss_policy
         self.position_maintenance_policy = position_maintenance_policy
         self.trading_done_policy = trading_done_policy
-        _ = batch_size
         self._last_date_idx = instrument_data.data.shape[0] - 1
         self._last_time_idx = instrument_data.data.shape[1] - 1
 

@@ -19,14 +19,13 @@ def test_clone_trading_policy_for_devices(base_instrument_config: BaseInstrument
     base_policy = TradingPolicy(
         instrument_data=dummy_data,  # type: ignore[arg-type]
         open_position_policy=AlwaysOpenPolicy(
-            1, batch_size=1, device=dummy_data.device
+            1, device=dummy_data.device
         ),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=CloseAfterOneStep(),
         trading_done_policy=SingleTradeDonePolicy(
-            batch_size=1, device=dummy_data.device
+            device=dummy_data.device
         ),
-        batch_size=1,
     )
 
     devices = [torch.device("cpu"), torch.device("cpu")]

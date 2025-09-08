@@ -19,35 +19,6 @@ from .policies import TradingPolicy
 from .torch_utils import get_devices
 
 
-def _resize_policy_for_chunk(policy: TradingPolicy, chunk_size: int) -> TradingPolicy:
-    """Resize policy buffers to match the chunk size for multi-GPU processing.
-
-    This function creates a deep copy of the policy and resizes any pre-allocated
-    buffers to match the chunk size, preventing broadcasting errors when the
-    policy is used with chunked data.
-    """
-    # Create a deep copy of the policy first
-    policy_copy = copy.deepcopy(policy)
-
-    # Recursively resize all buffers in the policy and its submodules
-    def resize_buffers(module):
-        for name, buffer in module.named_buffers(recurse=False):
-            if buffer.ndim > 0 and buffer.shape[0] != chunk_size:
-                # Resize the buffer to match chunk size
-                new_shape = (chunk_size,) + buffer.shape[1:]
-                new_buffer = torch.zeros(
-                    new_shape, dtype=buffer.dtype, device=buffer.device
-                )
-                module.register_buffer(name, new_buffer, persistent=False)
-
-        # Recursively handle child modules
-        for child_module in module.children():
-            resize_buffers(child_module)
-
-    resize_buffers(policy_copy)
-    return policy_copy
-
-
 def make_table(
     data_tensor,
     date_idx_t,
@@ -576,9 +547,7 @@ class MultiGPUSingleMarketEnv:
                     self.dtype,
                     d_chunk.cpu(),  # Move chunk to CPU for pickling
                     t_chunk.cpu(),  # Move chunk to CPU for pickling
-                    _resize_policy_for_chunk(
-                        trading_policy, d_chunk.shape[0]
-                    ),  # Resize policy for chunk
+                    copy.deepcopy(trading_policy),  # Deep copy policy for each worker
                     max_steps,
                 )
                 for device, d_chunk, t_chunk in zip(self.devices, d_chunks, t_chunks)

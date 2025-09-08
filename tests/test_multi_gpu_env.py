@@ -59,14 +59,14 @@ def test_multi_gpu_env_rollout(monkeypatch, dummy_data_three_steps_multi):
         base_policy = TradingPolicy(
             instrument_data=dummy_data_three_steps_multi,
             open_position_policy=AlwaysOpenPolicy(
-                1, batch_size=1, device=dummy_data_three_steps_multi.device
+                1, device=dummy_data_three_steps_multi.device
             ),
             initial_stop_loss_policy=DummyInitialStopLoss(),
             position_maintenance_policy=CloseAfterOneStep(),
             trading_done_policy=SingleTradeDonePolicy(
-                batch_size=1, device=dummy_data_three_steps_multi.device
+                device=dummy_data_three_steps_multi.device
             ),
-            batch_size=1,
+            
         )
 
         start_d = torch.tensor([0, 0], dtype=torch.int32)
@@ -123,14 +123,14 @@ def test_multi_gpu_env_parallel_chunking(monkeypatch, dummy_data_three_steps_mul
         base_policy = TradingPolicy(
             instrument_data=dummy_data_three_steps_multi,
             open_position_policy=AlwaysOpenPolicy(
-                1, batch_size=2, device=dummy_data_three_steps_multi.device
+                1, device=dummy_data_three_steps_multi.device
             ),
             initial_stop_loss_policy=DummyInitialStopLoss(),
             position_maintenance_policy=CloseAfterOneStep(),
             trading_done_policy=SingleTradeDonePolicy(
-                batch_size=2, device=dummy_data_three_steps_multi.device
+                device=dummy_data_three_steps_multi.device
             ),
-            batch_size=2,
+            
         )
 
         # Test with larger batch size to verify chunking
@@ -214,14 +214,13 @@ def test_multi_gpu_env_uneven_chunks_broadcasting_fix(
         base_policy = TradingPolicy(
             instrument_data=dummy_data_three_steps_multi,
             open_position_policy=AlwaysOpenPolicy(
-                1, batch_size=batch_size, device=dummy_data_three_steps_multi.device
+                1, device=dummy_data_three_steps_multi.device
             ),
             initial_stop_loss_policy=DummyInitialStopLoss(),
             position_maintenance_policy=CloseAfterOneStep(),
             trading_done_policy=SingleTradeDonePolicy(
-                batch_size=batch_size, device=dummy_data_three_steps_multi.device
+                device=dummy_data_three_steps_multi.device
             ),
-            batch_size=batch_size,
         )
 
         # Create start indices with the problematic batch size
@@ -236,11 +235,10 @@ def test_multi_gpu_env_uneven_chunks_broadcasting_fix(
 
             chunk_size = d_chunk.shape[0]
 
-            # Verify that the policy's buffers have been resized to match chunk size
-            if hasattr(policy.trading_done_policy, "had_position"):
-                assert (
-                    policy.trading_done_policy.had_position.shape[0] == chunk_size
-                ), f"Policy buffer size {policy.trading_done_policy.had_position.shape[0]} != chunk size {chunk_size}"
+            # With the new lazy buffer creation approach, buffers should be None initially
+            # and will be created during reset() based on the actual state size
+            # This test verifies that no broadcasting errors occur with uneven chunks
+            assert policy.trading_done_policy._device is not None, "Device should be set"
 
             mock_future = MagicMock()
             mock_future.result.return_value = (
