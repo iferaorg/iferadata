@@ -42,7 +42,6 @@ def test_scaled_artr_no_position(monkeypatch, dummy_instrument_data):
         atr_multiple=1.0,
         wait_for_breakeven=False,
         minimum_improvement=0.1,
-        batch_size=1,
     )
 
     state = {
@@ -69,7 +68,6 @@ def test_percent_gain_no_position(dummy_instrument_data, monkeypatch):
         skip_stage1=False,
         keep_percent=0.5,
         anchor_type="entry",
-        batch_size=1,
     )
 
     class DummyArtr(torch.nn.Module):

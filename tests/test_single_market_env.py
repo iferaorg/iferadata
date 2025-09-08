@@ -122,6 +122,7 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
         "done": torch.zeros(1, dtype=torch.bool),
     }
 
+    policy.reset(state)
     _, _, done = policy(state)
     assert done.item() is True
 

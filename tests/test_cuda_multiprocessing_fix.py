@@ -69,14 +69,14 @@ def test_multiprocessing_start_method_setting_cpu_only(
         trading_policy = TradingPolicy(
             instrument_data=base_env.instrument_data,
             open_position_policy=AlwaysOpenPolicy(
-                1, batch_size=1, device=base_env.instrument_data.device
+                1, device=base_env.instrument_data.device
             ),
             initial_stop_loss_policy=DummyInitialStopLoss(),
             position_maintenance_policy=CloseAfterOneStep(),
             trading_done_policy=SingleTradeDonePolicy(
-                batch_size=1, device=base_env.instrument_data.device
+                device=base_env.instrument_data.device
             ),
-            batch_size=1,
+            
         )
 
         start_d = torch.tensor([0], dtype=torch.int32)
@@ -128,14 +128,14 @@ def test_multiprocessing_start_method_setting_cuda(
             trading_policy = TradingPolicy(
                 instrument_data=dummy_data_three_steps_cuda,
                 open_position_policy=AlwaysOpenPolicy(
-                    1, batch_size=1, device=dummy_data_three_steps_cuda.device
+                    1, device=dummy_data_three_steps_cuda.device
                 ),
                 initial_stop_loss_policy=DummyInitialStopLoss(),
                 position_maintenance_policy=CloseAfterOneStep(),
                 trading_done_policy=SingleTradeDonePolicy(
-                    batch_size=1, device=dummy_data_three_steps_cuda.device
+                    device=dummy_data_three_steps_cuda.device
                 ),
-                batch_size=1,
+                
             )
 
             start_d = torch.tensor([0], dtype=torch.int32)
@@ -192,14 +192,14 @@ def test_multiprocessing_start_method_already_spawn(
             trading_policy = TradingPolicy(
                 instrument_data=dummy_data_three_steps_cuda,
                 open_position_policy=AlwaysOpenPolicy(
-                    1, batch_size=1, device=dummy_data_three_steps_cuda.device
+                    1, device=dummy_data_three_steps_cuda.device
                 ),
                 initial_stop_loss_policy=DummyInitialStopLoss(),
                 position_maintenance_policy=CloseAfterOneStep(),
                 trading_done_policy=SingleTradeDonePolicy(
-                    batch_size=1, device=dummy_data_three_steps_cuda.device
+                    device=dummy_data_three_steps_cuda.device
                 ),
-                batch_size=1,
+                
             )
 
             start_d = torch.tensor([0], dtype=torch.int32)
@@ -251,14 +251,14 @@ def test_cuda_tensor_chunks_moved_to_cpu_before_multiprocessing(
         trading_policy = TradingPolicy(
             instrument_data=dummy_data_three_steps_cuda,
             open_position_policy=AlwaysOpenPolicy(
-                1, batch_size=2, device=dummy_data_three_steps_cuda.device
+                1, device=dummy_data_three_steps_cuda.device
             ),
             initial_stop_loss_policy=DummyInitialStopLoss(),
             position_maintenance_policy=CloseAfterOneStep(),
             trading_done_policy=SingleTradeDonePolicy(
-                batch_size=2, device=dummy_data_three_steps_cuda.device
+                device=dummy_data_three_steps_cuda.device
             ),
-            batch_size=2,
+            
         )
 
         # Mock the ProcessPoolExecutor to capture what gets passed to workers

@@ -35,7 +35,6 @@ def test_scaled_artr_initialization(monkeypatch, dummy_instrument_data):
         atr_multiple=1.0,
         wait_for_breakeven=False,
         minimum_improvement=0.1,
-        batch_size=1,
     )
 
     assert policy.stage_count == 2
@@ -53,5 +52,4 @@ def test_scaled_artr_invalid_base(monkeypatch, dummy_instrument_data):
             atr_multiple=1.0,
             wait_for_breakeven=False,
             minimum_improvement=0.1,
-            batch_size=1,
         )
