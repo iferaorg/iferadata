@@ -113,9 +113,10 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         # Store device and dtype for lazy buffer creation
         self._device = instrument_data.device
         self._dtype = instrument_data.dtype
-        self._action: torch.Tensor = torch.tensor((), dtype=torch.int32, device=instrument_data.device)
-        self._zero: torch.Tensor = torch.tensor((), dtype=torch.int32, device=instrument_data.device)
-        self._nan: torch.Tensor = torch.tensor((), dtype=self._dtype, device=instrument_data.device)
+        # Register helper tensors as buffers so they get moved with .to(device)
+        self.register_buffer("_action", torch.tensor((), dtype=torch.int32, device=instrument_data.device))
+        self.register_buffer("_zero", torch.tensor((), dtype=torch.int32, device=instrument_data.device))
+        self.register_buffer("_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device))
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset internal stage and base price."""
@@ -288,9 +289,10 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         self._device = instrument_data.device
         self._dtype = instrument_data.dtype
         self._initial_stage_value = 1 if self.skip_stage1 else 0
-        self._action: torch.Tensor = torch.tensor((), dtype=torch.int32, device=instrument_data.device)
-        self._initial_stage: torch.Tensor = torch.tensor((), dtype=torch.long, device=instrument_data.device)
-        self._nan: torch.Tensor = torch.tensor((), dtype=self._dtype, device=instrument_data.device)
+        # Register helper tensors as buffers so they get moved with .to(device)
+        self.register_buffer("_action", torch.tensor((), dtype=torch.int32, device=instrument_data.device))
+        self.register_buffer("_initial_stage", torch.tensor((), dtype=torch.long, device=instrument_data.device))
+        self.register_buffer("_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device))
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Fully reset stage and anchor state."""

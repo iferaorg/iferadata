@@ -141,7 +141,9 @@ def test_trading_policy_clone_to_device(dummy_instrument_data):
     assert cloned is not trading_policy
     for key, tensor in trading_policy.state_dict().items():
         cloned_tensor = cloned.state_dict()[key]
-        assert tensor.data_ptr() != cloned_tensor.data_ptr()
+        # Empty tensors may share the same data pointer (both are 0), so skip that check for empty tensors
+        if tensor.numel() > 0:
+            assert tensor.data_ptr() != cloned_tensor.data_ptr()
         assert torch.allclose(tensor.cpu(), cloned_tensor.cpu(), equal_nan=True)
         assert tensor.device == torch.device("cpu")
         assert cloned_tensor.device == device
