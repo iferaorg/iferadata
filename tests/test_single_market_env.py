@@ -37,7 +37,7 @@ class DummyData:
 
 
 class DummyInitialStopLoss(StopLossPolicy):
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         _ = state
         return None
 
@@ -50,7 +50,7 @@ class DummyMaintenance(PositionMaintenancePolicy):
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         pass
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         _ = state
         return None
 
@@ -63,7 +63,7 @@ class CloseAfterOneStep(PositionMaintenancePolicy):
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         pass
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         _ = state
         return None
 
@@ -122,7 +122,7 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
         "done": torch.zeros(1, dtype=torch.bool),
     }
 
-    policy.reset(state)
+    policy.reset(state, batch_size=1, device=torch.device("cpu"))
     _, _, done = policy(state)
     assert done.item() is True
 
@@ -210,20 +210,20 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
         def __init__(self) -> None:
             super().__init__(device=env.instrument_data.device)
             self.reset_called = False
-            self.last_mask = torch.empty(0, dtype=torch.bool)
+            self.last_batch_size = 0
 
         def reset(
-            self, state: dict[str, torch.Tensor]
+            self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
         ) -> None:  # pragma: no cover - simple flag
             self.reset_called = True
-            super().reset(state)
-            self.last_mask = torch.ones(self.had_position.shape[0], dtype=torch.bool)
+            super().reset(state, batch_size, device)
+            # Track the batch size from parameters instead
+            self.last_batch_size = batch_size
 
         def masked_reset(
             self, state: dict[str, torch.Tensor], mask: torch.Tensor
         ) -> None:  # pragma: no cover - simple flag
             self.reset_called = True
-            self.last_mask = mask.clone()
             super().masked_reset(state, mask)
 
     done_policy = TrackingDonePolicy()
@@ -243,7 +243,7 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
     env.reset(start_d, start_t, trading_policy)
 
     assert done_policy.reset_called is True
-    assert done_policy.last_mask.shape[0] == start_d.shape[0]
+    assert done_policy.last_batch_size == start_d.shape[0]
 
 
 def test_step_profit_percent_calculation(monkeypatch, dummy_data_three_steps):
@@ -415,7 +415,7 @@ def test_entry_price_weighted_average_add_to_position(
             done = torch.tensor([False], dtype=torch.bool, device=env.device)
             return action, stop_loss, done
 
-        def reset(self, state):
+        def reset(self, state, batch_size: int = None, device: torch.device = None):
             self.step_number = 0
 
     trading_policy = CustomTradingPolicy()
@@ -500,7 +500,7 @@ def test_entry_price_weighted_average_add_to_short_position(
             done = torch.tensor([False], dtype=torch.bool, device=env.device)
             return action, stop_loss, done
 
-        def reset(self, state):
+        def reset(self, state, batch_size: int = None, device: torch.device = None):
             self.step_number = 0
 
     trading_policy = CustomTradingPolicy()
@@ -585,7 +585,7 @@ def test_entry_price_no_weighted_average_opposite_signs(
             done = torch.tensor([False], dtype=torch.bool, device=env.device)
             return action, stop_loss, done
 
-        def reset(self, state):
+        def reset(self, state, batch_size: int = None, device: torch.device = None):
             self.step_number = 0
 
     trading_policy = CustomTradingPolicy()
