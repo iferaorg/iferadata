@@ -362,12 +362,11 @@ if __name__ == "__main__":
     time_idx = repeat(time_idx, "t -> (d t)", d=date_n)
 
     open_policy = ifera.OpenOncePolicy(
-        direction=1, batch_size=batch_size, device=base_env.device
+        direction=1, device=base_env.device
     )
     init_stop_policy = ifera.InitialArtrStopLossPolicy(
         instrument_data=base_env.instrument_data,
         atr_multiple=3.0,
-        batch_size=batch_size,
     )
     maintenance_policy = ifera.ScaledArtrMaintenancePolicy(
         instrument_data=base_env.instrument_data,
@@ -375,11 +374,10 @@ if __name__ == "__main__":
         atr_multiple=3.0,
         wait_for_breakeven=True,
         minimum_improvement=0.0,
-        batch_size=batch_size,
     )
 
     done_policy = ifera.SingleTradeDonePolicy(
-        batch_size=batch_size, device=base_env.device
+        device=base_env.device
     )
 
     base_policy = ifera.TradingPolicy(
@@ -388,7 +386,6 @@ if __name__ == "__main__":
         initial_stop_loss_policy=init_stop_policy,
         position_maintenance_policy=maintenance_policy,
         trading_done_policy=done_policy,
-        batch_size=batch_size,
     )
 
     date_idx = date_idx.to(base_env.device)
@@ -436,7 +433,7 @@ if __name__ == "__main__":
     print ("Starting main rollout...")
     t = time.time()
     total_profit, total_profit_percent, _, _, steps = env.rollout(
-        base_policy, date_idx, time_idx, max_steps=100000
+        base_policy, date_idx, time_idx, max_steps=500000
     )
     
     # total_profit, _, _ = env.rollout_with_display(
