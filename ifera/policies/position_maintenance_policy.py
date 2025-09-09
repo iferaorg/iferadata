@@ -133,7 +133,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         batch_size = next(iter(state.values())).shape[0]
 
         # Create or recreate helper buffers if needed
-        if self._zero.numel() == 0 or self._zero.shape[0] != batch_size:
+        if self._zero.numel() == 0 or self._zero.shape[0] != batch_size or self._zero.device != self._device:
             self._action = torch.zeros(
                 batch_size, dtype=torch.int32, device=self._device
             )
@@ -321,19 +321,20 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         batch_size = next(iter(state.values())).shape[0]
 
         # Create buffers if needed
-        if self._action.numel() == 0 or self._action.shape[0] != batch_size:
+        if self._action.numel() == 0 or self._action.shape[0] != batch_size or self._action.device != self._device:
             self._action = torch.zeros(
                 batch_size, dtype=torch.int32, device=self._device
-            )
-            self._initial_stage = torch.full(
-                (batch_size,),
-                self._initial_stage_value,
-                dtype=torch.long,
-                device=self._device,
             )
             self._nan = torch.full(
                 (batch_size,), float("nan"), dtype=self._dtype, device=self._device
             )
+
+        self._initial_stage = torch.full(
+            (batch_size,),
+            self._initial_stage_value,
+            dtype=torch.long,
+            device=self._device,
+        )
 
         state["maint_stage"] = self._initial_stage.clone()
         state["maint_anchor"] = self._nan.clone()
