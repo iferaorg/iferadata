@@ -40,7 +40,6 @@ def test_scaled_artr_active_position(monkeypatch, dummy_instrument_data):
         atr_multiple=1.0,
         wait_for_breakeven=False,
         minimum_improvement=0.1,
-        
     )
 
     state = {

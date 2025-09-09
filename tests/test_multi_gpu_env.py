@@ -66,7 +66,6 @@ def test_multi_gpu_env_rollout(monkeypatch, dummy_data_three_steps_multi):
             trading_done_policy=SingleTradeDonePolicy(
                 device=dummy_data_three_steps_multi.device
             ),
-            
         )
 
         start_d = torch.tensor([0, 0], dtype=torch.int32)
@@ -130,7 +129,6 @@ def test_multi_gpu_env_parallel_chunking(monkeypatch, dummy_data_three_steps_mul
             trading_done_policy=SingleTradeDonePolicy(
                 device=dummy_data_three_steps_multi.device
             ),
-            
         )
 
         # Test with larger batch size to verify chunking
@@ -238,7 +236,9 @@ def test_multi_gpu_env_uneven_chunks_broadcasting_fix(
             # With the new lazy buffer creation approach, buffers should be None initially
             # and will be created during reset() based on the actual state size
             # This test verifies that no broadcasting errors occur with uneven chunks
-            assert policy.trading_done_policy._device is not None, "Device should be set"
+            assert (
+                policy.trading_done_policy._device is not None
+            ), "Device should be set"
 
             mock_future = MagicMock()
             mock_future.result.return_value = (

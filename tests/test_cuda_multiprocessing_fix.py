@@ -76,7 +76,6 @@ def test_multiprocessing_start_method_setting_cpu_only(
             trading_done_policy=SingleTradeDonePolicy(
                 device=base_env.instrument_data.device
             ),
-            
         )
 
         start_d = torch.tensor([0], dtype=torch.int32)
@@ -135,7 +134,6 @@ def test_multiprocessing_start_method_setting_cuda(
                 trading_done_policy=SingleTradeDonePolicy(
                     device=dummy_data_three_steps_cuda.device
                 ),
-                
             )
 
             start_d = torch.tensor([0], dtype=torch.int32)
@@ -199,7 +197,6 @@ def test_multiprocessing_start_method_already_spawn(
                 trading_done_policy=SingleTradeDonePolicy(
                     device=dummy_data_three_steps_cuda.device
                 ),
-                
             )
 
             start_d = torch.tensor([0], dtype=torch.int32)
@@ -258,7 +255,6 @@ def test_cuda_tensor_chunks_moved_to_cpu_before_multiprocessing(
             trading_done_policy=SingleTradeDonePolicy(
                 device=dummy_data_three_steps_cuda.device
             ),
-            
         )
 
         # Mock the ProcessPoolExecutor to capture what gets passed to workers

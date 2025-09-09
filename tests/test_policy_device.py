@@ -43,9 +43,7 @@ def test_simple_policies_to_device(dummy_instrument_data):
         AlwaysOpenPolicy(direction=1, device=torch.device("cpu")),
         OpenOncePolicy(direction=1, device=torch.device("cpu")),
         ArtrStopLossPolicy(dummy_instrument_data, atr_multiple=1.0),
-        InitialArtrStopLossPolicy(
-            dummy_instrument_data, atr_multiple=1.0
-        ),
+        InitialArtrStopLossPolicy(dummy_instrument_data, atr_multiple=1.0),
         PercentGainMaintenancePolicy(
             dummy_instrument_data,
             stage1_atr_multiple=1.0,
@@ -84,12 +82,8 @@ def test_scaled_artr_policy_to_device(monkeypatch, dummy_instrument_data):
 
 def test_trading_policy_to_device(dummy_instrument_data):
     device = _target_device()
-    open_policy = AlwaysOpenPolicy(
-        direction=1, device=torch.device("cpu")
-    )
-    initial_stop = InitialArtrStopLossPolicy(
-        dummy_instrument_data, atr_multiple=1.0
-    )
+    open_policy = AlwaysOpenPolicy(direction=1, device=torch.device("cpu"))
+    initial_stop = InitialArtrStopLossPolicy(dummy_instrument_data, atr_multiple=1.0)
     maintenance = PercentGainMaintenancePolicy(
         dummy_instrument_data,
         stage1_atr_multiple=1.0,
@@ -97,7 +91,6 @@ def test_trading_policy_to_device(dummy_instrument_data):
         skip_stage1=False,
         keep_percent=0.5,
         anchor_type="entry",
-        
     )
     done_policy = AlwaysFalseDonePolicy(device=torch.device("cpu"))
     trading_policy = TradingPolicy(
@@ -114,12 +107,8 @@ def test_trading_policy_to_device(dummy_instrument_data):
 
 def test_trading_policy_clone_to_device(dummy_instrument_data):
     device = _target_device()
-    open_policy = AlwaysOpenPolicy(
-        direction=1, device=torch.device("cpu")
-    )
-    initial_stop = InitialArtrStopLossPolicy(
-        dummy_instrument_data, atr_multiple=1.0
-    )
+    open_policy = AlwaysOpenPolicy(direction=1, device=torch.device("cpu"))
+    initial_stop = InitialArtrStopLossPolicy(dummy_instrument_data, atr_multiple=1.0)
     maintenance = PercentGainMaintenancePolicy(
         dummy_instrument_data,
         stage1_atr_multiple=1.0,
@@ -127,7 +116,6 @@ def test_trading_policy_clone_to_device(dummy_instrument_data):
         skip_stage1=False,
         keep_percent=0.5,
         anchor_type="entry",
-        
     )
     done_policy = AlwaysFalseDonePolicy(device=torch.device("cpu"))
     trading_policy = TradingPolicy(
