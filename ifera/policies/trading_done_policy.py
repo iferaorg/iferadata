@@ -39,7 +39,8 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
     def __init__(self, device: torch.device) -> None:
         super().__init__()
         self._device = device
-        self._false: torch.Tensor = torch.tensor((), dtype=torch.bool, device=device)
+        # Register _false as a buffer so it gets moved with .to(device)
+        self.register_buffer("_false", torch.tensor((), dtype=torch.bool, device=device))
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Initialize _false buffer based on state batch size."""
@@ -66,7 +67,8 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     def __init__(self, device: torch.device) -> None:
         super().__init__()
         self._device = device
-        self.had_position: torch.Tensor = torch.tensor((), dtype=torch.bool, device=device)
+        # Register had_position as a buffer so it gets moved with .to(device)
+        self.register_buffer("had_position", torch.tensor((), dtype=torch.bool, device=device))
 
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset ``had_position`` for all batches."""
