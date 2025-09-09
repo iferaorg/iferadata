@@ -77,6 +77,8 @@ class OpenOncePolicy(OpenPositionPolicy):
     ) -> torch.Tensor:
         """Return the direction for all batches that can open a position."""
         opened = state["opened"]
+        # Ensure device compatibility for operations
+        opened = opened.to(no_position_mask.device)
         open_mask = no_position_mask & ~opened
         state["opened"] = opened | open_mask
-        return open_mask * self.direction
+        return open_mask * self.direction.to(open_mask.device)

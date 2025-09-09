@@ -148,13 +148,25 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
         state["entry_time_idx"] = torch.full_like(self._zero, -1)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
-        state["maint_stage"] = torch.where(mask, self._zero, state["maint_stage"])
-        state["base_price"] = torch.where(mask, self._nan, state["base_price"])
+        # Ensure device compatibility for operations
+        zero = self._zero.to(mask.device)
+        nan = self._nan.to(mask.device)
+
+        state["maint_stage"] = torch.where(
+            mask, zero, state["maint_stage"].to(mask.device)
+        )
+        state["base_price"] = torch.where(
+            mask, nan, state["base_price"].to(mask.device)
+        )
         state["entry_date_idx"] = torch.where(
-            mask, state["date_idx"], state["entry_date_idx"]
+            mask,
+            state["date_idx"].to(mask.device),
+            state["entry_date_idx"].to(mask.device),
         )
         state["entry_time_idx"] = torch.where(
-            mask, state["time_idx"], state["entry_time_idx"]
+            mask,
+            state["time_idx"].to(mask.device),
+            state["entry_time_idx"].to(mask.device),
         )
 
     def forward(

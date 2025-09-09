@@ -144,9 +144,7 @@ class ArtrStopLossPolicy(StopLossPolicy):
 class InitialArtrStopLossPolicy(StopLossPolicy):
     """Stop loss policy for setting initial stops using ATR."""
 
-    def __init__(
-        self, instrument_data: InstrumentData, atr_multiple: float
-    ) -> None:
+    def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
 

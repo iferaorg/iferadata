@@ -86,7 +86,10 @@ class SingleTradeDonePolicy(TradingDonePolicy):
         state["had_position"] = torch.zeros_like(self.had_position)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
-        state["had_position"] = torch.where(mask, False, state["had_position"])
+        had_position = state["had_position"]
+        # Ensure tensors are on the same device for operations
+        had_position = had_position.to(mask.device)
+        state["had_position"] = torch.where(mask, False, had_position)
 
     def forward(
         self,
@@ -94,6 +97,9 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     ) -> torch.Tensor:
         position = state["position"]
         had_position = state["had_position"]
+
+        # Ensure tensors are on the same device for operations
+        had_position = had_position.to(position.device)
 
         done = (position == 0) & had_position
         state["had_position"] = torch.where(position != 0, True, had_position)

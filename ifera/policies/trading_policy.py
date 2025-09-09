@@ -82,9 +82,11 @@ class TradingPolicy(BaseTradingPolicy):
         position = state["position"]
 
         done = state["done"] | self.trading_done_policy(state)
+        # Ensure device compatibility for subsequent operations
         last_bar_mask = (date_idx == self._last_date_idx) & (
             time_idx == self._last_time_idx
         )
+        last_bar_mask = last_bar_mask.to(done.device)
         done = done | last_bar_mask
 
         no_position_mask = (position == 0) & ~done
