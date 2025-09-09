@@ -48,7 +48,7 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Initialize _false buffer based on state batch size."""
         batch_size = next(iter(state.values())).shape[0]
-        if self._false.numel() == 0 or self._false.shape[0] != batch_size:
+        if self._false.numel() == 0 or self._false.shape[0] != batch_size or self._false.device != self._device:
             self._false = torch.zeros(batch_size, dtype=torch.bool, device=self._device)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
@@ -79,10 +79,9 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     def reset(self, state: dict[str, torch.Tensor]) -> None:
         """Reset ``had_position`` for all batches."""
         batch_size = next(iter(state.values())).shape[0]
-        if self.had_position.numel() == 0 or self.had_position.shape[0] != batch_size:
-            self.had_position = torch.zeros(
-                batch_size, dtype=torch.bool, device=self._device
-            )
+        self.had_position = torch.zeros(
+            batch_size, dtype=torch.bool, device=self._device
+        )
         state["had_position"] = torch.zeros_like(self.had_position)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
