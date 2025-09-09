@@ -29,7 +29,7 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Reset the entire policy state."""
         raise NotImplementedError
 
@@ -128,19 +128,16 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             "_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device)
         )
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Fully reset internal stage and base price."""
-        batch_size = next(iter(state.values())).shape[0]
+        # Update device if it has changed
+        if hasattr(self, '_device'):
+            self._device = device
 
-        # Create or recreate helper buffers if needed
-        if self._zero.numel() == 0 or self._zero.shape[0] != batch_size or self._zero.device != self._device:
-            self._action = torch.zeros(
-                batch_size, dtype=torch.int32, device=self._device
-            )
-            self._zero = torch.zeros(batch_size, dtype=torch.int32, device=self._device)
-            self._nan = torch.full(
-                (batch_size,), float("nan"), dtype=self._dtype, device=self._device
-            )
+        # Create or recreate helper buffers for the new batch size and device
+        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._nan = torch.full((batch_size,), float("nan"), dtype=self._dtype, device=device)
 
         state["maint_stage"] = self._zero.clone()
         state["base_price"] = self._nan.clone()
@@ -316,24 +313,21 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             "_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device)
         )
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Fully reset stage and anchor state."""
-        batch_size = next(iter(state.values())).shape[0]
+        # Update device if it has changed
+        if hasattr(self, '_device'):
+            self._device = device
 
-        # Create buffers if needed
-        if self._action.numel() == 0 or self._action.shape[0] != batch_size or self._action.device != self._device:
-            self._action = torch.zeros(
-                batch_size, dtype=torch.int32, device=self._device
-            )
-            self._nan = torch.full(
-                (batch_size,), float("nan"), dtype=self._dtype, device=self._device
-            )
+        # Create buffers for the new batch size and device
+        self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
+        self._nan = torch.full((batch_size,), float("nan"), dtype=self._dtype, device=device)
 
         self._initial_stage = torch.full(
             (batch_size,),
             self._initial_stage_value,
             dtype=torch.long,
-            device=self._device,
+            device=device,
         )
 
         state["maint_stage"] = self._initial_stage.clone()

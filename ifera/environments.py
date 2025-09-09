@@ -140,7 +140,7 @@ class SingleMarketEnv:
             "done": torch.zeros(batch_size, dtype=torch.bool, device=self.device),
         }
         if trading_policy is not None:
-            trading_policy.reset(state)
+            trading_policy.reset(state, batch_size, self.device)
         return state
 
     def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):

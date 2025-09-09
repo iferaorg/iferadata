@@ -20,7 +20,7 @@ class TradingDonePolicy(nn.Module, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Fully reset the policy state."""
         raise NotImplementedError
 
@@ -45,11 +45,12 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
             "_false", torch.tensor((), dtype=torch.bool, device=device)
         )
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Initialize _false buffer based on state batch size."""
-        batch_size = next(iter(state.values())).shape[0]
-        if self._false.numel() == 0 or self._false.shape[0] != batch_size or self._false.device != self._device:
-            self._false = torch.zeros(batch_size, dtype=torch.bool, device=self._device)
+        # Update device if it has changed
+        if hasattr(self, '_device'):
+            self._device = device
+        self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         """No internal state to reset."""
@@ -70,19 +71,13 @@ class SingleTradeDonePolicy(TradingDonePolicy):
     def __init__(self, device: torch.device) -> None:
         super().__init__()
         self._device = device
-        # Register had_position as a buffer so it gets moved with .to(device)
-        self.had_position: torch.Tensor
-        self.register_buffer(
-            "had_position", torch.tensor((), dtype=torch.bool, device=device)
-        )
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Reset ``had_position`` for all batches."""
-        batch_size = next(iter(state.values())).shape[0]
-        self.had_position = torch.zeros(
-            batch_size, dtype=torch.bool, device=self._device
-        )
-        state["had_position"] = torch.zeros_like(self.had_position)
+        # Update device if it has changed
+        if hasattr(self, '_device'):
+            self._device = device
+        state["had_position"] = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         state["had_position"] = torch.where(mask, False, state["had_position"])

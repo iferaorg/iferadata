@@ -23,10 +23,10 @@ def test_done_policies_buffers():
     """Test that done policies have their buffers properly registered."""
     print("=== Testing Done Policies Buffer Registration ===")
     
-    # Test SingleTradeDonePolicy
+    # Test SingleTradeDonePolicy - after refactor, it no longer has had_position buffer
     single_policy = SingleTradeDonePolicy(device=torch.device("cpu"))
     print(f"SingleTradeDonePolicy state_dict keys: {list(single_policy.state_dict().keys())}")
-    assert "had_position" in single_policy.state_dict(), "had_position should be in state_dict"
+    # had_position is now managed in state, not as a buffer
     
     # Test AlwaysFalseDonePolicy  
     false_policy = AlwaysFalseDonePolicy(device=torch.device("cpu"))
@@ -83,20 +83,24 @@ def test_device_movement_simulation():
     # Create a SingleTradeDonePolicy
     policy = SingleTradeDonePolicy(device=torch.device("cpu"))
     
-    # Initialize the buffer
+    # Initialize the state - using new reset signature
     state = {
         "position": torch.tensor([1, 0, 1], dtype=torch.float32),
         "had_position": torch.tensor([False, True, False], dtype=torch.bool)
     }
-    policy.reset(state)
+    batch_size = state["position"].shape[0]
+    device = state["position"].device
+    policy.reset(state, batch_size, device)
     
-    print(f"Before .to(): had_position device = {policy.had_position.device}")
+    print(f"Before .to(): had_position device = {state['had_position'].device}")
     
     # Simulate moving to a different device (since CUDA might not be available, we use CPU)
     # In real multiprocessing scenario, this would be moving to cuda:1 from cuda:0
     policy.to(torch.device("cpu"))
     
-    print(f"After .to(): had_position device = {policy.had_position.device}")
+    # Reset again to test device update
+    policy.reset(state, batch_size, torch.device("cpu"))
+    print(f"After .to() and reset: had_position device = {state['had_position'].device}")
     
     # Test that the policy can be used without device mismatch errors
     # This simulates the scenario where position comes from state on one device

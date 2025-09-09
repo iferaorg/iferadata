@@ -17,7 +17,7 @@ class StopLossPolicy(nn.Module, ABC):
         super().__init__()
 
     @abstractmethod
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """Reset policy state."""
         raise NotImplementedError
 
@@ -98,7 +98,7 @@ class ArtrStopLossPolicy(StopLossPolicy):
 
         return potential_stops
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """ArtrStopLossPolicy does not maintain state."""
         return None
 
@@ -150,7 +150,7 @@ class InitialArtrStopLossPolicy(StopLossPolicy):
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
 
-    def reset(self, state: dict[str, torch.Tensor]) -> None:
+    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
         """InitialArtrStopLossPolicy holds no state to reset."""
         _ = state
 
