@@ -29,7 +29,9 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Reset the entire policy state."""
         raise NotImplementedError
 
@@ -128,16 +130,20 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             "_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device)
         )
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Fully reset internal stage and base price."""
         # Update device if it has changed
-        if hasattr(self, '_device'):
+        if hasattr(self, "_device"):
             self._device = device
 
         # Create or recreate helper buffers for the new batch size and device
         self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
         self._zero = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._nan = torch.full((batch_size,), float("nan"), dtype=self._dtype, device=device)
+        self._nan = torch.full(
+            (batch_size,), float("nan"), dtype=self._dtype, device=device
+        )
 
         state["maint_stage"] = self._zero.clone()
         state["base_price"] = self._nan.clone()
@@ -313,15 +319,19 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             "_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device)
         )
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Fully reset stage and anchor state."""
         # Update device if it has changed
-        if hasattr(self, '_device'):
+        if hasattr(self, "_device"):
             self._device = device
 
         # Create buffers for the new batch size and device
         self._action = torch.zeros(batch_size, dtype=torch.int32, device=device)
-        self._nan = torch.full((batch_size,), float("nan"), dtype=self._dtype, device=device)
+        self._nan = torch.full(
+            (batch_size,), float("nan"), dtype=self._dtype, device=device
+        )
 
         self._initial_stage = torch.full(
             (batch_size,),

@@ -3,9 +3,16 @@
 
 import torch
 import pytest
-from ifera.policies.trading_done_policy import SingleTradeDonePolicy, AlwaysFalseDonePolicy
-from ifera.policies.position_maintenance_policy import ScaledArtrMaintenancePolicy, PercentGainMaintenancePolicy
+from ifera.policies.trading_done_policy import (
+    SingleTradeDonePolicy,
+    AlwaysFalseDonePolicy,
+)
+from ifera.policies.position_maintenance_policy import (
+    ScaledArtrMaintenancePolicy,
+    PercentGainMaintenancePolicy,
+)
 from ifera.data_models import DataManager
+
 
 class DummyData:
     def __init__(self, instrument):
@@ -19,34 +26,40 @@ class DummyData:
     def convert_indices(self, _base, date_idx, time_idx):
         return date_idx, time_idx
 
+
 def test_done_policies_buffers():
     """Test that done policies have their buffers properly registered."""
     print("=== Testing Done Policies Buffer Registration ===")
-    
+
     # Test SingleTradeDonePolicy - after refactor, it no longer has had_position buffer
     single_policy = SingleTradeDonePolicy(device=torch.device("cpu"))
-    print(f"SingleTradeDonePolicy state_dict keys: {list(single_policy.state_dict().keys())}")
+    print(
+        f"SingleTradeDonePolicy state_dict keys: {list(single_policy.state_dict().keys())}"
+    )
     # had_position is now managed in state, not as a buffer
-    
-    # Test AlwaysFalseDonePolicy  
+
+    # Test AlwaysFalseDonePolicy
     false_policy = AlwaysFalseDonePolicy(device=torch.device("cpu"))
-    print(f"AlwaysFalseDonePolicy state_dict keys: {list(false_policy.state_dict().keys())}")
+    print(
+        f"AlwaysFalseDonePolicy state_dict keys: {list(false_policy.state_dict().keys())}"
+    )
     assert "_false" in false_policy.state_dict(), "_false should be in state_dict"
-    
+
     print("✓ Done policies buffer registration working correctly!")
+
 
 def test_maintenance_policies_buffers(base_instrument_config, monkeypatch):
     """Test that maintenance policies have their buffers properly registered."""
     print("\n=== Testing Maintenance Policies Buffer Registration ===")
-    
+
     def dummy_get(self, instrument_config, **_):
         return DummyData(instrument_config)
-    
+
     # Monkey patch to avoid real data loading
     monkeypatch.setattr(DataManager, "get_instrument_data", dummy_get)
-    
+
     dummy_data = DummyData(base_instrument_config)
-    
+
     # Test ScaledArtrMaintenancePolicy
     scaled_policy = ScaledArtrMaintenancePolicy(
         dummy_data,
@@ -55,11 +68,13 @@ def test_maintenance_policies_buffers(base_instrument_config, monkeypatch):
         wait_for_breakeven=False,
         minimum_improvement=0.1,
     )
-    print(f"ScaledArtrMaintenancePolicy state_dict keys: {list(scaled_policy.state_dict().keys())}")
+    print(
+        f"ScaledArtrMaintenancePolicy state_dict keys: {list(scaled_policy.state_dict().keys())}"
+    )
     assert "_action" in scaled_policy.state_dict(), "_action should be in state_dict"
     assert "_zero" in scaled_policy.state_dict(), "_zero should be in state_dict"
     assert "_nan" in scaled_policy.state_dict(), "_nan should be in state_dict"
-    
+
     # Test PercentGainMaintenancePolicy
     percent_policy = PercentGainMaintenancePolicy(
         dummy_data,
@@ -69,58 +84,68 @@ def test_maintenance_policies_buffers(base_instrument_config, monkeypatch):
         keep_percent=0.5,
         anchor_type="entry",
     )
-    print(f"PercentGainMaintenancePolicy state_dict keys: {list(percent_policy.state_dict().keys())}")
+    print(
+        f"PercentGainMaintenancePolicy state_dict keys: {list(percent_policy.state_dict().keys())}"
+    )
     assert "_action" in percent_policy.state_dict(), "_action should be in state_dict"
-    assert "_initial_stage" in percent_policy.state_dict(), "_initial_stage should be in state_dict"
+    assert (
+        "_initial_stage" in percent_policy.state_dict()
+    ), "_initial_stage should be in state_dict"
     assert "_nan" in percent_policy.state_dict(), "_nan should be in state_dict"
-    
+
     print("✓ Maintenance policies buffer registration working correctly!")
+
 
 def test_device_movement_simulation():
     """Test that simulates device movement to verify fix."""
     print("\n=== Testing Device Movement Simulation ===")
-    
+
     # Create a SingleTradeDonePolicy
     policy = SingleTradeDonePolicy(device=torch.device("cpu"))
-    
+
     # Initialize the state - using new reset signature
     state = {
         "position": torch.tensor([1, 0, 1], dtype=torch.float32),
-        "had_position": torch.tensor([False, True, False], dtype=torch.bool)
+        "had_position": torch.tensor([False, True, False], dtype=torch.bool),
     }
     batch_size = state["position"].shape[0]
     device = state["position"].device
     policy.reset(state, batch_size, device)
-    
+
     print(f"Before .to(): had_position device = {state['had_position'].device}")
-    
+
     # Simulate moving to a different device (since CUDA might not be available, we use CPU)
     # In real multiprocessing scenario, this would be moving to cuda:1 from cuda:0
     policy.to(torch.device("cpu"))
-    
+
     # Reset again to test device update
     policy.reset(state, batch_size, torch.device("cpu"))
-    print(f"After .to() and reset: had_position device = {state['had_position'].device}")
-    
+    print(
+        f"After .to() and reset: had_position device = {state['had_position'].device}"
+    )
+
     # Test that the policy can be used without device mismatch errors
     # This simulates the scenario where position comes from state on one device
     # and had_position is a buffer that should be on the same device
     state_tensors = {
         "position": torch.tensor([0, 1, 0], dtype=torch.float32),
-        "had_position": torch.tensor([True, False, True], dtype=torch.bool)
+        "had_position": torch.tensor([True, False, True], dtype=torch.bool),
     }
-    
+
     try:
         result = policy(state_tensors)
         print(f"✓ Policy call successful! Result device: {result.device}")
     except RuntimeError as e:
         print(f"✗ Error during policy call: {e}")
         raise
-    
+
     print("✓ Device movement simulation working correctly!")
+
 
 if __name__ == "__main__":
     print("Run this with pytest to use fixtures")
     test_done_policies_buffers()
     test_device_movement_simulation()
-    print("\n🎉 Basic tests passed! Run 'pytest test_buffer_registration.py -v -s' for full test with maintenance policies.")
+    print(
+        "\n🎉 Basic tests passed! Run 'pytest test_buffer_registration.py -v -s' for full test with maintenance policies."
+    )

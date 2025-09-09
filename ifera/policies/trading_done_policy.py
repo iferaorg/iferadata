@@ -20,7 +20,9 @@ class TradingDonePolicy(nn.Module, ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Fully reset the policy state."""
         raise NotImplementedError
 
@@ -45,10 +47,12 @@ class AlwaysFalseDonePolicy(TradingDonePolicy):
             "_false", torch.tensor((), dtype=torch.bool, device=device)
         )
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Initialize _false buffer based on state batch size."""
         # Update device if it has changed
-        if hasattr(self, '_device'):
+        if hasattr(self, "_device"):
             self._device = device
         self._false = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
@@ -72,10 +76,12 @@ class SingleTradeDonePolicy(TradingDonePolicy):
         super().__init__()
         self._device = device
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Reset ``had_position`` for all batches."""
         # Update device if it has changed
-        if hasattr(self, '_device'):
+        if hasattr(self, "_device"):
             self._device = device
         state["had_position"] = torch.zeros(batch_size, dtype=torch.bool, device=device)
 

@@ -24,7 +24,9 @@ class BaseTradingPolicy(nn.Module, ABC):
         super().__init__()
 
     @abstractmethod
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Reset the policy to its initial state."""
         raise NotImplementedError
 
@@ -66,7 +68,9 @@ class TradingPolicy(BaseTradingPolicy):
         cloned_policy.to(device)
         return cloned_policy
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         """Reset all sub-policies to their initial state."""
         self.open_position_policy.reset(state, batch_size, device)
         self.initial_stop_loss_policy.reset(state, batch_size, device)

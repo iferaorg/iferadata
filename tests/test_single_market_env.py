@@ -37,7 +37,9 @@ class DummyData:
 
 
 class DummyInitialStopLoss(StopLossPolicy):
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         _ = state
         return None
 
@@ -50,7 +52,9 @@ class DummyMaintenance(PositionMaintenancePolicy):
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         pass
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         _ = state
         return None
 
@@ -63,7 +67,9 @@ class CloseAfterOneStep(PositionMaintenancePolicy):
     def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
         pass
 
-    def reset(self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device) -> None:
+    def reset(
+        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
+    ) -> None:
         _ = state
         return None
 
@@ -93,14 +99,10 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
 
     policy = TradingPolicy(
         instrument_data=dummy_data_last_bar,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=dummy_data_last_bar.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=dummy_data_last_bar.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
-        trading_done_policy=AlwaysFalseDonePolicy(
-            device=dummy_data_last_bar.device
-        ),
+        trading_done_policy=AlwaysFalseDonePolicy(device=dummy_data_last_bar.device),
     )
 
     d_idx = torch.tensor([0], dtype=torch.int32)
@@ -137,14 +139,10 @@ def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
     env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=env.instrument_data.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=env.instrument_data.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=CloseAfterOneStep(),
-        trading_done_policy=SingleTradeDonePolicy(
-            device=env.instrument_data.device
-        ),
+        trading_done_policy=SingleTradeDonePolicy(device=env.instrument_data.device),
     )
 
     start_d = torch.tensor([0], dtype=torch.int32)
@@ -173,15 +171,10 @@ def test_single_market_env_rollout_returns_nan_if_never_done(
     env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=env.instrument_data.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=env.instrument_data.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
-        trading_done_policy=AlwaysFalseDonePolicy(
-            device=env.instrument_data.device
-        ),
-        
+        trading_done_policy=AlwaysFalseDonePolicy(device=env.instrument_data.device),
     )
 
     start_d = torch.tensor([0], dtype=torch.int32)
@@ -229,9 +222,7 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
     done_policy = TrackingDonePolicy()
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=env.instrument_data.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=env.instrument_data.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
         trading_done_policy=done_policy,
@@ -256,15 +247,10 @@ def test_step_profit_percent_calculation(monkeypatch, dummy_data_three_steps):
     env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=env.instrument_data.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=env.instrument_data.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
-        trading_done_policy=AlwaysFalseDonePolicy(
-            device=env.instrument_data.device
-        ),
-        
+        trading_done_policy=AlwaysFalseDonePolicy(device=env.instrument_data.device),
     )
 
     cm = env.instrument_data.instrument.contract_multiplier
@@ -299,15 +285,10 @@ def test_profit_percent_immediate_stop(monkeypatch, dummy_data_three_steps):
     env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=env.instrument_data.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=env.instrument_data.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
-        trading_done_policy=AlwaysFalseDonePolicy(
-            device=env.instrument_data.device
-        ),
-        
+        trading_done_policy=AlwaysFalseDonePolicy(device=env.instrument_data.device),
     )
 
     cm = env.instrument_data.instrument.contract_multiplier
@@ -343,15 +324,10 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
     env = SingleMarketEnv(dummy_data_three_steps.instrument, "IBKR")
     trading_policy = TradingPolicy(
         instrument_data=env.instrument_data,
-        open_position_policy=AlwaysOpenPolicy(
-            1, device=env.instrument_data.device
-        ),
+        open_position_policy=AlwaysOpenPolicy(1, device=env.instrument_data.device),
         initial_stop_loss_policy=DummyInitialStopLoss(),
         position_maintenance_policy=DummyMaintenance(),
-        trading_done_policy=SingleTradeDonePolicy(
-            device=env.instrument_data.device
-        ),
-        
+        trading_done_policy=SingleTradeDonePolicy(device=env.instrument_data.device),
     )
 
     def fake_calculate_step(date_idx, time_idx, position, action, stop_loss):
