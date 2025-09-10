@@ -140,9 +140,8 @@ class InstrumentData:
         # Load rollover YAML file
         rollover_url = make_url(
             scheme=Scheme.FILE,
-            # Meta files don't have proper intervals, using TENSOR as placeholder
-            source=Source.TENSOR,
-            instrument_type="meta/futures/rollover",
+            source=Source.META,
+            instrument_type="futures",
             interval="rollover",
             symbol=self.instrument.symbol,
         )
@@ -158,14 +157,11 @@ class InstrumentData:
 
         # Load the YAML file
         rollover_path = make_path(
-            source=Source.TENSOR,
-            file_type="meta/futures/rollover",
+            source=Source.META,
+            file_type="futures",
             interval="rollover",
             symbol=self.instrument.symbol,
         )
-
-        # Replace extension from .gz to .yml for meta files
-        rollover_path = rollover_path.with_suffix(".yml")
 
         try:
             with open(rollover_path, "r", encoding="utf-8") as f:
