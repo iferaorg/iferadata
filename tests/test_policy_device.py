@@ -20,6 +20,7 @@ class DummyData:
         self.instrument = instrument
         self.data = torch.zeros((2, 2, 4), dtype=torch.float32)
         self.artr = torch.ones((2, 2), dtype=torch.float32)
+        self.multiplier = torch.ones((2, 2), dtype=torch.float32)
         self.device = torch.device("cpu")
         self.dtype = torch.float32
         self.backadjust = False

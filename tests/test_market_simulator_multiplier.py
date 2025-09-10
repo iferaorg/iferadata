@@ -108,7 +108,9 @@ def test_calculate_step_multiplier_applied(monkeypatch):
         # cashflow = execution_price * (close_position - open_position) * contract_multiplier - commission - stop_commission
         # For our case: execution_price * (-1) * 1.0 - 2.5 - 0 = -101.75375 - 2.5 = -104.25375
         expected_cashflow = -expected_execution_price - expected_commission
-        torch.testing.assert_close(cashflow, torch.tensor([expected_cashflow]), rtol=1e-5, atol=1e-5)
+        torch.testing.assert_close(
+            cashflow, torch.tensor([expected_cashflow]), rtol=1e-5, atol=1e-5
+        )
 
 
 def test_calculate_step_multiplier_different_indices(monkeypatch):
