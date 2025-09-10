@@ -10,17 +10,21 @@ The module leverages PyTorch tensors and mask operations for efficient
 computation on both CPU and GPU devices.
 """
 
+import datetime as dt
 import math
 from typing import Optional, Tuple
 
 import torch
+import yaml
 
 from .config import BaseInstrumentConfig
 from .data_loading import load_data_tensor
-from .masked_series import masked_artr
-from .decorators import singleton, ThreadSafeCache
-from .file_manager import refresh_instrument_file
+from .decorators import ThreadSafeCache, singleton
 from .enums import Scheme, Source
+from .file_manager import FileManager, refresh_instrument_file
+from .file_utils import make_path
+from .masked_series import masked_artr
+from .url_utils import make_url
 
 
 def calculate_chunk_size(device: torch.device, dtype: torch.dtype) -> int:
@@ -101,6 +105,7 @@ class InstrumentData:
         self.source = Source.TENSOR_BACKADJUSTED if self.backadjust else Source.TENSOR
 
         self._load_data()
+        self._load_multiplier()
 
         # Store ARTR data
         self._artr_data: torch.Tensor = torch.tensor(
@@ -125,6 +130,70 @@ class InstrumentData:
             source=self.source,
         )
 
+    def _load_multiplier(self) -> None:
+        """Load or initialize the contract multiplier tensor."""
+        if not self.backadjust:
+            self._multiplier = torch.tensor(
+                [[1.0]], dtype=self.dtype, device=self.device
+            )
+            return
+
+        url = make_url(
+            Scheme.FILE,
+            Source.META,
+            self.instrument.type,
+            "rollover",
+            self.instrument.symbol,
+        )
+        FileManager().refresh_file(url)
+
+        path = make_path(
+            Source.META,
+            self.instrument.type,
+            "rollover",
+            self.instrument.symbol,
+        )
+        with path.open("r", encoding="utf-8") as fh:
+            rollover_data = yaml.safe_load(fh) or []
+
+        trade_dates = self._data[:, :, 2].to(torch.long)
+        offset_times = self._data[:, :, 3].to(torch.long)
+
+        if not rollover_data:
+            self._multiplier = torch.ones(
+                trade_dates.shape, dtype=self.dtype, device=self.device
+            )
+            return
+
+        entries = sorted(
+            (
+                (
+                    dt.date.fromisoformat(e["start_date"]).toordinal(),
+                    float(e["multiplier"]),
+                )
+                for e in rollover_data
+            ),
+            key=lambda x: x[0],
+        )
+
+        base_mult = entries[0][1]
+        mult_tensor = torch.full(
+            trade_dates.shape, base_mult, dtype=self.dtype, device=self.device
+        )
+        rollover_offset = int(self.instrument.rollover_offset)
+
+        for start_ord, mult in entries[1:]:
+            mask = (trade_dates > start_ord) | (
+                (trade_dates == start_ord) & (offset_times >= rollover_offset)
+            )
+            mult_tensor = torch.where(
+                mask,
+                torch.tensor(mult, dtype=self.dtype, device=self.device),
+                mult_tensor,
+            )
+
+        self._multiplier = mult_tensor
+
     @property
     def data(self) -> torch.Tensor:
         """Returns the data tensor excluding date and time columns."""
@@ -134,6 +203,13 @@ class InstrumentData:
     def data_full(self) -> torch.Tensor:
         """Full data tensor including date and time columns."""
         return self._data
+
+    @property
+    def multiplier(self) -> torch.Tensor:
+        """Contract multiplier for each bar."""
+        if self.backadjust:
+            return self._multiplier
+        return self._multiplier.expand(self._data.shape[0], self._data.shape[1])
 
     @property
     def artr_alpha(self) -> float:
