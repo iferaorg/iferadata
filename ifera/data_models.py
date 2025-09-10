@@ -12,15 +12,19 @@ computation on both CPU and GPU devices.
 
 import math
 from typing import Optional, Tuple
+import datetime
 
 import torch
+import yaml
 
 from .config import BaseInstrumentConfig
 from .data_loading import load_data_tensor
 from .masked_series import masked_artr
 from .decorators import singleton, ThreadSafeCache
-from .file_manager import refresh_instrument_file
+from .file_manager import refresh_instrument_file, FileManager
 from .enums import Scheme, Source
+from .url_utils import make_url
+from .file_utils import make_path
 
 
 def calculate_chunk_size(device: torch.device, dtype: torch.dtype) -> int:
@@ -101,6 +105,7 @@ class InstrumentData:
         self.source = Source.TENSOR_BACKADJUSTED if self.backadjust else Source.TENSOR
 
         self._load_data()
+        self._load_multiplier()
 
         # Store ARTR data
         self._artr_data: torch.Tensor = torch.tensor(
@@ -124,6 +129,104 @@ class InstrumentData:
             strip_date_time=False,
             source=self.source,
         )
+
+    def _load_multiplier(self) -> None:
+        """Load rollover multiplier tensor."""
+        if not self.backadjust:
+            # Create a constant 1.0 multiplier tensor with minimal memory usage
+            self._multiplier = torch.ones((1, 1), dtype=self.dtype, device=self.device)
+            return
+
+        # Load rollover YAML file
+        rollover_url = make_url(
+            scheme=Scheme.FILE,
+            # Meta files don't have proper intervals, using TENSOR as placeholder
+            source=Source.TENSOR,
+            instrument_type="meta/futures/rollover",
+            interval="rollover",
+            symbol=self.instrument.symbol,
+        )
+
+        # Use FileManager to refresh the rollover file
+        fm = FileManager()
+        try:
+            fm.refresh_file(rollover_url, reset=False)
+        except (ValueError, FileNotFoundError):
+            # If rollover file doesn't exist or can't be refreshed, create default multiplier
+            self._multiplier = torch.ones((1, 1), dtype=self.dtype, device=self.device)
+            return
+
+        # Load the YAML file
+        rollover_path = make_path(
+            source=Source.TENSOR,
+            file_type="meta/futures/rollover",
+            interval="rollover",
+            symbol=self.instrument.symbol,
+        )
+
+        # Replace extension from .gz to .yml for meta files
+        rollover_path = rollover_path.with_suffix(".yml")
+
+        try:
+            with open(rollover_path, "r", encoding="utf-8") as f:
+                rollover_data = yaml.safe_load(f)
+        except FileNotFoundError:
+            # Fallback to default multiplier if file doesn't exist
+            self._multiplier = torch.ones((1, 1), dtype=self.dtype, device=self.device)
+            return
+
+        # Generate multiplier tensor
+        self._multiplier = self._generate_multiplier_tensor(rollover_data)
+
+    def _generate_multiplier_tensor(self, rollover_data: dict) -> torch.Tensor:
+        """Generate multiplier tensor from rollover data."""
+        if not rollover_data or "rollovers" not in rollover_data:
+            return torch.ones((1, 1), dtype=self.dtype, device=self.device)
+
+        # Get data tensor dimensions
+        date_dim, time_dim = self._data.shape[:2]
+
+        # Initialize multiplier tensor with ones
+        multiplier = torch.ones(
+            (date_dim, time_dim), dtype=self.dtype, device=self.device
+        )
+
+        # Extract trade_date and offset_time from data tensor
+        trade_dates = self._data[:, :, 2].to(torch.int32)  # Channel 2: trade_date
+        offset_times = self._data[:, :, 3].to(torch.int32)  # Channel 3: offset_time
+
+        rollover_offset = self.instrument.rollover_offset
+
+        # Sort rollovers by date to apply them in chronological order
+        rollovers = sorted(
+            rollover_data["rollovers"],
+            key=lambda x: datetime.datetime.strptime(x["date"], "%Y-%m-%d").date(),
+        )
+
+        # Apply rollover multipliers
+        for rollover in rollovers:
+            rollover_date = rollover["date"]
+            rollover_multiplier = rollover["multiplier"]
+
+            # Convert rollover date to ordinal
+            if isinstance(rollover_date, str):
+                rollover_date = datetime.datetime.strptime(
+                    rollover_date, "%Y-%m-%d"
+                ).date()
+            rollover_ordinal = rollover_date.toordinal()
+
+            # Create mask for dates >= rollover_date and times >= rollover_offset on rollover_date
+            date_mask = trade_dates > rollover_ordinal
+            rollover_day_mask = trade_dates == rollover_ordinal
+            time_mask = offset_times >= rollover_offset
+
+            # Apply multiplier where conditions are met
+            # For dates after rollover date: apply to all times
+            # For rollover date: apply only to times >= rollover_offset
+            mask = date_mask | (rollover_day_mask & time_mask)
+            multiplier[mask] = rollover_multiplier
+
+        return multiplier
 
     @property
     def data(self) -> torch.Tensor:
@@ -154,6 +257,15 @@ class InstrumentData:
     def artr(self) -> torch.Tensor:
         """Average Relative True Range (ARTR) data."""
         return self._artr_data
+
+    @property
+    def multiplier(self) -> torch.Tensor:
+        """Rollover multiplier tensor with shape (date_idx, time_idx)."""
+        # Expand the multiplier tensor to match data dimensions if needed
+        if self._multiplier.shape == (1, 1):
+            date_dim, time_dim = self._data.shape[:2]
+            return self._multiplier.expand(date_dim, time_dim)
+        return self._multiplier
 
     def calculate_artr(self, alpha: float, acrossday: bool) -> torch.Tensor:
         """Calculate and store the ARTR using the provided hyperparameters."""
