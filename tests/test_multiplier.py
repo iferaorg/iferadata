@@ -141,4 +141,4 @@ def test_multiplier_property_readonly(monkeypatch, base_instrument_config):
 
     # Should not be able to assign to the property (would raise AttributeError)
     with pytest.raises(AttributeError):
-        data.multiplier = torch.ones((5, 10))
+        data.multiplier = torch.ones((5, 10))  # type: ignore
