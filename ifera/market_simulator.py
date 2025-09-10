@@ -59,6 +59,7 @@ class MarketSimulatorIntraday:
             base_config=instrument_data.instrument, broker_name=broker_name
         )
 
+        self.instrument_data: Final = instrument_data
         self.data: Final = instrument_data.data
         self.mask: Final = instrument_data.valid_mask  # Shape: [date, time]
 
@@ -143,6 +144,7 @@ class MarketSimulatorIntraday:
         mask = self.mask[date_idx, time_idx]
         data = self.data[date_idx, time_idx]
         contract_multiplier = self.instrument.contract_multiplier
+        multiplier = self.instrument_data.multiplier[date_idx, time_idx]
 
         # No trades on masked out dates and times
         action = torch.where(mask, action, self._zero_tensor)
@@ -163,8 +165,10 @@ class MarketSimulatorIntraday:
         slippage = (current_price * self._slippage_pct).clamp(
             min=self.instrument.min_slippage
         )
+        slippage = slippage * multiplier
         execution_price = current_price + slippage * action_sign
         commission = self.calculate_commission(action_abs, execution_price)
+        commission = commission * multiplier
 
         # Create default stop loss if none provided
         inf_value = torch.where(
@@ -186,6 +190,7 @@ class MarketSimulatorIntraday:
             torch.max(stop_loss, current_price),
         ) - slippage * torch.sign(stop_position)
         stop_commision = self.calculate_commission(torch.abs(stop_position), stop_price)
+        stop_commision = stop_commision * multiplier
 
         close_price = data[..., CHANNEL_CLOSE]
         close_price = torch.where(stop_mask, stop_price, close_price)
