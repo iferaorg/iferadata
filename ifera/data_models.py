@@ -135,7 +135,7 @@ class InstrumentData:
         if not self.backadjust:
             self._multiplier = torch.tensor(
                 [[1.0]], dtype=self.dtype, device=self.device
-            )
+            ).expand(self._data.shape[0], self._data.shape[1])
             return
 
         url = make_url(
@@ -207,9 +207,7 @@ class InstrumentData:
     @property
     def multiplier(self) -> torch.Tensor:
         """Contract multiplier for each bar."""
-        if self.backadjust:
-            return self._multiplier
-        return self._multiplier.expand(self._data.shape[0], self._data.shape[1])
+        return self._multiplier
 
     @property
     def artr_alpha(self) -> float:
