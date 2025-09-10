@@ -7,7 +7,7 @@ cm = ifera.ConfigManager()
 iconfig = cm.get_config("IBKR", "CL:1m")
 
 
-#@torch.compile()
+# @torch.compile()
 def run_test(iconfig):
     dm = ifera.DataManager()
     idata = dm.get_instrument_data(iconfig, device=torch.device("cpu"))
@@ -89,7 +89,19 @@ def run_test(iconfig):
         total_profit += profit
 
     price_ratio = total_profit / (open_price * iconfig.contract_multiplier)
-    min_done_date_idx = torch.cat((date_idx[done], torch.tensor([idata.data.shape[0]], dtype=torch.int32, device=idata.device)), dim=0).min().item()
+    min_done_date_idx = (
+        torch.cat(
+            (
+                date_idx[done],
+                torch.tensor(
+                    [idata.data.shape[0]], dtype=torch.int32, device=idata.device
+                ),
+            ),
+            dim=0,
+        )
+        .min()
+        .item()
+    )
     max_idx = price_ratio[date_idx < min_done_date_idx].argmax()
     print(f"Min done date index: {min_done_date_idx}")
     print(

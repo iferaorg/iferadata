@@ -352,7 +352,7 @@ if __name__ == "__main__":
     # )
     # base_env = env
     date_n = base_env.instrument_data.data.shape[0] - 250
-    time_n = base_env.instrument_data.data.shape[1] 
+    time_n = base_env.instrument_data.data.shape[1]
 
     batch_size = date_n * time_n
 
@@ -361,9 +361,7 @@ if __name__ == "__main__":
     date_idx = repeat(date_idx, "d -> (d t)", t=time_n)
     time_idx = repeat(time_idx, "t -> (d t)", d=date_n)
 
-    open_policy = ifera.OpenOncePolicy(
-        direction=1, device=base_env.device
-    )
+    open_policy = ifera.OpenOncePolicy(direction=1, device=base_env.device)
     init_stop_policy = ifera.InitialArtrStopLossPolicy(
         instrument_data=base_env.instrument_data,
         atr_multiple=3.0,
@@ -376,9 +374,7 @@ if __name__ == "__main__":
         minimum_improvement=0.0,
     )
 
-    done_policy = ifera.SingleTradeDonePolicy(
-        device=base_env.device
-    )
+    done_policy = ifera.SingleTradeDonePolicy(device=base_env.device)
 
     base_policy = ifera.TradingPolicy(
         instrument_data=base_env.instrument_data,
@@ -425,17 +421,17 @@ if __name__ == "__main__":
     #             base_policy, date_idx, time_idx, max_steps=10000
     #         )
     #         print(f"Iteration {i+1} completed in {time.time() - t:.2f} seconds. Steps: {steps}")
-            
+
     #         prof.step()  # Notify the profiler of the end of an iteration
 
     # prof.export_chrome_trace("profile_trace.json")
 
-    print ("Starting main rollout...")
+    print("Starting main rollout...")
     t = time.time()
     total_profit, total_profit_percent, _, _, steps = env.rollout(
         base_policy, date_idx, time_idx, max_steps=500000
     )
-    
+
     # total_profit, _, _ = env.rollout_with_display(
     #     trading_policies, date_idx, time_idx, max_steps=2000
     # )

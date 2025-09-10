@@ -154,7 +154,9 @@ class GraphPlan:
             if vtype == "enum":
                 values = vardef["values"]
             elif vtype == "int":
-                values = list(range(int(vardef["min_value"]), int(vardef["max_value"]) + 1))
+                values = list(
+                    range(int(vardef["min_value"]), int(vardef["max_value"]) + 1)
+                )
             else:
                 raise ValueError(f"Unknown variable type: {vtype}")
             var_to_values[varname] = values
@@ -187,13 +189,13 @@ class GraphPlan:
                     eq = f"{var}_eq_{val}"
                     if eq not in prop_to_id:
                         raise ValueError(f"Invalid value {val} for variable {var}")
-                    
+
                     # Ensure "add" is always a list
                     add_list = act.get("add", [])
                     if isinstance(add_list, str):
                         add_list = [add_list]
                     act["add"] = add_list + [eq]
-                    
+
                     # Ensure "del" is always a list
                     del_list = act.get("del", [])
                     if isinstance(del_list, str):
@@ -277,7 +279,7 @@ class GraphPlan:
         for act in actions:
             adds_to_add: List[str] = []
             dels_to_add: List[str] = []
-            
+
             # Handle "add" list - ensure it's always a list
             add_list = act.get("add", [])
             if isinstance(add_list, str):
@@ -286,8 +288,8 @@ class GraphPlan:
                 neg_name = f"not_{add_p}"
                 if neg_name in prop_to_id:
                     dels_to_add.append(neg_name)
-            
-            # Handle "del" list - ensure it's always a list  
+
+            # Handle "del" list - ensure it's always a list
             del_list = act.get("del", [])
             if isinstance(del_list, str):
                 del_list = [del_list]
@@ -295,7 +297,7 @@ class GraphPlan:
                 neg_name = f"not_{del_p}"
                 if neg_name in prop_to_id:
                     adds_to_add.append(neg_name)
-            
+
             act["add"] = add_list + adds_to_add
             act["del"] = del_list + dels_to_add
 
