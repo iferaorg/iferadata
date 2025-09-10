@@ -144,7 +144,13 @@ class MarketSimulatorIntraday:
         mask = self.mask[date_idx, time_idx]
         data = self.data[date_idx, time_idx]
         contract_multiplier = self.instrument.contract_multiplier
-        multiplier = self.instrument_data.multiplier[date_idx, time_idx]
+        # Use multiplier if available, otherwise default to 1.0 (no scaling)
+        if hasattr(self.instrument_data, "multiplier"):
+            multiplier = self.instrument_data.multiplier[date_idx, time_idx]
+        else:
+            multiplier = torch.ones_like(
+                mask, dtype=self.data.dtype, device=self.data.device
+            )
 
         # No trades on masked out dates and times
         action = torch.where(mask, action, self._zero_tensor)
