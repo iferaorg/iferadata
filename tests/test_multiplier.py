@@ -109,9 +109,13 @@ def test_multiplier_backadjust_true_with_rollover_data(
     # Day 0 (2020-01-01): all 1.0 (before any rollover)
     assert torch.all(multiplier[0, :] == 1.0)
 
-    # Day 1 (2020-01-02): 1.0 before rollover_offset, 1.5 after
-    assert multiplier[1, 0] == 1.0  # offset_time = 0 < 1800
-    assert multiplier[1, 1] == 1.5  # offset_time = 3600 >= 1800
+    # Day 1 (2020-01-02): 1.5 for all times (first rollover applies to entire day)
+    assert (
+        multiplier[1, 0] == 1.5
+    )  # offset_time = 0, first rollover applies to entire day
+    assert (
+        multiplier[1, 1] == 1.5
+    )  # offset_time = 3600, first rollover applies to entire day
 
     # Day 2 (2020-01-03): 1.5 before rollover_offset, 0.8 after
     assert multiplier[2, 0] == 1.5  # offset_time = 0 < 1800, inherits previous rollover

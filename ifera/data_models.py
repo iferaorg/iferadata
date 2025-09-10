@@ -200,7 +200,7 @@ class InstrumentData:
         )
 
         # Apply rollover multipliers
-        for rollover in rollovers:
+        for i, rollover in enumerate(rollovers):
             rollover_date = rollover["date"]
             rollover_multiplier = rollover["multiplier"]
 
@@ -214,12 +214,17 @@ class InstrumentData:
             # Create mask for dates >= rollover_date and times >= rollover_offset on rollover_date
             date_mask = trade_dates > rollover_ordinal
             rollover_day_mask = trade_dates == rollover_ordinal
-            time_mask = offset_times >= rollover_offset
 
-            # Apply multiplier where conditions are met
-            # For dates after rollover date: apply to all times
-            # For rollover date: apply only to times >= rollover_offset
-            mask = date_mask | (rollover_day_mask & time_mask)
+            # For the first rollover (chronologically), apply to the entire rollover day
+            # For subsequent rollovers, apply only to times >= rollover_offset on rollover day
+            if i == 0:
+                # First rollover: apply to entire day (ignore offset_time)
+                mask = date_mask | rollover_day_mask
+            else:
+                # Subsequent rollovers: apply only to times >= rollover_offset on rollover day
+                time_mask = offset_times >= rollover_offset
+                mask = date_mask | (rollover_day_mask & time_mask)
+
             multiplier[mask] = rollover_multiplier
 
         return multiplier

@@ -87,13 +87,13 @@ def test_integration_rollover_multiplier_functionality(
     # Day 0 (before rollover): all 1.0
     assert torch.allclose(multiplier[0, :], torch.tensor([1.0, 1.0, 1.0]))
 
-    # Day 1 (rollover day): 1.0 before offset, 1.1 after
-    assert torch.allclose(multiplier[1, :], torch.tensor([1.0, 1.1, 1.1]))
+    # Day 1 (first rollover day): 1.1 for all times (first rollover applies to entire day)
+    assert torch.allclose(multiplier[1, :], torch.tensor([1.1, 1.1, 1.1]))
 
-    # Day 2 (between rollovers): 1.1 before second rollover offset, 0.9 after
+    # Day 2 (second rollover day): 1.1 before second rollover offset, 0.9 after
     assert torch.allclose(multiplier[2, :], torch.tensor([1.1, 0.9, 0.9]))
 
-    # Day 3 (after last rollover): 0.9 before third rollover offset, 1.2 after
+    # Day 3 (third rollover day): 0.9 before third rollover offset, 1.2 after
     assert torch.allclose(multiplier[3, :], torch.tensor([0.9, 1.2, 1.2]))
 
     print(
