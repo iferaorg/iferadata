@@ -429,7 +429,7 @@ if __name__ == "__main__":
     print("Starting main rollout...")
     t = time.time()
     total_profit, total_profit_percent, _, _, steps = env.rollout(
-        base_policy, date_idx, time_idx, max_steps=500000
+        base_policy, date_idx, time_idx, max_steps=100000, single_entry=True
     )
 
     # total_profit, _, _ = env.rollout_with_display(

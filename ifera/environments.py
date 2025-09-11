@@ -9,6 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 import copy
 import multiprocessing
 import torch
+from torch.compiler import nested_compile_region
 from rich.live import Live
 from rich.table import Table
 
@@ -183,6 +184,7 @@ class SingleMarketEnv:
             entry_price * old_weight + execution_price * new_weight
         ) / (old_weight + new_weight)
         entry_price = torch.where(add_to_position_mask, weighted_avg_price, entry_price)
+
         entry_position = torch.where(
             entry_mask | add_to_position_mask,
             position + action,
@@ -223,6 +225,80 @@ class SingleMarketEnv:
 
         return result
 
+    def step_no_action(
+        self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]
+    ):
+        """Run one simulation step using ``trading_policy``."""
+        date_idx = state["date_idx"]
+        time_idx = state["time_idx"]
+        position = state["position"]
+        entry_cost = state["entry_cost"]
+        _zero = self._zero
+
+        _, stop_loss, done = trading_policy(state)
+
+        next_date_idx, next_time_idx = self.instrument_data.get_next_indices(
+            date_idx, time_idx
+        )
+        done = done | (next_date_idx > self.max_date_idx)
+        next_date_idx = torch.where(done, date_idx, next_date_idx)
+        next_time_idx = torch.where(done, time_idx, next_time_idx)
+        profit, new_position, _ = self.market_simulator.calculate_step_no_action(
+            next_date_idx, next_time_idx, position, stop_loss
+        )
+        profit = torch.where(done, _zero, profit)
+        new_position = torch.where(done, position, new_position)
+
+        profit_percent = torch.where(
+            entry_cost != 0,
+            profit / entry_cost,
+            _zero,
+        )
+
+        result = {
+            "profit": profit,
+            "profit_percent": profit_percent,
+            "position": new_position,
+            "date_idx": next_date_idx,
+            "time_idx": next_time_idx,
+            "entry_cost": entry_cost,
+            "prev_stop_loss": stop_loss,
+            "done": done,
+        }
+
+        return result
+
+    def _update_state(
+        self,
+        state: dict[str, torch.Tensor],
+        step_state: dict[str, torch.Tensor],
+        done_date_idx: torch.Tensor,
+        done_time_idx: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        newly_done = (~state["done"]) & step_state["done"]
+        done_date_idx = torch.where(
+            newly_done,
+            state["date_idx"].to(self.dtype),
+            done_date_idx,
+        )
+        done_time_idx = torch.where(
+            newly_done,
+            state["time_idx"].to(self.dtype),
+            done_time_idx,
+        )
+
+        for key, value in step_state.items():
+            if key != "done" and key in state:
+                state[key] = value
+
+        state["total_profit"] = state["total_profit"] + step_state["profit"]
+        state["total_profit_percent"] = (
+            state["total_profit_percent"] + step_state["profit_percent"]
+        )
+        state["done"] = state["done"] | step_state["done"]
+
+        return done_date_idx, done_time_idx
+
     @torch.compile()
     def _rollout_inner(
         self,
@@ -256,27 +332,69 @@ class SingleMarketEnv:
             torch.compiler.cudagraph_mark_step_begin()
             step_state = self.step(trading_policy, state)
 
-            newly_done = (~state["done"]) & step_state["done"]
-            done_date_idx = torch.where(
-                newly_done,
-                state["date_idx"].to(self.dtype),
-                done_date_idx,
+            done_date_idx, done_time_idx = self._update_state(
+                state, step_state, done_date_idx, done_time_idx
             )
-            done_time_idx = torch.where(
-                newly_done,
-                state["time_idx"].to(self.dtype),
-                done_time_idx,
+            steps += 1
+
+            if state["done"].all() or (max_steps is not None and steps >= max_steps):
+                break
+
+        return (
+            state["total_profit"].clone(),
+            state["total_profit_percent"].clone(),
+            done_date_idx.clone(),
+            done_time_idx.clone(),
+            steps,
+        )
+
+    @torch.compile()
+    def _rollout_inner_single_entry(
+        self,
+        trading_policy: TradingPolicy,
+        state: dict[str, torch.Tensor],
+        max_steps: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
+
+        Returns a tuple containing the total profit, the total profit percent,
+        the ``date_idx`` and ``time_idx`` at which ``done`` first became
+        ``True`` for each batch, and the number of steps taken. If an episode
+        never reaches ``done`` these indices will be ``nan``.
+        """
+
+        steps = 0
+        done_date_idx = torch.full(
+            state["date_idx"].shape,
+            float("nan"),
+            dtype=self.dtype,
+            device=self.device,
+        )
+        done_time_idx = torch.full(
+            state["time_idx"].shape,
+            float("nan"),
+            dtype=self.dtype,
+            device=self.device,
+        )
+
+        # First step for entry
+        torch.compiler.cudagraph_mark_step_begin()
+        step_state = self.step(trading_policy, state)
+        
+        done_date_idx, done_time_idx = self._update_state(
+            state, step_state, done_date_idx, done_time_idx
+        )
+
+        steps += 1
+
+        while True:
+            torch.compiler.cudagraph_mark_step_begin()
+            step_state = self.step_no_action(trading_policy, state)
+            
+            done_date_idx, done_time_idx = self._update_state(
+                state, step_state, done_date_idx, done_time_idx
             )
 
-            for key, value in step_state.items():
-                if key != "done" and key in state:
-                    state[key] = value
-
-            state["total_profit"] = state["total_profit"] + step_state["profit"]
-            state["total_profit_percent"] = (
-                state["total_profit_percent"] + step_state["profit_percent"]
-            )
-            state["done"] = state["done"] | step_state["done"]
             steps += 1
 
             if state["done"].all() or (max_steps is not None and steps >= max_steps):
@@ -308,6 +426,25 @@ class SingleMarketEnv:
         state = self.reset(start_date_idx, start_time_idx, trading_policy)
 
         return self._rollout_inner(trading_policy, state, max_steps)
+
+    def rollout_single_entry(
+        self,
+        trading_policy: TradingPolicy,
+        start_date_idx: torch.Tensor,
+        start_time_idx: torch.Tensor,
+        max_steps: Optional[int] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+        """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
+
+        Returns a tuple containing the total profit, the total profit percent,
+        the ``date_idx`` and ``time_idx`` at which ``done`` first became
+        ``True`` for each batch, and the number of steps taken. If an episode
+        never reaches ``done`` these indices will be ``nan``.
+        """
+
+        state = self.reset(start_date_idx, start_time_idx, trading_policy)
+
+        return self._rollout_inner_single_entry(trading_policy, state, max_steps)
 
     def rollout_with_display(
         self,
@@ -417,6 +554,7 @@ def _run_rollout_worker(
     start_time_idx_chunk: torch.Tensor,
     trading_policy: TradingPolicy,
     max_steps: Optional[int],
+    single_entry: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
     """Worker function to run a full rollout on a single device."""
     trading_policy.to(device)  # Move policy to the worker's device
@@ -432,11 +570,19 @@ def _run_rollout_worker(
         device=device,
         dtype=dtype,
     )
-    total_profit, total_profit_percent, done_date_idx, done_time_idx, steps = (
-        env.rollout(
-            trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
+    if single_entry:
+        total_profit, total_profit_percent, done_date_idx, done_time_idx, steps = (
+            env.rollout_single_entry(
+                trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
+            )
         )
-    )
+    else:
+        total_profit, total_profit_percent, done_date_idx, done_time_idx, steps = (
+            env.rollout(
+                trading_policy, start_date_idx_chunk, start_time_idx_chunk, max_steps
+            )
+        )
+
     return (
         total_profit.cpu(),
         total_profit_percent.cpu(),
@@ -510,6 +656,7 @@ class MultiGPUSingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         max_steps: Optional[int] = None,
+        single_entry: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Run rollouts on all devices in parallel.
 
@@ -549,6 +696,7 @@ class MultiGPUSingleMarketEnv:
                     t_chunk.cpu(),  # Move chunk to CPU for pickling
                     copy.deepcopy(trading_policy),  # Deep copy policy for each worker
                     max_steps,
+                    single_entry,
                 )
                 for device, d_chunk, t_chunk in zip(self.devices, d_chunks, t_chunks)
             ]
