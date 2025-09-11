@@ -103,22 +103,17 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
 
     d_idx = torch.tensor([0], dtype=torch.int32)
     t_idx = torch.tensor([0], dtype=torch.int32)
-    position = torch.tensor([0], dtype=torch.int32)
-    prev_stop = torch.tensor([float("nan")])
-    entry_price = torch.tensor([float("nan")])
 
-    state = {
-        "date_idx": d_idx,
-        "time_idx": t_idx,
-        "position": position,
-        "prev_stop_loss": prev_stop,
-        "entry_price": entry_price,
-        "total_profit": torch.zeros(1),
-        "total_profit_percent": torch.zeros(1),
-        "entry_position": torch.zeros(1, dtype=torch.int32),
-        "entry_cost": torch.zeros(1),
-        "done": torch.zeros(1, dtype=torch.bool),
-    }
+    state = State.create(
+        batch_size=1,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        start_date_idx=d_idx,
+        start_time_idx=t_idx,
+    )
+    state.position = torch.tensor([0], dtype=torch.int32)
+    state.prev_stop_loss = torch.tensor([float("nan")])
+    state.entry_price = torch.tensor([float("nan")])
 
     policy.reset(state, batch_size=1, device=torch.device("cpu"))
     _, _, done = policy(state)

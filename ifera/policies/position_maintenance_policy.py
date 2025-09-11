@@ -212,12 +212,16 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
         for s in range(1, self.stage_count):
             stage_mask = (stage == s) & has_position_mask
-            conv_state = {
-                "date_idx": conv_date_idx[s],
-                "time_idx": conv_time_idx[s],
-                "position": position * stage_mask,
-                "prev_stop_loss": stop_loss,
-            }
+            # Create a temporary state for the artr policy
+            conv_state = State.create(
+                batch_size=stage_mask.shape[0],
+                device=stage_mask.device,
+                dtype=self._dtype,
+                start_date_idx=conv_date_idx[s],
+                start_time_idx=conv_time_idx[s],
+            )
+            conv_state.position = position * stage_mask
+            conv_state.prev_stop_loss = stop_loss
             potential_stop = self.artr_policies[s](conv_state, self._zero)
             improvement = torch.where(
                 position > 0,
