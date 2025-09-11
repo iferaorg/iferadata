@@ -12,9 +12,6 @@ chmod +x Miniconda3-latest-Linux-x86_64.sh
 export PATH="$HOME/miniconda3/bin:$PATH"
 conda init
 
-git clone https://github.com/iferaorg/iferadata.git
-cd iferadata
-
 pip install -r requirements.txt
 
 export DATA_FOLDER="data"
