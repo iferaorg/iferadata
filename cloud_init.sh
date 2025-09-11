@@ -14,9 +14,9 @@ conda init
 
 pip install -r requirements.txt
 
-export DATA_FOLDER="data"
-export S3_BUCKET="ifera-marketdata"
+echo DATA_FOLDER="data" > .env
+echo S3_BUCKET="ifera-marketdata" >> .env
 
 # Ask for github token
 read -p "Enter your GitHub token: " GITHUB_TOKEN
-export GITHUB_TOKEN
+echo GITHUB_TOKEN="$GITHUB_TOKEN" >> .env
