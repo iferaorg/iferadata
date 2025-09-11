@@ -345,10 +345,8 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
     state.entry_cost = step_state.entry_cost
     state.prev_stop_loss = step_state.prev_stop_loss
     state.had_position = step_state.had_position
-    if step_state.profit is not None:
-        state.total_profit += step_state.profit
-    if step_state.profit_percent is not None:
-        state.total_profit_percent += step_state.profit_percent
+    state.total_profit += step_state.profit
+    state.total_profit_percent += step_state.profit_percent
     state.done = state.done | step_state.done
 
     _, _, done = trading_policy(state)
@@ -443,10 +441,8 @@ def test_entry_price_weighted_average_add_to_position(
     state.entry_time_idx = step_state.entry_time_idx
     state.maint_anchor = step_state.maint_anchor
     state.prev_stop = step_state.prev_stop
-    if step_state.profit is not None:
-        state.total_profit += step_state.profit
-    if step_state.profit_percent is not None:
-        state.total_profit_percent += step_state.profit_percent
+    state.total_profit += step_state.profit
+    state.total_profit_percent += step_state.profit_percent
     state.done = state.done | step_state.done
 
     # Second step: Add 3 contracts at 12.0
@@ -545,10 +541,8 @@ def test_entry_price_weighted_average_add_to_short_position(
     state.entry_time_idx = step_state.entry_time_idx
     state.maint_anchor = step_state.maint_anchor
     state.prev_stop = step_state.prev_stop
-    if step_state.profit is not None:
-        state.total_profit += step_state.profit
-    if step_state.profit_percent is not None:
-        state.total_profit_percent += step_state.profit_percent
+    state.total_profit += step_state.profit
+    state.total_profit_percent += step_state.profit_percent
     state.done = state.done | step_state.done
 
     # Second step: Add 3 short contracts at 18.0
@@ -647,10 +641,8 @@ def test_entry_price_no_weighted_average_opposite_signs(
     state.entry_time_idx = step_state.entry_time_idx
     state.maint_anchor = step_state.maint_anchor
     state.prev_stop = step_state.prev_stop
-    if step_state.profit is not None:
-        state.total_profit += step_state.profit
-    if step_state.profit_percent is not None:
-        state.total_profit_percent += step_state.profit_percent
+    state.total_profit += step_state.profit
+    state.total_profit_percent += step_state.profit_percent
     state.done = state.done | step_state.done
 
     # Second step: Sell 1 contract at 12.0 (reducing position, not adding)

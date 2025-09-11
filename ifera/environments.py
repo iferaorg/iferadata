@@ -307,12 +307,10 @@ class SingleMarketEnv:
         state.prev_stop = step_state.prev_stop
 
         # Accumulate profits
-        if step_state.profit is not None:
-            state.total_profit = state.total_profit + step_state.profit
-        if step_state.profit_percent is not None:
-            state.total_profit_percent = (
-                state.total_profit_percent + step_state.profit_percent
-            )
+        state.total_profit = state.total_profit + step_state.profit
+        state.total_profit_percent = (
+            state.total_profit_percent + step_state.profit_percent
+        )
         state.done = state.done | step_state.done
 
         return done_date_idx, done_time_idx
@@ -541,12 +539,10 @@ class SingleMarketEnv:
                 state.maint_anchor = step_state.maint_anchor
                 state.prev_stop = step_state.prev_stop
 
-                if step_state.profit is not None:
-                    state.total_profit = state.total_profit + step_state.profit
-                if step_state.profit_percent is not None:
-                    state.total_profit_percent = (
-                        state.total_profit_percent + step_state.profit_percent
-                    )
+                state.total_profit = state.total_profit + step_state.profit
+                state.total_profit_percent = (
+                    state.total_profit_percent + step_state.profit_percent
+                )
                 state.done = state.done | step_state.done
                 steps += 1
 

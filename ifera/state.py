@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import torch
-from typing import Optional
 
 
 @dataclass
@@ -38,8 +37,8 @@ class State:
     prev_stop: torch.Tensor  # Used in some maintenance policies
 
     # Temporary state used in step calculations
-    profit: Optional[torch.Tensor] = None
-    profit_percent: Optional[torch.Tensor] = None
+    profit: torch.Tensor
+    profit_percent: torch.Tensor
 
     @classmethod
     def create(
@@ -86,6 +85,9 @@ class State:
             prev_stop=torch.full(
                 (batch_size,), float("nan"), dtype=dtype, device=device
             ),
+            # Initialize profit fields to zeros
+            profit=torch.zeros(batch_size, dtype=dtype, device=device),
+            profit_percent=torch.zeros(batch_size, dtype=dtype, device=device),
         )
 
     def to_dict(self) -> dict[str, torch.Tensor]:
@@ -113,13 +115,9 @@ class State:
             "entry_time_idx": self.entry_time_idx,
             "maint_anchor": self.maint_anchor,
             "prev_stop": self.prev_stop,
+            "profit": self.profit,
+            "profit_percent": self.profit_percent,
         }
-
-        # Add optional fields if they exist
-        if self.profit is not None:
-            result["profit"] = self.profit
-        if self.profit_percent is not None:
-            result["profit_percent"] = self.profit_percent
 
         return result
 
@@ -159,6 +157,10 @@ class State:
             prev_stop=state_dict.get(
                 "prev_stop", torch.full_like(state_dict["entry_price"], float("nan"))
             ),
-            profit=state_dict.get("profit"),
-            profit_percent=state_dict.get("profit_percent"),
+            profit=state_dict.get(
+                "profit", torch.zeros_like(state_dict["entry_price"])
+            ),
+            profit_percent=state_dict.get(
+                "profit_percent", torch.zeros_like(state_dict["entry_price"])
+            ),
         )
