@@ -3,6 +3,7 @@ import pytest
 
 from ifera.policies import ScaledArtrMaintenancePolicy, PercentGainMaintenancePolicy
 from ifera.data_models import DataManager
+from ifera.state import State
 
 torch._dynamo.config.capture_scalar_outputs = True
 
@@ -45,17 +46,20 @@ def test_scaled_artr_no_position(monkeypatch, dummy_instrument_data):
         minimum_improvement=0.1,
     )
 
-    state = {
-        "date_idx": torch.tensor([0]),
-        "time_idx": torch.tensor([0]),
-        "entry_price": torch.tensor([1.0]),
-        "prev_stop_loss": torch.tensor([float("nan")]),
-        "position": torch.tensor([0]),
-        "base_price": torch.tensor([1.0]),
-        "maint_stage": torch.tensor([1]),
-        "entry_date_idx": torch.tensor([0]),
-        "entry_time_idx": torch.tensor([0]),
-    }
+    state = State.create(
+        batch_size=1,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        start_date_idx=torch.tensor([0]),
+        start_time_idx=torch.tensor([0]),
+    )
+    state.entry_price = torch.tensor([1.0])
+    state.prev_stop_loss = torch.tensor([float("nan")])
+    state.position = torch.tensor([0])
+    state.base_price = torch.tensor([1.0])
+    state.maint_stage = torch.tensor([1])
+    state.entry_date_idx = torch.tensor([0])
+    state.entry_time_idx = torch.tensor([0])
 
     _, stop_loss = policy(state)
     assert torch.isnan(stop_loss).all()
@@ -72,21 +76,23 @@ def test_percent_gain_no_position(dummy_instrument_data, monkeypatch):
     )
 
     class DummyArtr(torch.nn.Module):
-        def forward(self, date_idx, time_idx, position, action, prev_stop):
-            _ = date_idx, time_idx, position, action
-            return prev_stop
+        def forward(self, state, action):
+            return state.prev_stop_loss
 
     monkeypatch.setattr(policy, "artr_policy", DummyArtr())
 
-    state = {
-        "prev_stop": torch.tensor([float("nan")]),
-        "position": torch.tensor([0]),
-        "entry_price": torch.tensor([1.0]),
-        "date_idx": torch.tensor([0]),
-        "time_idx": torch.tensor([0]),
-        "maint_anchor": torch.tensor([1.5]),
-        "maint_stage": torch.tensor([1]),
-    }
+    state = State.create(
+        batch_size=1,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        start_date_idx=torch.tensor([0]),
+        start_time_idx=torch.tensor([0]),
+    )
+    state.prev_stop = torch.tensor([float("nan")])
+    state.position = torch.tensor([0])
+    state.entry_price = torch.tensor([1.0])
+    state.maint_anchor = torch.tensor([1.5])
+    state.maint_stage = torch.tensor([1])
 
     _, stop_loss = policy(state)
     assert torch.isnan(stop_loss).all()

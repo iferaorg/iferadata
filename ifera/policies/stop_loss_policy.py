@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from ..data_models import InstrumentData
+from ..state import State
 
 
 class StopLossPolicy(nn.Module, ABC):
@@ -17,16 +18,14 @@ class StopLossPolicy(nn.Module, ABC):
         super().__init__()
 
     @abstractmethod
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Reset policy state."""
         raise NotImplementedError
 
     @abstractmethod
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
         action: torch.Tensor,
     ) -> torch.Tensor:
         """Return stop loss levels."""
@@ -100,21 +99,19 @@ class ArtrStopLossPolicy(StopLossPolicy):
 
         return potential_stops
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """ArtrStopLossPolicy does not maintain state."""
         return None
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
         action: torch.Tensor,
     ) -> torch.Tensor:
-        date_idx = state["date_idx"]
-        time_idx = state["time_idx"]
-        position = state["position"]
-        prev_stop = state["prev_stop_loss"]
+        date_idx = state.date_idx
+        time_idx = state.time_idx
+        position = state.position
+        prev_stop = state.prev_stop_loss
 
         direction = (position + action).sign()
 
@@ -152,15 +149,13 @@ class InitialArtrStopLossPolicy(StopLossPolicy):
         super().__init__()
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """InitialArtrStopLossPolicy holds no state to reset."""
         _ = state
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
         action: torch.Tensor,
     ) -> torch.Tensor:
         return self.artr_policy(state, action)

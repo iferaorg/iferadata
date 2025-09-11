@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 import torch
 from torch import nn
 
+from ..state import State
+
 
 class OpenPositionPolicy(nn.Module, ABC):
     """Abstract base class for open position policies."""
@@ -15,16 +17,14 @@ class OpenPositionPolicy(nn.Module, ABC):
         super().__init__()
 
     @abstractmethod
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Reset any internal state held by the policy."""
         raise NotImplementedError
 
     @abstractmethod
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
         no_position_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Return actions for opening new positions."""
@@ -41,15 +41,13 @@ class AlwaysOpenPolicy(OpenPositionPolicy):
             "direction", torch.tensor(direction, dtype=torch.int32, device=device)
         )
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """AlwaysOpenPolicy holds no state so nothing to reset."""
         return None
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
         no_position_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Return the direction for all batches that can open a position."""
@@ -67,19 +65,17 @@ class OpenOncePolicy(OpenPositionPolicy):
             "direction", torch.tensor(direction, dtype=torch.int32, device=device)
         )
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Reset ``opened`` state to ``False`` for all batches."""
-        state["opened"] = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        state.opened = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
         no_position_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Return the direction for all batches that can open a position."""
-        opened = state["opened"]
+        opened = state.opened
         open_mask = no_position_mask & ~opened
-        state["opened"] = opened | open_mask
+        state.opened = opened | open_mask
         return open_mask * self.direction

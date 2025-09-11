@@ -12,6 +12,7 @@ from einops import repeat
 from ..data_models import InstrumentData, DataManager
 from ..config import ConfigManager
 from ..file_manager import FileManager
+from ..state import State
 from .stop_loss_policy import ArtrStopLossPolicy
 
 torch._dynamo.config.capture_scalar_outputs = True  # pylint: disable=protected-access
@@ -24,21 +25,19 @@ class PositionMaintenancePolicy(nn.Module, ABC):
         super().__init__()
 
     @abstractmethod
-    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
+    def masked_reset(self, state: State, mask: torch.Tensor) -> None:
         """Reset the policy's state for the specified batch elements."""
         raise NotImplementedError
 
     @abstractmethod
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Reset the entire policy state."""
         raise NotImplementedError
 
     @abstractmethod
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Return action and stop loss tensors."""
         raise NotImplementedError
@@ -130,9 +129,7 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             "_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device)
         )
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Fully reset internal stage and base price."""
         # Update device if it has changed
         if hasattr(self, "_device"):
@@ -145,35 +142,31 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
             (batch_size,), float("nan"), dtype=self._dtype, device=device
         )
 
-        state["maint_stage"] = self._zero.clone()
-        state["base_price"] = self._nan.clone()
-        state["entry_date_idx"] = torch.full_like(self._zero, -1)
-        state["entry_time_idx"] = torch.full_like(self._zero, -1)
+        state.maint_stage = self._zero.clone()
+        state.base_price = self._nan.clone()
+        state.entry_date_idx = torch.full_like(self._zero, -1)
+        state.entry_time_idx = torch.full_like(self._zero, -1)
 
-    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
-        state["maint_stage"] = torch.where(mask, self._zero, state["maint_stage"])
-        state["base_price"] = torch.where(mask, self._nan, state["base_price"])
-        state["entry_date_idx"] = torch.where(
-            mask, state["date_idx"], state["entry_date_idx"]
-        )
-        state["entry_time_idx"] = torch.where(
-            mask, state["time_idx"], state["entry_time_idx"]
-        )
+    def masked_reset(self, state: State, mask: torch.Tensor) -> None:
+        state.maint_stage = torch.where(mask, self._zero, state.maint_stage)
+        state.base_price = torch.where(mask, self._nan, state.base_price)
+        state.entry_date_idx = torch.where(mask, state.date_idx, state.entry_date_idx)
+        state.entry_time_idx = torch.where(mask, state.time_idx, state.entry_time_idx)
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         action = self._action
-        date_idx = state["date_idx"]
-        time_idx = state["time_idx"]
-        entry_price = state["entry_price"]
-        stop_loss = state["prev_stop_loss"].clone()
-        position = state["position"]
-        base_price = state["base_price"]
-        stage = state["maint_stage"]
-        entry_date_idx = state["entry_date_idx"]
-        entry_time_idx = state["entry_time_idx"]
+        date_idx = state.date_idx
+        time_idx = state.time_idx
+        entry_price = state.entry_price
+        stop_loss = state.prev_stop_loss.clone()
+        position = state.position
+        base_price = state.base_price
+        stage = state.maint_stage
+        entry_date_idx = state.entry_date_idx
+        entry_time_idx = state.entry_time_idx
         has_position_mask = position != 0
 
         nan_base_mask = torch.isnan(base_price) & has_position_mask
@@ -219,12 +212,16 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
 
         for s in range(1, self.stage_count):
             stage_mask = (stage == s) & has_position_mask
-            conv_state = {
-                "date_idx": conv_date_idx[s],
-                "time_idx": conv_time_idx[s],
-                "position": position * stage_mask,
-                "prev_stop_loss": stop_loss,
-            }
+            # Create a temporary state for the artr policy
+            conv_state = State.create(
+                batch_size=stage_mask.shape[0],
+                device=stage_mask.device,
+                dtype=self._dtype,
+                start_date_idx=conv_date_idx[s],
+                start_time_idx=conv_time_idx[s],
+            )
+            conv_state.position = position * stage_mask
+            conv_state.prev_stop_loss = stop_loss
             potential_stop = self.artr_policies[s](conv_state, self._zero)
             improvement = torch.where(
                 position > 0,
@@ -248,8 +245,8 @@ class ScaledArtrMaintenancePolicy(PositionMaintenancePolicy):
                 stage,
             )
 
-        state["maint_stage"] = stage
-        state["base_price"] = base_price
+        state.maint_stage = stage
+        state.base_price = base_price
         # Note: entry_date_idx and entry_time_idx are set in masked_reset and should not be modified here
 
         return action, stop_loss
@@ -319,9 +316,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             "_nan", torch.tensor((), dtype=self._dtype, device=instrument_data.device)
         )
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Fully reset stage and anchor state."""
         # Update device if it has changed
         if hasattr(self, "_device"):
@@ -340,28 +335,26 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             device=device,
         )
 
-        state["maint_stage"] = self._initial_stage.clone()
-        state["maint_anchor"] = self._nan.clone()
+        state.maint_stage = self._initial_stage.clone()
+        state.maint_anchor = self._nan.clone()
 
-    def masked_reset(self, state: dict[str, torch.Tensor], mask: torch.Tensor) -> None:
-        state["maint_stage"] = torch.where(
-            mask, self._initial_stage, state["maint_stage"]
-        )
-        state["maint_anchor"] = torch.where(mask, self._nan, state["maint_anchor"])
+    def masked_reset(self, state: State, mask: torch.Tensor) -> None:
+        state.maint_stage = torch.where(mask, self._initial_stage, state.maint_stage)
+        state.maint_anchor = torch.where(mask, self._nan, state.maint_anchor)
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         action = self._action
-        stop_loss = state["prev_stop"].clone()
-        position = state["position"]
-        entry_price = state["entry_price"]
-        prev_stop = state["prev_stop"]
-        date_idx = state["date_idx"]
-        time_idx = state["time_idx"]
-        anchor = state["maint_anchor"]
-        stage = state["maint_stage"]
+        stop_loss = state.prev_stop.clone()
+        position = state.position
+        entry_price = state.entry_price
+        prev_stop = state.prev_stop
+        date_idx = state.date_idx
+        time_idx = state.time_idx
+        anchor = state.maint_anchor
+        stage = state.maint_stage
 
         has_position_mask = position != 0
 
@@ -381,9 +374,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
             )
 
         stage1_mask = (stage == 0) & has_position_mask
-        atr_stop = self.artr_policy(
-            date_idx, time_idx, position * stage1_mask, action, prev_stop
-        )
+        atr_stop = self.artr_policy(state, action)
         move_to_stage2 = stage1_mask & (
             (position > 0) & (atr_stop > entry_price)
             | (position < 0) & (atr_stop < entry_price)
@@ -420,7 +411,7 @@ class PercentGainMaintenancePolicy(PositionMaintenancePolicy):
         )
         stop_loss = torch.where(stage2_mask, candidate_stop_loss, stop_loss)
 
-        state["maint_stage"] = stage
-        state["maint_anchor"] = anchor
+        state.maint_stage = stage
+        state.maint_anchor = anchor
 
         return action, stop_loss

@@ -3,6 +3,7 @@ import pytest
 
 from ifera.policies import ScaledArtrMaintenancePolicy
 from ifera.data_models import DataManager
+from ifera.state import State
 
 higher_ops_available = hasattr(torch, "cond") and hasattr(torch, "while_loop")
 pytestmark = pytest.mark.skipif(
@@ -43,17 +44,20 @@ def test_scaled_artr_active_position(monkeypatch, dummy_instrument_data):
         minimum_improvement=0.1,
     )
 
-    state = {
-        "date_idx": torch.tensor([0, 0]),
-        "time_idx": torch.tensor([0, 0]),
-        "entry_price": torch.tensor([1.0, 1.0]),
-        "prev_stop_loss": torch.tensor([0.5, 0.5]),
-        "position": torch.tensor([1, 0]),
-        "base_price": torch.tensor([1.0, 1.0]),
-        "maint_stage": torch.tensor([1, 0]),
-        "entry_date_idx": torch.tensor([0, 0]),
-        "entry_time_idx": torch.tensor([0, 0]),
-    }
+    state = State.create(
+        batch_size=2,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        start_date_idx=torch.tensor([0, 0]),
+        start_time_idx=torch.tensor([0, 0]),
+    )
+    state.entry_price = torch.tensor([1.0, 1.0])
+    state.prev_stop_loss = torch.tensor([0.5, 0.5])
+    state.position = torch.tensor([1, 0])
+    state.base_price = torch.tensor([1.0, 1.0])
+    state.maint_stage = torch.tensor([1, 0])
+    state.entry_date_idx = torch.tensor([0, 0])
+    state.entry_time_idx = torch.tensor([0, 0])
 
     policy.reset(state, batch_size=2, device=torch.device("cpu"))
     _, stop_loss = policy(state)
