@@ -11,6 +11,7 @@ from torch import nn
 
 from ..data_models import InstrumentData
 from ..torch_utils import get_devices, get_module_device
+from ..state import State
 from .open_position_policy import OpenPositionPolicy
 from .stop_loss_policy import StopLossPolicy
 from .position_maintenance_policy import PositionMaintenancePolicy
@@ -24,16 +25,14 @@ class BaseTradingPolicy(nn.Module, ABC):
         super().__init__()
 
     @abstractmethod
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Reset the policy to its initial state."""
         raise NotImplementedError
 
     @abstractmethod
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Return action, stop loss and done tensors."""
         raise NotImplementedError
@@ -68,9 +67,7 @@ class TradingPolicy(BaseTradingPolicy):
         cloned_policy.to(device)
         return cloned_policy
 
-    def reset(
-        self, state: dict[str, torch.Tensor], batch_size: int, device: torch.device
-    ) -> None:
+    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
         """Reset all sub-policies to their initial state."""
         self.open_position_policy.reset(state, batch_size, device)
         self.initial_stop_loss_policy.reset(state, batch_size, device)
@@ -79,13 +76,13 @@ class TradingPolicy(BaseTradingPolicy):
 
     def forward(
         self,
-        state: dict[str, torch.Tensor],
+        state: State,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        date_idx = state["date_idx"]
-        time_idx = state["time_idx"]
-        position = state["position"]
+        date_idx = state.date_idx
+        time_idx = state.time_idx
+        position = state.position
 
-        done = state["done"] | self.trading_done_policy(state)
+        done = state.done | self.trading_done_policy(state)
         last_bar_mask = (date_idx == self._last_date_idx) & (
             time_idx == self._last_time_idx
         )

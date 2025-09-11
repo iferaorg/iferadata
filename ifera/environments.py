@@ -18,6 +18,7 @@ from .data_models import DataManager, InstrumentData
 from .market_simulator import MarketSimulatorIntraday
 from .policies import TradingPolicy
 from .torch_utils import get_devices
+from .state import State
 
 
 def make_table(
@@ -108,7 +109,7 @@ class SingleMarketEnv:
         start_date_idx: torch.Tensor,
         start_time_idx: torch.Tensor,
         trading_policy: Optional[TradingPolicy] = None,
-    ) -> dict[str, torch.Tensor]:
+    ) -> State:
         """Create and return the initial environment state for a new simulation."""
 
         batch_size = start_date_idx.shape[0]
@@ -118,39 +119,20 @@ class SingleMarketEnv:
         self._zero_int = torch.tensor(0, dtype=torch.int32, device=self.device).expand(
             batch_size
         )
-        state = {
-            "date_idx": start_date_idx.to(torch.int32).to(self.device),
-            "time_idx": start_time_idx.to(torch.int32).to(self.device),
-            "position": torch.zeros(batch_size, dtype=torch.int32, device=self.device),
-            "prev_stop_loss": torch.full(
-                (batch_size,), float("nan"), dtype=self.dtype, device=self.device
-            ),
-            "entry_price": torch.full(
-                (batch_size,), float("nan"), dtype=self.dtype, device=self.device
-            ),
-            "total_profit": torch.zeros(
-                batch_size, dtype=self.dtype, device=self.device
-            ),
-            "total_profit_percent": torch.zeros(
-                batch_size, dtype=self.dtype, device=self.device
-            ),
-            "entry_position": torch.zeros(
-                batch_size, dtype=torch.int32, device=self.device
-            ),
-            "entry_cost": torch.zeros(batch_size, dtype=self.dtype, device=self.device),
-            "done": torch.zeros(batch_size, dtype=torch.bool, device=self.device),
-        }
+        state = State.create(
+            batch_size, self.device, self.dtype, start_date_idx, start_time_idx
+        )
         if trading_policy is not None:
             trading_policy.reset(state, batch_size, self.device)
         return state
 
-    def step(self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]):
+    def step(self, trading_policy: TradingPolicy, state: State):
         """Run one simulation step using ``trading_policy``."""
-        date_idx = state["date_idx"]
-        time_idx = state["time_idx"]
-        position = state["position"]
-        entry_price = state["entry_price"]
-        entry_position = state["entry_position"]
+        date_idx = state.date_idx
+        time_idx = state.time_idx
+        position = state.position
+        entry_price = state.entry_price
+        entry_position = state.entry_position
         dtype = self.dtype
         _zero = self._zero
         _zero_int = self._zero_int
@@ -204,35 +186,40 @@ class SingleMarketEnv:
         entry_position = torch.where(new_position == 0, _zero_int, entry_position)
         entry_cost = torch.where(new_position == 0, _zero, entry_cost)
 
-        had_position = state.get("had_position")
-        if had_position is not None:
-            had_position = had_position | (action != 0)
+        had_position = state.had_position | (action != 0)
 
-        result = {
-            "profit": profit,
-            "profit_percent": profit_percent,
-            "position": new_position,
-            "date_idx": next_date_idx,
-            "time_idx": next_time_idx,
-            "entry_price": entry_price,
-            "entry_position": entry_position,
-            "entry_cost": entry_cost,
-            "prev_stop_loss": stop_loss,
-            "done": done,
-        }
-        if had_position is not None:
-            result["had_position"] = had_position
+        # Create result state with updated values
+        result = State(
+            date_idx=next_date_idx,
+            time_idx=next_time_idx,
+            position=new_position,
+            entry_price=entry_price,
+            entry_position=entry_position,
+            done=done,
+            total_profit=state.total_profit,  # Keep existing values
+            total_profit_percent=state.total_profit_percent,
+            entry_cost=entry_cost,
+            prev_stop_loss=stop_loss,
+            had_position=had_position,
+            opened=state.opened,  # Keep existing values
+            maint_stage=state.maint_stage,
+            base_price=state.base_price,
+            entry_date_idx=state.entry_date_idx,
+            entry_time_idx=state.entry_time_idx,
+            maint_anchor=state.maint_anchor,
+            prev_stop=state.prev_stop,
+            profit=profit,
+            profit_percent=profit_percent,
+        )
 
         return result
 
-    def step_no_action(
-        self, trading_policy: TradingPolicy, state: dict[str, torch.Tensor]
-    ):
+    def step_no_action(self, trading_policy: TradingPolicy, state: State):
         """Run one simulation step using ``trading_policy``."""
-        date_idx = state["date_idx"]
-        time_idx = state["time_idx"]
-        position = state["position"]
-        entry_cost = state["entry_cost"]
+        date_idx = state.date_idx
+        time_idx = state.time_idx
+        position = state.position
+        entry_cost = state.entry_cost
         _zero = self._zero
 
         _, stop_loss, done = trading_policy(state)
@@ -255,47 +242,78 @@ class SingleMarketEnv:
             _zero,
         )
 
-        result = {
-            "profit": profit,
-            "profit_percent": profit_percent,
-            "position": new_position,
-            "date_idx": next_date_idx,
-            "time_idx": next_time_idx,
-            "entry_cost": entry_cost,
-            "prev_stop_loss": stop_loss,
-            "done": done,
-        }
+        # Create result state with updated values
+        result = State(
+            date_idx=next_date_idx,
+            time_idx=next_time_idx,
+            position=new_position,
+            entry_price=state.entry_price,  # Keep existing value
+            entry_position=state.entry_position,  # Keep existing value
+            done=done,
+            total_profit=state.total_profit,  # Keep existing value
+            total_profit_percent=state.total_profit_percent,  # Keep existing value
+            entry_cost=entry_cost,
+            prev_stop_loss=stop_loss,
+            had_position=state.had_position,  # Keep existing values
+            opened=state.opened,
+            maint_stage=state.maint_stage,
+            base_price=state.base_price,
+            entry_date_idx=state.entry_date_idx,
+            entry_time_idx=state.entry_time_idx,
+            maint_anchor=state.maint_anchor,
+            prev_stop=state.prev_stop,
+            profit=profit,
+            profit_percent=profit_percent,
+        )
 
         return result
 
     def _update_state(
         self,
-        state: dict[str, torch.Tensor],
-        step_state: dict[str, torch.Tensor],
+        state: State,
+        step_state: State,
         done_date_idx: torch.Tensor,
         done_time_idx: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        newly_done = (~state["done"]) & step_state["done"]
+        newly_done = (~state.done) & step_state.done
         done_date_idx = torch.where(
             newly_done,
-            state["date_idx"].to(self.dtype),
+            state.date_idx.to(self.dtype),
             done_date_idx,
         )
         done_time_idx = torch.where(
             newly_done,
-            state["time_idx"].to(self.dtype),
+            state.time_idx.to(self.dtype),
             done_time_idx,
         )
 
-        for key, value in step_state.items():
-            if key != "done" and key in state:
-                state[key] = value
+        # Update state in-place with values from step_state
+        state.date_idx = step_state.date_idx
+        state.time_idx = step_state.time_idx
+        state.position = step_state.position
+        state.entry_price = step_state.entry_price
+        state.entry_position = step_state.entry_position
+        state.entry_cost = step_state.entry_cost
+        state.prev_stop_loss = step_state.prev_stop_loss
 
-        state["total_profit"] = state["total_profit"] + step_state["profit"]
-        state["total_profit_percent"] = (
-            state["total_profit_percent"] + step_state["profit_percent"]
-        )
-        state["done"] = state["done"] | step_state["done"]
+        # Update policy-specific state
+        state.had_position = step_state.had_position
+        state.opened = step_state.opened
+        state.maint_stage = step_state.maint_stage
+        state.base_price = step_state.base_price
+        state.entry_date_idx = step_state.entry_date_idx
+        state.entry_time_idx = step_state.entry_time_idx
+        state.maint_anchor = step_state.maint_anchor
+        state.prev_stop = step_state.prev_stop
+
+        # Accumulate profits
+        if step_state.profit is not None:
+            state.total_profit = state.total_profit + step_state.profit
+        if step_state.profit_percent is not None:
+            state.total_profit_percent = (
+                state.total_profit_percent + step_state.profit_percent
+            )
+        state.done = state.done | step_state.done
 
         return done_date_idx, done_time_idx
 
@@ -303,7 +321,7 @@ class SingleMarketEnv:
     def _rollout_inner(
         self,
         trading_policy: TradingPolicy,
-        state: dict[str, torch.Tensor],
+        state: State,
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
@@ -316,13 +334,13 @@ class SingleMarketEnv:
 
         steps = 0
         done_date_idx = torch.full(
-            state["date_idx"].shape,
+            state.date_idx.shape,
             float("nan"),
             dtype=self.dtype,
             device=self.device,
         )
         done_time_idx = torch.full(
-            state["time_idx"].shape,
+            state.time_idx.shape,
             float("nan"),
             dtype=self.dtype,
             device=self.device,
@@ -337,12 +355,12 @@ class SingleMarketEnv:
             )
             steps += 1
 
-            if state["done"].all() or (max_steps is not None and steps >= max_steps):
+            if state.done.all() or (max_steps is not None and steps >= max_steps):
                 break
 
         return (
-            state["total_profit"].clone(),
-            state["total_profit_percent"].clone(),
+            state.total_profit.clone(),
+            state.total_profit_percent.clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
             steps,
@@ -352,7 +370,7 @@ class SingleMarketEnv:
     def _rollout_inner_single_entry(
         self,
         trading_policy: TradingPolicy,
-        state: dict[str, torch.Tensor],
+        state: State,
         max_steps: Optional[int] = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
         """Execute a rollout until ``done`` for all batches or ``max_steps`` reached.
@@ -365,13 +383,13 @@ class SingleMarketEnv:
 
         steps = 0
         done_date_idx = torch.full(
-            state["date_idx"].shape,
+            state.date_idx.shape,
             float("nan"),
             dtype=self.dtype,
             device=self.device,
         )
         done_time_idx = torch.full(
-            state["time_idx"].shape,
+            state.time_idx.shape,
             float("nan"),
             dtype=self.dtype,
             device=self.device,
@@ -380,7 +398,7 @@ class SingleMarketEnv:
         # First step for entry
         torch.compiler.cudagraph_mark_step_begin()
         step_state = self.step(trading_policy, state)
-        
+
         done_date_idx, done_time_idx = self._update_state(
             state, step_state, done_date_idx, done_time_idx
         )
@@ -390,19 +408,19 @@ class SingleMarketEnv:
         while True:
             torch.compiler.cudagraph_mark_step_begin()
             step_state = self.step_no_action(trading_policy, state)
-            
+
             done_date_idx, done_time_idx = self._update_state(
                 state, step_state, done_date_idx, done_time_idx
             )
 
             steps += 1
 
-            if state["done"].all() or (max_steps is not None and steps >= max_steps):
+            if state.done.all() or (max_steps is not None and steps >= max_steps):
                 break
 
         return (
-            state["total_profit"].clone(),
-            state["total_profit_percent"].clone(),
+            state.total_profit.clone(),
+            state.total_profit_percent.clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
             steps,
@@ -465,13 +483,13 @@ class SingleMarketEnv:
         contract_multiplier = self.instrument_data.instrument.contract_multiplier
         steps = 0
         done_date_idx = torch.full(
-            state["date_idx"].shape,
+            state.date_idx.shape,
             float("nan"),
             dtype=self.dtype,
             device=self.device,
         )
         done_time_idx = torch.full(
-            state["time_idx"].shape,
+            state.time_idx.shape,
             float("nan"),
             dtype=self.dtype,
             device=self.device,
@@ -479,12 +497,12 @@ class SingleMarketEnv:
         with Live(
             make_table(
                 self.instrument_data.data_full,
-                state["date_idx"],
-                state["time_idx"],
+                state.date_idx,
+                state.time_idx,
                 trading_policy.position_maintenance_policy,
-                state["prev_stop_loss"],
-                state["total_profit"],
-                state["entry_price"],
+                state.prev_stop_loss,
+                state.total_profit,
+                state.entry_price,
                 steps,
                 contract_multiplier,
             ),
@@ -494,50 +512,63 @@ class SingleMarketEnv:
                 # torch.compiler.cudagraph_mark_step_begin()
                 step_state = self.step(trading_policy, state)
 
-                newly_done = (~state["done"]) & step_state["done"]
+                newly_done = (~state.done) & step_state.done
                 done_date_idx = torch.where(
                     newly_done,
-                    state["date_idx"].to(self.dtype),
+                    state.date_idx.to(self.dtype),
                     done_date_idx,
                 )
                 done_time_idx = torch.where(
                     newly_done,
-                    state["time_idx"].to(self.dtype),
+                    state.time_idx.to(self.dtype),
                     done_time_idx,
                 )
 
-                for key, value in step_state.items():
-                    if key != "done":
-                        state[key] = value
+                # Update state attributes
+                state.date_idx = step_state.date_idx
+                state.time_idx = step_state.time_idx
+                state.position = step_state.position
+                state.entry_price = step_state.entry_price
+                state.entry_position = step_state.entry_position
+                state.entry_cost = step_state.entry_cost
+                state.prev_stop_loss = step_state.prev_stop_loss
+                state.had_position = step_state.had_position
+                state.opened = step_state.opened
+                state.maint_stage = step_state.maint_stage
+                state.base_price = step_state.base_price
+                state.entry_date_idx = step_state.entry_date_idx
+                state.entry_time_idx = step_state.entry_time_idx
+                state.maint_anchor = step_state.maint_anchor
+                state.prev_stop = step_state.prev_stop
 
-                state["total_profit"] = state["total_profit"] + step_state["profit"]
-                state["total_profit_percent"] = (
-                    state["total_profit_percent"] + step_state["profit_percent"]
-                )
-                state["done"] = state["done"] | step_state["done"]
+                if step_state.profit is not None:
+                    state.total_profit = state.total_profit + step_state.profit
+                if step_state.profit_percent is not None:
+                    state.total_profit_percent = (
+                        state.total_profit_percent + step_state.profit_percent
+                    )
+                state.done = state.done | step_state.done
                 steps += 1
 
                 live.update(
                     make_table(
                         self.instrument_data.data_full,
-                        state["date_idx"],
-                        state["time_idx"],
+                        state.date_idx,
+                        state.time_idx,
                         trading_policy.position_maintenance_policy,
-                        state["prev_stop_loss"],
-                        state["total_profit"],
-                        state["entry_price"],
+                        state.prev_stop_loss,
+                        state.total_profit,
+                        state.entry_price,
                         steps,
                         contract_multiplier,
                     )
                 )
 
-                if state["done"].all() or (
-                    max_steps is not None and steps >= max_steps
-                ):
+                if state.done.all() or (max_steps is not None and steps >= max_steps):
                     break
         return (
-            state["total_profit"].clone(),
-            state["total_profit_percent"].clone(),
+            state.total_profit.clone(),
+            state.total_profit_percent.clone(),
             done_date_idx.clone(),
             done_time_idx.clone(),
             steps,
@@ -621,7 +652,7 @@ class MultiGPUSingleMarketEnv:
         self.broker_name = broker_name
         self.backadjust = backadjust
         self.dtype = dtype
-        self.states: list[dict[str, torch.Tensor]] = []
+        self.states: list[State] = []
 
     def _chunk_tensor(self, tensor: torch.Tensor) -> list[torch.Tensor]:
         batch_size = tensor.shape[0]

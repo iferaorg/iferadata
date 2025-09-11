@@ -12,6 +12,7 @@ from ifera.policies.position_maintenance_policy import (
     PercentGainMaintenancePolicy,
 )
 from ifera.data_models import DataManager
+from ifera.state import State
 
 
 class DummyData:
@@ -104,16 +105,22 @@ def test_device_movement_simulation():
     # Create a SingleTradeDonePolicy
     policy = SingleTradeDonePolicy(device=torch.device("cpu"))
 
-    # Initialize the state - using new reset signature
-    state = {
-        "position": torch.tensor([1, 0, 1], dtype=torch.float32),
-        "had_position": torch.tensor([False, True, False], dtype=torch.bool),
-    }
-    batch_size = state["position"].shape[0]
-    device = state["position"].device
+    # Initialize the state - using new State class
+    state = State.create(
+        batch_size=3,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        start_date_idx=torch.tensor([0, 0, 0], dtype=torch.int32),
+        start_time_idx=torch.tensor([0, 0, 0], dtype=torch.int32),
+    )
+    state.position = torch.tensor([1, 0, 1], dtype=torch.int32)
+    state.had_position = torch.tensor([False, True, False], dtype=torch.bool)
+
+    batch_size = state.position.shape[0]
+    device = state.position.device
     policy.reset(state, batch_size, device)
 
-    print(f"Before .to(): had_position device = {state['had_position'].device}")
+    print(f"Before .to(): had_position device = {state.had_position.device}")
 
     # Simulate moving to a different device (since CUDA might not be available, we use CPU)
     # In real multiprocessing scenario, this would be moving to cuda:1 from cuda:0
@@ -121,20 +128,23 @@ def test_device_movement_simulation():
 
     # Reset again to test device update
     policy.reset(state, batch_size, torch.device("cpu"))
-    print(
-        f"After .to() and reset: had_position device = {state['had_position'].device}"
-    )
+    print(f"After .to() and reset: had_position device = {state.had_position.device}")
 
     # Test that the policy can be used without device mismatch errors
     # This simulates the scenario where position comes from state on one device
     # and had_position is a buffer that should be on the same device
-    state_tensors = {
-        "position": torch.tensor([0, 1, 0], dtype=torch.float32),
-        "had_position": torch.tensor([True, False, True], dtype=torch.bool),
-    }
+    test_state = State.create(
+        batch_size=3,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        start_date_idx=torch.tensor([0, 0, 0], dtype=torch.int32),
+        start_time_idx=torch.tensor([0, 0, 0], dtype=torch.int32),
+    )
+    test_state.position = torch.tensor([0, 1, 0], dtype=torch.int32)
+    test_state.had_position = torch.tensor([True, False, True], dtype=torch.bool)
 
     try:
-        result = policy(state_tensors)
+        result = policy(test_state)
         print(f"✓ Policy call successful! Result device: {result.device}")
     except RuntimeError as e:
         print(f"✗ Error during policy call: {e}")
