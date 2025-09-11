@@ -165,12 +165,19 @@ class InstrumentData:
             )
             return
 
+        def _start_ord(value: object) -> int:
+            """Convert a start_date value to an ordinal integer."""
+            if isinstance(value, dt.datetime):
+                return value.date().toordinal()
+            if isinstance(value, dt.date):
+                return value.toordinal()
+            if isinstance(value, str):
+                return dt.date.fromisoformat(value).toordinal()
+            raise TypeError(f"Unsupported type for start_date: {type(value).__name__}")
+
         entries = sorted(
             (
-                (
-                    dt.date.fromisoformat(e["start_date"]).toordinal(),
-                    float(e["multiplier"]),
-                )
+                (_start_ord(e["start_date"]), float(e["multiplier"]))
                 for e in rollover_data
             ),
             key=lambda x: x[0],

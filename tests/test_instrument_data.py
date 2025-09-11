@@ -91,3 +91,39 @@ def test_multiplier_backadjust(monkeypatch, tmp_path, base_instrument_config):
 
     expected = torch.tensor([[1.0, 1.0, 1.0], [1.0, 2.0, 2.0]])
     torch.testing.assert_close(data.multiplier, expected)
+
+
+def test_multiplier_backadjust_unquoted_start_date(
+    monkeypatch, tmp_path, base_instrument_config
+):
+    monkeypatch.setattr(FileManager, "refresh_file", lambda self, url: None)
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+
+    dummy = torch.zeros((1, 1, 9))
+    dummy[0, 0, 2] = dt.date(2009, 10, 1).toordinal()
+    dummy[0, 0, 3] = 0
+
+    def dummy_load(self):
+        self._data = dummy
+
+    monkeypatch.setattr(InstrumentData, "_load_data", dummy_load)
+
+    path = make_path(Source.META, "futures", "rollover", base_instrument_config.symbol)
+    content = [
+        {
+            "start_date": dt.date(2009, 10, 1),
+            "contract_code": "X09",
+            "multiplier": 2.406085968017578,
+        }
+    ]
+    with path.open("w", encoding="utf-8") as fh:
+        yaml.safe_dump(content, fh)
+
+    data = InstrumentData(
+        base_instrument_config,
+        sentinel=DataManager()._sentinel,
+        backadjust=True,
+    )
+
+    expected = torch.full((1, 1), 2.406085968017578)
+    torch.testing.assert_close(data.multiplier, expected)
