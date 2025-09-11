@@ -202,16 +202,15 @@ class MarketSimulatorIntraday:
 
         profit = position_value_delta - commission - stop_commision
 
-        # cashflow = (
-        #     (
-        #         execution_price * (close_position - open_position)
-        #         + stop_price.nan_to_num(posinf=0.0, neginf=0.0) * stop_position
-        #     )
-        #     * contract_multiplier
-        #     - commission
-        #     - stop_commision
-        # )
-        cashflow = torch.zeros_like(profit)  # Placeholder for cashflow calculation
+        cashflow = (
+            (
+                execution_price * (close_position - open_position)
+                + stop_price.nan_to_num(posinf=0.0, neginf=0.0) * stop_position
+            )
+            * contract_multiplier
+            - commission
+            - stop_commision
+        )
 
         return profit, new_position, execution_price, cashflow
 
@@ -310,13 +309,12 @@ class MarketSimulatorIntraday:
         )
         profit = position_value_delta - stop_commision
 
-        # cashflow = (
-        #     stop_price.nan_to_num(posinf=0.0, neginf=0.0)
-        #     * stop_position
-        #     * contract_multiplier
-        #     - stop_commision
-        # )
-        cashflow = torch.zeros_like(profit)  # Placeholder for cashflow calculation
+        cashflow = (
+            stop_price.nan_to_num(posinf=0.0, neginf=0.0)
+            * stop_position
+            * contract_multiplier
+            - stop_commision
+        )
 
         return profit, new_position, cashflow
 
