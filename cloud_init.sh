@@ -19,3 +19,4 @@ export S3_BUCKET="ifera-marketdata"
 
 # Ask for github token
 read -p "Enter your GitHub token: " GITHUB_TOKEN
+export GITHUB_TOKEN
