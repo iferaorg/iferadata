@@ -1,3 +1,10 @@
+"""
+Date and time utilities for financial instruments.
+
+This module provides functions for calculating futures contract expiration dates
+and related date operations based on various market-specific rules.
+"""
+
 import datetime
 from typing import Optional
 

@@ -515,6 +515,22 @@ def calculate_rollover(
     instruments: List[BaseInstrumentConfig],
     data: List[torch.Tensor],
 ) -> Tuple[torch.Tensor, torch.Tensor, list[int]]:
+    """
+    Calculate rollover multipliers for futures contracts.
+
+    Args:
+        instruments: List of instrument configurations for futures contracts
+        data: List of data tensors corresponding to each instrument
+
+    Returns:
+        Tuple containing:
+        - Combined data tensor with rollover multipliers applied
+        - Multiplier tensor showing the rollover adjustments
+        - List of indices indicating start of each instrument's data
+
+    Raises:
+        ValueError: If instruments list is empty or data is inconsistent
+    """
     if not instruments:
         raise ValueError("`instruments` may not be empty")
 

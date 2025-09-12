@@ -1,3 +1,10 @@
+"""
+GitHub API utilities for accessing remote data files.
+
+This module provides utilities for interacting with GitHub repositories to check
+file existence, retrieve last modified timestamps, and handle GitHub URLs.
+"""
+
 import datetime as dt
 from typing import Tuple
 from urllib.parse import urlparse
@@ -11,6 +18,13 @@ from .decorators import singleton, ThreadSafeCache
 
 @singleton
 class GitHubClientSingleton:
+    """
+    Singleton class for managing GitHub API client instances.
+
+    Provides centralized access to a GitHub client with optional authentication
+    based on the GITHUB_TOKEN environment variable.
+    """
+
     def __init__(self) -> None:
         token = settings.GITHUB_TOKEN
         if token:

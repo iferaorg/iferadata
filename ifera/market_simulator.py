@@ -23,34 +23,18 @@ class MarketSimulatorIntraday:
     """
     Class representing a market simulator for intraday trading.
 
-    Parameters
-    ----------
-    instrument : InstrumentData
-        Instrument data for the market simulator.
+    Args:
+        instrument_data: Instrument data for the market simulator.
+        broker_name: Name of the broker configuration to use.
 
-    Attributes
-    ----------
-    instrument : InstrumentData
-        Instrument data for the market simulator.
-    data : torch.tensor
-        Tensor containing the market data.
-    dtype : torch.dtype
-        Data type of the market data.
-    device : torch.device
-        Device on which the market data is stored.
-    channels : dict
-        Dictionary mapping channel names to their indices in the data tensor.
-    use_max_commission_mask : torch.tensor
-        Boolean tensor indicating whether to use the maximum commission percentage.
-    slippage_pct : torch.tensor
-        Slippage percentage for the market simulator.
-
-    Methods
-    -------
-    calculate_step(date_idx, time_idx, position, action, stop_loss=None)
-        Calculate the result of a trading step given the current state and an action.
-    calculate_commission(action_abs, price)
-        Calculate the commission for an action.
+    Attributes:
+        instrument: Instrument configuration for the market simulator.
+        data: Tensor containing the market data.
+        dtype: Data type of the market data.
+        device: Device on which the market data is stored.
+        channels: Dictionary mapping channel names to their indices in the data tensor.
+        use_max_commission_mask: Boolean tensor indicating whether to use the maximum commission percentage.
+        slippage_pct: Slippage percentage for the market simulator.
     """
 
     def __init__(self, instrument_data: InstrumentData, broker_name: str):
@@ -96,48 +80,31 @@ class MarketSimulatorIntraday:
         """
         Calculate the result of a trading step given the current state and an action.
 
-        Parameters
-        ----------
-        position_action : torch.IntTensor
-            Tensor containing the position and action information for each batch.
-            Has shape of (batch_size, 4) where the columns are:
+        Args:
             date_idx: Indices of the dates in the data tensor.
             time_idx: Indices of the time steps in the data tensor.
-            position:
-                Current position. Positive for long positions, negative for short positions,
+            position: Current position. Positive for long positions, negative for short positions,
                 and zero for no position.
-            action:
-                Action to take. 0 = do nothing, positive = buy, negative = sell.
+            action: Action to take. 0 = do nothing, positive = buy, negative = sell.
                 The absolute value is the number of contracts to buy or sell.
-        stop_loss : torch.Tensor, optional
-            The stop loss price level. If provided, the function will calculate the effect of
-            the stop loss order, i.e., if the price reaches this level, the position will be
-            closed to prevent further losses. The default is None.
+            stop_loss: The stop loss price level. If provided, the function will calculate the effect of
+                the stop loss order, i.e., if the price reaches this level, the position will be
+                closed to prevent further losses.
 
-        Returns
-        -------
-        profit : torch.Tensor
-            Profit from closing positions during this step.
-        new_position : torch.Tensor
-            New position after the action is taken.
-        execution_price : torch.Tensor
-            Execution price for the action.
-        cashflow : torch.Tensor
-            Cashflow from the action.
+        Returns:
+            Tuple containing:
+            - profit: Profit from closing positions during this step.
+            - new_position: New position after the action is taken.
+            - execution_price: Execution price for the action.
+            - cashflow: Cashflow from the action.
 
-        Shapes
-        ------
-        - position_action: (batch_size, 4)
-        - stop_loss: (batch_size,)
-        - profit: (batch_size,)
-        - new_position: (batch_size,)
-
-        This function calculates the profit from closing positions, the new position, and
-        the new average entry price after taking the action. The action can extend the current
-        position, shrink the current position, or switch the direction of the current position.
-        The function also takes into account the commission for the action and the slippage in
-        the execution price. If a stop loss level is provided, the function will also calculate
-        the effect of the stop loss order.
+        Note:
+            This function calculates the profit from closing positions, the new position, and
+            the new average entry price after taking the action. The action can extend the current
+            position, shrink the current position, or switch the direction of the current position.
+            The function also takes into account the commission for the action and the slippage in
+            the execution price. If a stop loss level is provided, the function will also calculate
+            the effect of the stop loss order.
         """
         mask = self.mask[date_idx, time_idx]
         data = self.data[date_idx, time_idx]
@@ -222,47 +189,29 @@ class MarketSimulatorIntraday:
         stop_loss: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Calculate the result of a trading step given the current state and an action.
+        Calculate the result of a trading step without taking any action.
 
-        Parameters
-        ----------
-        position_action : torch.IntTensor
-            Tensor containing the position and action information for each batch.
-            Has shape of (batch_size, 4) where the columns are:
+        Args:
             date_idx: Indices of the dates in the data tensor.
             time_idx: Indices of the time steps in the data tensor.
-            position:
-                Current position. Positive for long positions, negative for short positions,
+            position: Current position. Positive for long positions, negative for short positions,
                 and zero for no position.
-        stop_loss : torch.Tensor, optional
-            The stop loss price level. If provided, the function will calculate the effect of
-            the stop loss order, i.e., if the price reaches this level, the position will be
-            closed to prevent further losses. The default is None.
+            stop_loss: The stop loss price level. If provided, the function will calculate the effect of
+                the stop loss order, i.e., if the price reaches this level, the position will be
+                closed to prevent further losses.
 
-        Returns
-        -------
-        profit : torch.Tensor
-            Profit from closing positions during this step.
-        new_position : torch.Tensor
-            New position after the action is taken.
-        execution_price : torch.Tensor
-            Execution price for the action.
-        cashflow : torch.Tensor
-            Cashflow from the action.
+        Returns:
+            Tuple containing:
+            - profit: Profit from closing positions during this step.
+            - new_position: New position after the action is taken.
+            - execution_price: Execution price for the action.
 
-        Shapes
-        ------
-        - position_action: (batch_size, 4)
-        - stop_loss: (batch_size,)
-        - profit: (batch_size,)
-        - new_position: (batch_size,)
-
-        This function calculates the profit from closing positions, the new position, and
-        the new average entry price after taking the action. The action can extend the current
-        position, shrink the current position, or switch the direction of the current position.
-        The function also takes into account the commission for the action and the slippage in
-        the execution price. If a stop loss level is provided, the function will also calculate
-        the effect of the stop loss order.
+        Note:
+            This function calculates the profit from closing positions, the new position, and
+            the new average entry price without taking any trading action. The function also
+            takes into account the commission for the action and the slippage in the execution
+            price. If a stop loss level is provided, the function will also calculate the effect
+            of the stop loss order.
         """
         mask = self.mask[date_idx, time_idx]
         data = self.data[date_idx, time_idx]
@@ -324,16 +273,11 @@ class MarketSimulatorIntraday:
         """
         Calculate the commission for an action.
 
-        Parameters
-        ----------
-        action_abs : torch.Tensor
-            Absolute value of the action.
-        price : torch.Tensor
-            Price of the instrument.
+        Args:
+            action_abs: Absolute value of the action.
+            price: Price of the instrument.
 
-        Returns
-        -------
-        commission : torch.Tensor
+        Returns:
             Commission for the action.
         """
         instrument = self.instrument

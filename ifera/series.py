@@ -12,20 +12,16 @@ from einops import rearrange
 
 def sma(t: torch.Tensor, window: int) -> torch.Tensor:
     """
-    Calculate the simple moving average of a tensor. For the first window-1 elements,
-    the average is over all elements up to that position. For subsequent elements,
-    the average is over the last window elements.
+    Calculate the simple moving average of a tensor.
 
-    Parameters
-    ----------
-    t : torch.Tensor
-        Input tensor. The last dimension is the one to calculate the moving average over.
-    window : int
-        Window size.
+    For the first window-1 elements, the average is over all elements up to that
+    position. For subsequent elements, the average is over the last window elements.
 
-    Returns
-    -------
-    y : torch.Tensor
+    Args:
+        t: Input tensor. The last dimension is the one to calculate the moving average over.
+        window: Window size.
+
+    Returns:
         Output tensor with the same shape as x.
     """
     n = min(t.shape[-1], window)
@@ -47,18 +43,12 @@ def ema(
     """
     Calculate the exponential moving average of a tensor.
 
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input tensor. The last dimension is the one to calculate the moving average over.
-    alpha : float
-        Smoothing factor between 0 and 1.
-    chunk_size : Optional[int], default=None
-        If provided, process the series in chunks of this size to reduce memory usage.
+    Args:
+        x: Input tensor. The last dimension is the one to calculate the moving average over.
+        alpha: Smoothing factor between 0 and 1.
+        chunk_size: If provided, process the series in chunks of this size to reduce memory usage.
 
-    Returns
-    -------
-    y : torch.Tensor
+    Returns:
         Output tensor with the same shape as x, containing the EMA along the last dimension.
     """
     n = x.shape[-1]
@@ -81,18 +71,12 @@ def _ema_chunked(x: torch.Tensor, alpha: float, chunk_size: int) -> torch.Tensor
     """
     Helper function to compute EMA in chunks.
 
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input tensor.
-    alpha : float
-        Smoothing factor.
-    chunk_size : int
-        Size of each chunk.
+    Args:
+        x: Input tensor.
+        alpha: Smoothing factor.
+        chunk_size: Size of each chunk.
 
-    Returns
-    -------
-    y : torch.Tensor
+    Returns:
         Output tensor with EMA computed in chunks.
     """
     chunks = torch.split(x, chunk_size, dim=-1)
@@ -131,16 +115,11 @@ def ema_slow(x: torch.Tensor, alpha: float):
     """
     Calculate the exponential moving average of a tensor.
 
-    Parameters
-    ----------
-    x : torch.Tensor
-        Input tensor. The last dimension is the one to calculate the moving average over.
-    alpha : float
-        Smoothing factor between 0 and 1.
+    Args:
+        x: Input tensor. The last dimension is the one to calculate the moving average over.
+        alpha: Smoothing factor between 0 and 1.
 
-    Returns
-    -------
-    y : torch.Tensor
+    Returns:
         Output tensor with the same shape as x, containing the EMA along the last dimension.
     """
     y = torch.zeros_like(x)
@@ -154,17 +133,12 @@ def ffill(t: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
     """
     Forward fill missing values in a tensor along the last dimension.
 
-    Parameters
-    ----------
-    t : torch.Tensor
-        Input tensor.
-    mask : Optional[torch.Tensor]
-        Boolean mask tensor indicating valid (non-missing) values.
-        If None, defaults to ~torch.isnan(t).
+    Args:
+        t: Input tensor.
+        mask: Boolean mask tensor indicating valid (non-missing) values.
+            If None, defaults to ~torch.isnan(t).
 
-    Returns
-    -------
-    t_ffilled : torch.Tensor
+    Returns:
         Output tensor with missing values forward filled.
     """
     indices = torch.arange(t.size(-1), device=t.device, dtype=torch.int64).expand_as(t)
@@ -178,19 +152,16 @@ def ffill(t: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
 def rtr(t: torch.Tensor) -> torch.Tensor:
     """
     Calculate the relative true range of a tensor along the second to last dimension.
+
     Definition: RTR = MAX(high, prev_close) / MIN(low, prev_close) - 1
-        high / low - 1 for the first element.
+    high / low - 1 for the first element.
 
-    Parameters
-    ----------
-    t : torch.Tensor
-        Input tensor.
-        Last dimension is channels: [open, high, low, close, volume].
-        Second to last dimension is the time dimension. Shape: (..., time, channels).
+    Args:
+        t: Input tensor.
+            Last dimension is channels: [open, high, low, close, volume].
+            Second to last dimension is the time dimension. Shape: (..., time, channels).
 
-    Returns
-    -------
-    rtr_t : torch.Tensor
+    Returns:
         Output tensor with shape (..., time). NaN values in input
         will result in NaN values in output.
     """
@@ -221,25 +192,19 @@ def artr(
 ) -> torch.Tensor:
     """
     Calculate the average relative true range of a tensor along the second to last dimension.
+
     Definition: ARTR = EMA(RTR, alpha).
 
-    Parameters
-    ----------
-    t : torch.Tensor
-        Input tensor. Shape: (..., date, time, channels).
-        Last dimension is channels: [open, high, low, close, volume].
-    alpha : float
-        Smoothing factor for the EMA.
-    acrossday : bool, default=False
-        If True, calculate ARTR across days, i.e. calculate on a continuous date+time series
-        without resetting at the start of each day.
-        If False, calculate ARTR for each date separately.
-    chunk_size : Optional[int], default=None
-        If provided, calculate the EMA in chunks of this size to reduce memory usage.
+    Args:
+        t: Input tensor. Shape: (..., date, time, channels).
+            Last dimension is channels: [open, high, low, close, volume].
+        alpha: Smoothing factor for the EMA.
+        acrossday: If True, calculate ARTR across days, i.e. calculate on a continuous
+            date+time series without resetting at the start of each day.
+            If False, calculate ARTR for each date separately.
+        chunk_size: If provided, calculate the EMA in chunks of this size to reduce memory usage.
 
-    Returns
-    -------
-    artr_t : torch.Tensor
+    Returns:
         Output tensor with shape (..., date, time). Contains NaN for invalid values.
     """
     # Calculate RTR

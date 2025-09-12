@@ -1,3 +1,13 @@
+"""
+File management utilities for financial data storage and retrieval.
+
+This module provides comprehensive file management capabilities including:
+- Pattern-based file URL generation and matching
+- Dependency graph management for file dependencies
+- File refresh and validation utilities
+- Support for multiple storage backends (local files, S3, GitHub)
+"""
+
 import datetime
 import importlib
 import os
@@ -288,12 +298,23 @@ def import_function(func_str: str) -> Callable:
 
 
 class RuleType(Enum):
+    """Enumeration of file management rule types."""
+
     DEPENDENCY = "dependency"
     REFRESH = "refresh"
 
 
 @singleton
 class FileManager:
+    """
+    Manages file dependencies and refresh operations for financial data files.
+
+    This singleton class handles:
+    - Building and maintaining dependency graphs for files
+    - Coordinating file refresh operations based on dependencies
+    - Managing temporary files and cleanup operations
+    - Supporting multiple storage backends
+    """
 
     def __init__(self, config_file: str = "dependencies.yml"):
         """Initialize with a list of dependency rules."""
@@ -356,6 +377,16 @@ class FileManager:
         rule_type: RuleType,
         ctx: Optional[FileManagerContext] = None,
     ) -> None:
+        """
+        Add dependencies to the specified graph.
+
+        Args:
+            parent_node: The parent node in the dependency graph
+            dependencies: List of dependency strings or dictionaries
+            wildcards: Dictionary of wildcard substitutions
+            rule_type: Type of rule (DEPENDENCY or REFRESH)
+            ctx: Optional file manager context for temporary files
+        """
         graph = self.get_graph(rule_type)
         ctx = ctx or self.persistent_context or FileManagerContext()
 

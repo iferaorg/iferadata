@@ -1,3 +1,11 @@
+"""
+Decorators for thread-safe caching and singleton pattern implementation.
+
+This module provides decorators for implementing common design patterns:
+- singleton: Ensures only one instance of a class is created
+- ThreadSafeCache: Thread-safe caching for improved performance in multi-threaded environments
+"""
+
 import threading
 import functools
 import inspect
@@ -213,12 +221,19 @@ class ThreadSafeCache(Generic[T, P, R]):
 
     # Utility function to clear the cache
     def cache_clear(self) -> None:
+        """Clear all cached results and associated locks."""
         with self.global_rwlock.gen_wlock():
             self.cache.clear()
             self.lock_dict.clear()
 
-    # Utility function to remove a specific key
     def cache_remove(self, *args, **kwargs) -> None:
+        """
+        Remove a specific cached result by key.
+
+        Args:
+            *args: Positional arguments used to create the cache key
+            **kwargs: Keyword arguments used to create the cache key
+        """
         key = self._create_normalized_key(args, kwargs)
 
         with self.global_rwlock.gen_wlock():
