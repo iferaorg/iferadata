@@ -127,3 +127,63 @@ def test_multiplier_backadjust_unquoted_start_date(
 
     expected = torch.full((1, 1), 2.406085968017578)
     torch.testing.assert_close(data.multiplier, expected)
+
+
+def test_copy_to(monkeypatch, base_instrument_config, ohlcv_single_date):
+    dummy_data = torch.cat(
+        [torch.zeros(ohlcv_single_date.shape[:-1] + (4,)), ohlcv_single_date],
+        dim=-1,
+    )
+
+    def dummy_load(self):
+        self._data = dummy_data
+
+    monkeypatch.setattr(InstrumentData, "_load_data", dummy_load)
+
+    # Create original data on CPU
+    original_data = InstrumentData(
+        base_instrument_config,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        sentinel=DataManager()._sentinel,
+    )
+
+    # Test copy_to same device (should get cached instance but still work)
+    copied_same = original_data.copy_to(torch.device("cpu"))
+    assert copied_same.device == torch.device("cpu")
+    assert copied_same.dtype == torch.float32
+    assert copied_same.instrument == original_data.instrument
+    assert copied_same.backadjust == original_data.backadjust
+
+    # Verify no ARTR data initially
+    assert original_data.artr.numel() == 0
+    assert copied_same.artr.numel() == 0
+
+    # Calculate ARTR on original
+    original_data.calculate_artr(alpha=0.3, acrossday=True)
+    assert original_data.artr.numel() > 0
+    assert original_data.artr_alpha == 0.3
+    assert original_data.artr_acrossday is True
+
+    # Copy to another device after ARTR calculation
+    if torch.cuda.is_available():
+        target_device = torch.device("cuda")
+    else:
+        # If CUDA not available, use CPU again to test the logic
+        target_device = torch.device("cpu")
+
+    copied_with_artr = original_data.copy_to(target_device)
+
+    # Verify the copy has the same configuration
+    assert copied_with_artr.device == target_device
+    assert copied_with_artr.dtype == torch.float32
+    assert copied_with_artr.instrument == original_data.instrument
+    assert copied_with_artr.backadjust == original_data.backadjust
+
+    # Verify ARTR was also calculated on the copy
+    assert copied_with_artr.artr.numel() > 0
+    assert copied_with_artr.artr_alpha == 0.3
+    assert copied_with_artr.artr_acrossday is True
+
+    # Verify ARTR data is equivalent (accounting for device differences)
+    torch.testing.assert_close(copied_with_artr.artr.cpu(), original_data.artr.cpu())
