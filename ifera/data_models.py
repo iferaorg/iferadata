@@ -346,6 +346,40 @@ class InstrumentData:
 
         return self.get_prev_indices(next_date_idx, next_time_idx // tr)
 
+    def copy_to(self, device: torch.device) -> "InstrumentData":
+        """
+        Create a copy of this InstrumentData on the specified device.
+
+        This method uses DataManager to ensure proper caching and recreates
+        the InstrumentData with the same configuration but on a different device.
+        If ARTR has been calculated on this instance, it will also be calculated
+        on the new instance with the same parameters.
+
+        Parameters
+        ----------
+        device : torch.device
+            The target device for the new InstrumentData instance
+
+        Returns
+        -------
+        InstrumentData
+            A new InstrumentData instance on the specified device
+        """
+        # Get a new instance through DataManager for proper caching
+        data_manager = DataManager()
+        new_instance = data_manager.get_instrument_data(
+            instrument_config=self.instrument,
+            dtype=self.dtype,
+            device=device,
+            backadjust=self.backadjust,
+        )
+
+        # If ARTR has been calculated on this instance, calculate it on the new one too
+        if self._artr_data.numel() > 0:
+            new_instance.calculate_artr(alpha=self._alpha, acrossday=self._acrossday)
+
+        return new_instance
+
 
 @singleton
 class DataManager:
