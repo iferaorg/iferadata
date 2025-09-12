@@ -1,3 +1,10 @@
+"""
+Enumeration definitions for ifera financial data processing.
+
+This module defines enumerations used throughout the ifera package to standardize
+data sources, storage schemes, and futures contract expiration rules.
+"""
+
 from enum import Enum
 
 
