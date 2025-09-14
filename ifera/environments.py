@@ -130,6 +130,7 @@ class SingleMarketEnv:
                 "total_profit": self._zero,
                 "total_profit_percent": self._zero,
                 "entry_cost": self._zero,
+                "had_position": self._zero_int.to(torch.bool),
                 "prev_stop_loss": torch.full(
                     (batch_size,), float("nan"), dtype=self.dtype, device=self.device
                 ),
@@ -229,6 +230,9 @@ class SingleMarketEnv:
         )
 
         result.update(policy_result)
+        
+        # Ensure had_position is correctly set based on environment logic
+        result["had_position"] = had_position
 
         return result
 
