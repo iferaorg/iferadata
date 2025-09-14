@@ -492,31 +492,31 @@ def test_entry_price_weighted_average_add_to_position(
     assert step_state["entry_price"].item() == pytest.approx(10.0)
 
     # Update state for next step - manually copy all relevant fields
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.opened = step_state.opened
-    state.maint_stage = step_state.maint_stage
-    state.base_price = step_state.base_price
-    state.entry_date_idx = step_state.entry_date_idx
-    state.entry_time_idx = step_state.entry_time_idx
-    state.maint_anchor = step_state.maint_anchor
-    state.prev_stop = step_state.prev_stop
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    if "opened" in step_state: state["opened"] = step_state["opened"]
+    if "maint_stage" in step_state: state["maint_stage"] = step_state["maint_stage"]
+    if "base_price" in step_state: state["base_price"] = step_state["base_price"]
+    if "entry_date_idx" in step_state: state["entry_date_idx"] = step_state["entry_date_idx"]
+    if "entry_time_idx" in step_state: state["entry_time_idx"] = step_state["entry_time_idx"]
+    if "maint_anchor" in step_state: state["maint_anchor"] = step_state["maint_anchor"]
+    if "prev_stop" in step_state: state["prev_stop"] = step_state["prev_stop"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
     # Second step: Add 3 contracts at 12.0
     # Expected weighted average: (10.0 * 2 + 12.0 * 3) / (2 + 3) = (20 + 36) / 5 = 11.2
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 5
+    assert step_state["position"].item() == 5
     expected_avg_price = (10.0 * 2 + 12.0 * 3) / (2 + 3)
-    assert step_state.entry_price.item() == pytest.approx(expected_avg_price)
+    assert step_state["entry_price"].item() == pytest.approx(expected_avg_price)
 
 
 def test_entry_price_weighted_average_add_to_short_position(
@@ -598,35 +598,35 @@ def test_entry_price_weighted_average_add_to_short_position(
 
     # First step: Enter short position of 2 contracts at 15.0
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == -2
-    assert step_state.entry_price.item() == pytest.approx(15.0)
+    assert step_state["position"].item() == -2
+    assert step_state["entry_price"].item() == pytest.approx(15.0)
 
     # Update state for next step - manually copy all relevant fields
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.opened = step_state.opened
-    state.maint_stage = step_state.maint_stage
-    state.base_price = step_state.base_price
-    state.entry_date_idx = step_state.entry_date_idx
-    state.entry_time_idx = step_state.entry_time_idx
-    state.maint_anchor = step_state.maint_anchor
-    state.prev_stop = step_state.prev_stop
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    if "opened" in step_state: state["opened"] = step_state["opened"]
+    if "maint_stage" in step_state: state["maint_stage"] = step_state["maint_stage"]
+    if "base_price" in step_state: state["base_price"] = step_state["base_price"]
+    if "entry_date_idx" in step_state: state["entry_date_idx"] = step_state["entry_date_idx"]
+    if "entry_time_idx" in step_state: state["entry_time_idx"] = step_state["entry_time_idx"]
+    if "maint_anchor" in step_state: state["maint_anchor"] = step_state["maint_anchor"]
+    if "prev_stop" in step_state: state["prev_stop"] = step_state["prev_stop"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
     # Second step: Add 3 short contracts at 18.0
     # Expected weighted average: (15.0 * 2 + 18.0 * 3) / (2 + 3) = (30 + 54) / 5 = 16.8
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == -5
+    assert step_state["position"].item() == -5
     expected_avg_price = (15.0 * 2 + 18.0 * 3) / (2 + 3)
-    assert step_state.entry_price.item() == pytest.approx(expected_avg_price)
+    assert step_state["entry_price"].item() == pytest.approx(expected_avg_price)
 
 
 def test_entry_price_no_weighted_average_opposite_signs(
@@ -708,33 +708,33 @@ def test_entry_price_no_weighted_average_opposite_signs(
 
     # First step: Enter position of 3 contracts at 10.0
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 3
-    assert step_state.entry_price.item() == pytest.approx(10.0)
+    assert step_state["position"].item() == 3
+    assert step_state["entry_price"].item() == pytest.approx(10.0)
 
     # Update state for next step - manually copy all relevant fields
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.opened = step_state.opened
-    state.maint_stage = step_state.maint_stage
-    state.base_price = step_state.base_price
-    state.entry_date_idx = step_state.entry_date_idx
-    state.entry_time_idx = step_state.entry_time_idx
-    state.maint_anchor = step_state.maint_anchor
-    state.prev_stop = step_state.prev_stop
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    if "opened" in step_state: state["opened"] = step_state["opened"]
+    if "maint_stage" in step_state: state["maint_stage"] = step_state["maint_stage"]
+    if "base_price" in step_state: state["base_price"] = step_state["base_price"]
+    if "entry_date_idx" in step_state: state["entry_date_idx"] = step_state["entry_date_idx"]
+    if "entry_time_idx" in step_state: state["entry_time_idx"] = step_state["entry_time_idx"]
+    if "maint_anchor" in step_state: state["maint_anchor"] = step_state["maint_anchor"]
+    if "prev_stop" in step_state: state["prev_stop"] = step_state["prev_stop"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
     # Second step: Sell 1 contract at 12.0 (reducing position, not adding)
     # Entry price should remain unchanged at 10.0 since we're not adding to position
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 2
-    assert step_state.entry_price.item() == pytest.approx(
+    assert step_state["position"].item() == 2
+    assert step_state["entry_price"].item() == pytest.approx(
         10.0
     )  # Should remain unchanged
