@@ -30,6 +30,7 @@ from .decorators import ThreadSafeCache
 from .date_utils import calculate_expiration
 
 __all__ = [
+    "BaseInstrumentConfig",
     "InstrumentConfig",
     "ConfigManager",
     "BrokerConfig",
@@ -56,7 +57,6 @@ __all__ = [
     "ArtrStopLossPolicy",
     "InitialArtrStopLossPolicy",
     "ScaledArtrMaintenancePolicy",
-    "TradingDonePolicy",
     "AlwaysFalseDonePolicy",
     "SingleTradeDonePolicy",
     "SingleMarketEnv",

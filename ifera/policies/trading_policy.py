@@ -8,54 +8,42 @@ from typing import Optional, Tuple
 
 import torch
 from torch import nn
+import tensordict as td
 
 from ..data_models import InstrumentData
 from ..torch_utils import get_devices, get_module_device
-from ..state import State
-from .open_position_policy import OpenPositionPolicy
-from .stop_loss_policy import StopLossPolicy
-from .position_maintenance_policy import PositionMaintenancePolicy
-from .trading_done_policy import TradingDonePolicy
+from .policy_base import PolicyBase
 
 
-class BaseTradingPolicy(nn.Module, ABC):
-    """Abstract base class for trading policies."""
-
-    def __init__(self) -> None:
-        super().__init__()
-
-    @abstractmethod
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
-        """Reset the policy to its initial state."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def forward(
-        self,
-        state: State,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return action, stop loss and done tensors."""
-        raise NotImplementedError
-
-
-class TradingPolicy(BaseTradingPolicy):
+class TradingPolicy(PolicyBase):
     """Composite trading policy coordinating multiple sub-policies."""
 
     def __init__(
         self,
         instrument_data: InstrumentData,
-        open_position_policy: OpenPositionPolicy,
-        initial_stop_loss_policy: StopLossPolicy,
-        position_maintenance_policy: PositionMaintenancePolicy,
-        trading_done_policy: TradingDonePolicy,
+        open_position_policy: PolicyBase,
+        initial_stop_loss_policy: PolicyBase,
+        position_maintenance_policy: PolicyBase,
+        trading_done_policy: PolicyBase,
     ) -> None:
         super().__init__()
+        self.instrument_data = instrument_data
         self.open_position_policy = open_position_policy
         self.initial_stop_loss_policy = initial_stop_loss_policy
         self.position_maintenance_policy = position_maintenance_policy
         self.trading_done_policy = trading_done_policy
         self._last_date_idx = instrument_data.data.shape[0] - 1
         self._last_time_idx = instrument_data.data.shape[1] - 1
+
+    def copy_to(self, device: torch.device) -> TradingPolicy:
+        """Return a copy of the policy on the specified device."""
+        return TradingPolicy(
+            self.instrument_data.copy_to(device),
+            self.open_position_policy.copy_to(device),
+            self.initial_stop_loss_policy.copy_to(device),
+            self.position_maintenance_policy.copy_to(device),
+            self.trading_done_policy.copy_to(device),
+        )
 
     def clone(self, device: torch.device | str) -> "TradingPolicy":
         """Return a deep copy of the policy moved to ``device``.
@@ -67,42 +55,67 @@ class TradingPolicy(BaseTradingPolicy):
         cloned_policy.to(device)
         return cloned_policy
 
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
+    def reset(self, state: td.TensorDict) -> td.TensorDict:
         """Reset all sub-policies to their initial state."""
-        self.open_position_policy.reset(state, batch_size, device)
-        self.initial_stop_loss_policy.reset(state, batch_size, device)
-        self.position_maintenance_policy.reset(state, batch_size, device)
-        self.trading_done_policy.reset(state, batch_size, device)
+        td_out = td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+        td_out.update(self.open_position_policy.reset(state))
+        td_out.update(self.initial_stop_loss_policy.reset(state))   
+        td_out.update(self.position_maintenance_policy.reset(state))
+        td_out.update(self.trading_done_policy.reset(state))
+        
+        return td_out
+
+    def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
+        """Reset all sub-policies where mask is True."""
+        td_out = td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+        td_out.update(self.open_position_policy.masked_reset(state, mask))
+        td_out.update(self.initial_stop_loss_policy.masked_reset(state, mask))
+        td_out.update(self.position_maintenance_policy.masked_reset(state, mask))
+        td_out.update(self.trading_done_policy.masked_reset(state, mask))
+        
+        return td_out
 
     def forward(
         self,
-        state: State,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        date_idx = state.date_idx
-        time_idx = state.time_idx
-        position = state.position
+        state: td.TensorDict,
+    ) -> td.TensorDict:
+        date_idx = state["date_idx"]
+        time_idx = state["time_idx"]
+        position = state["position"]
 
-        done = state.done | self.trading_done_policy(state)
+        state_out = td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+        state_in = state.copy()
+
+        result = self.trading_done_policy(state_in)
         last_bar_mask = (date_idx == self._last_date_idx) & (
             time_idx == self._last_time_idx
         )
-        done = done | last_bar_mask
+        done = state_in["done"] | result["done"] | last_bar_mask
+        result["done"] = done
+        state_out.update(result)
+        state_in.update(result)
 
-        no_position_mask = (position == 0) & ~done
-        has_position_mask = (position != 0) & ~done
+        state_in["no_position_mask"] = (position == 0) & ~done
+        state_in["has_position_mask"] = (position != 0) & ~done
 
-        action = self.open_position_policy(state, no_position_mask)
+        result = self.open_position_policy(state_in)
+        state_out.update(result)
+        state_in.update(result)
 
-        opening_position_mask = action != 0
+        opening_position_mask = result["action"] != 0
 
-        stop_loss = self.initial_stop_loss_policy(state, action)
-        self.position_maintenance_policy.masked_reset(state, opening_position_mask)
+        result = self.initial_stop_loss_policy(state_in)
+        state_out.update(result)
+        state_in.update(result)
 
-        maintenance_actions, maintenance_stops = self.position_maintenance_policy(state)
-        action = torch.where(has_position_mask, maintenance_actions, action)
-        stop_loss = torch.where(has_position_mask, maintenance_stops, stop_loss)
+        result = self.position_maintenance_policy.masked_reset(state_in, opening_position_mask)
+        state_out.update(result)
+        state_in.update(result)
 
-        return action, stop_loss, done
+        result = (self.position_maintenance_policy(state_in))
+        state_out.update(result)
+
+        return state_out
 
 
 def clone_trading_policy_for_devices(

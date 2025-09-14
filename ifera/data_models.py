@@ -241,7 +241,11 @@ class InstrumentData:
         self._alpha = alpha
         self._acrossday = acrossday
         mask = self.valid_mask
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        device = (
+            self.device
+            if self.device.type == "cuda"
+            else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
         artr_data = masked_artr(
             self.data.to(device),
             mask.to(device),
@@ -375,7 +379,7 @@ class InstrumentData:
         )
 
         # If ARTR has been calculated on this instance, calculate it on the new one too
-        if self._artr_data.numel() > 0:
+        if self._artr_data.numel() > 0 and new_instance._artr_data.numel() == 0:
             new_instance.calculate_artr(alpha=self._alpha, acrossday=self._acrossday)
 
         return new_instance
