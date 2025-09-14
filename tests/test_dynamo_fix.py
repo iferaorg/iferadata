@@ -2,7 +2,7 @@
 
 import torch
 import pytest
-from ifera.state import State
+import tensordict as td
 from ifera.policies.open_position_policy import OpenOncePolicy
 from ifera.policies.trading_done_policy import SingleTradeDonePolicy
 
@@ -13,27 +13,26 @@ def test_torch_dynamo_compilation_with_state():
     # Create a simple compiled function that uses policies with state mutation
     @torch.compile
     def test_policy_mutation(state, policy):
-        no_position_mask = torch.tensor([True, True])
-        action = policy.forward(state, no_position_mask)
+        action = policy.forward(state)
         return action
 
     # Test OpenOncePolicy which mutates state.opened
-    state = State.create(
-        batch_size=2,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        start_date_idx=torch.tensor([0, 1]),
-        start_time_idx=torch.tensor([0, 0]),
-    )
+    state = td.TensorDict({
+        "date_idx": torch.tensor([0, 1]),
+        "time_idx": torch.tensor([0, 0]),
+        "no_position_mask": torch.tensor([True, True]),
+        "opened": torch.tensor([False, False], dtype=torch.bool),
+    }, batch_size=2, device=torch.device("cpu"))
 
     policy = OpenOncePolicy(direction=1, device=torch.device("cpu"))
-    policy.reset(state, 2, torch.device("cpu"))
+    policy.reset(state)
 
     # This should work without Dynamo graph break
     try:
-        action = test_policy_mutation(state, policy)
-        assert action.shape == (2,)
-        assert state.opened.all()  # Should be set to True after mutation
+        result = test_policy_mutation(state, policy)
+        assert result["action"].shape == (2,)
+        # The opened state should be in the result, not mutated in the original state
+        assert result["opened"].all()  # Should be set to True after mutation
         print("✓ OpenOncePolicy compilation test passed!")
     except Exception as e:
         pytest.fail(f"OpenOncePolicy compilation failed: {e}")
@@ -43,28 +42,25 @@ def test_torch_dynamo_compilation_with_state():
     def test_done_policy_mutation(state, policy):
         return policy.forward(state)
 
-    state2 = State.create(
-        batch_size=2,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        start_date_idx=torch.tensor([0, 1]),
-        start_time_idx=torch.tensor([0, 0]),
-    )
-    state2.position = torch.tensor(
-        [0, 1], dtype=torch.int32
-    )  # One position, one no position
+    state2 = td.TensorDict({
+        "date_idx": torch.tensor([0, 1]),
+        "time_idx": torch.tensor([0, 0]),
+        "position": torch.tensor([0, 1], dtype=torch.int32),  # One position, one no position
+        "had_position": torch.tensor([True, False], dtype=torch.bool),
+        "done": torch.tensor([False, False], dtype=torch.bool),  # Missing done field
+    }, batch_size=2, device=torch.device("cpu"))
 
     done_policy = SingleTradeDonePolicy(device=torch.device("cpu"))
-    done_policy.reset(state2, 2, torch.device("cpu"))
+    done_policy.reset(state2)
 
     # Set had_position after reset (reset sets it to False)
-    state2.had_position = torch.tensor([True, False])  # One had position
+    state2["had_position"] = torch.tensor([True, False])  # One had position
 
     try:
         done = test_done_policy_mutation(state2, done_policy)
-        assert done.shape == (2,)
-        assert done[0].item() is True  # position=0 and had_position=True -> done
-        assert done[1].item() is False  # position=1 and had_position=False -> not done
+        assert done["done"].shape == (2,)
+        assert done["done"][0].item() is True  # position=0 and had_position=True -> done
+        assert done["done"][1].item() is False  # position=1 and had_position=False -> not done
         print("✓ SingleTradeDonePolicy compilation test passed!")
     except Exception as e:
         pytest.fail(f"SingleTradeDonePolicy compilation failed: {e}")
