@@ -323,6 +323,7 @@ from einops import rearrange, repeat
 from torch.profiler import schedule, profile, record_function, ProfilerActivity
 
 if __name__ == "__main__":
+    torch.compiler.reset()
     cm = ifera.ConfigManager()
     broker = cm.get_broker_config("IBKR")
 
@@ -355,37 +356,41 @@ if __name__ == "__main__":
     time_n = base_env.instrument_data.data.shape[1]
 
     batch_size = date_n * time_n
+    
+    # Create policies on CPU, they will be pickled and sent to the appropriate device during rollout
+    base_device = torch.device("cpu")
+    instrument_data = base_env.instrument_data.copy_to(device=base_device)
 
     date_idx = torch.arange(0, date_n, dtype=torch.int32)
     time_idx = torch.arange(0, time_n, dtype=torch.int32)
     date_idx = repeat(date_idx, "d -> (d t)", t=time_n)
     time_idx = repeat(time_idx, "t -> (d t)", d=date_n)
 
-    open_policy = ifera.OpenOncePolicy(direction=1, device=base_env.device)
+    open_policy = ifera.OpenOncePolicy(direction=1, device=base_device)
     init_stop_policy = ifera.InitialArtrStopLossPolicy(
-        instrument_data=base_env.instrument_data,
+        instrument_data,
         atr_multiple=3.0,
     )
     maintenance_policy = ifera.ScaledArtrMaintenancePolicy(
-        instrument_data=base_env.instrument_data,
+        instrument_data=instrument_data,
         stages=["1m", "5m", "15m", "1h", "4h", "1d"],
         atr_multiple=3.0,
         wait_for_breakeven=True,
         minimum_improvement=0.0,
     )
 
-    done_policy = ifera.SingleTradeDonePolicy(device=base_env.device)
+    done_policy = ifera.SingleTradeDonePolicy(device=base_device)
 
     base_policy = ifera.TradingPolicy(
-        instrument_data=base_env.instrument_data,
+        instrument_data=instrument_data,
         open_position_policy=open_policy,
         initial_stop_loss_policy=init_stop_policy,
         position_maintenance_policy=maintenance_policy,
         trading_done_policy=done_policy,
     )
 
-    date_idx = date_idx.to(base_env.device)
-    time_idx = time_idx.to(base_env.device)
+    date_idx = date_idx.to(base_device)
+    time_idx = time_idx.to(base_device)
 
     # my_schedule = schedule(
     #     wait=1,  # Skip 1 iteration (warm-up)
@@ -429,7 +434,7 @@ if __name__ == "__main__":
     print("Starting main rollout...")
     t = time.time()
     total_profit, total_profit_percent, _, _, steps = env.rollout(
-        base_policy, date_idx, time_idx, max_steps=100000, single_entry=True
+        base_policy, date_idx, time_idx, max_steps=10, single_entry=True
     )
 
     # total_profit, _, _ = env.rollout_with_display(

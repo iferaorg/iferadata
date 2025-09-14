@@ -6,33 +6,13 @@ from abc import ABC, abstractmethod
 
 import torch
 from torch import nn
+import tensordict as td
 
 from ..data_models import InstrumentData
-from ..state import State
+from .policy_base import PolicyBase
 
 
-class StopLossPolicy(nn.Module, ABC):
-    """Abstract base class for stop loss policies."""
-
-    def __init__(self) -> None:
-        super().__init__()
-
-    @abstractmethod
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
-        """Reset policy state."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def forward(
-        self,
-        state: State,
-        action: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return stop loss levels."""
-        raise NotImplementedError
-
-
-class ArtrStopLossPolicy(StopLossPolicy):
+class ArtrStopLossPolicy(PolicyBase):
     """ATR-based stop loss policy."""
 
     def __init__(
@@ -43,18 +23,32 @@ class ArtrStopLossPolicy(StopLossPolicy):
         acrossday: bool = True,
     ) -> None:
         super().__init__()
+        self.instrument_data = instrument_data
         self.atr_multiple = atr_multiple
-        if len(instrument_data.artr) == 0:
-            instrument_data.calculate_artr(alpha=alpha, acrossday=acrossday)
+        self.alpha = alpha
+        self.acrossday = acrossday
+
         self._data: torch.Tensor
         self.register_buffer("_data", instrument_data.data)
         self._artr: torch.Tensor
-        self.register_buffer("_artr", instrument_data.artr)
+        self.register_buffer(
+            "_artr", torch.tensor((), device=self._data.device, dtype=self._data.dtype)
+        )
 
         # Pre-calculate potential stops for all combinations
         self._cached_potential_stops: torch.Tensor
         self.register_buffer(
-            "_cached_potential_stops", self._precompute_potential_stops()
+            "_cached_potential_stops",
+            torch.tensor((), device=self._data.device, dtype=self._data.dtype),
+        )
+
+    def copy_to(self, device: torch.device) -> ArtrStopLossPolicy:
+        """Return a copy of the policy on the specified device."""
+        return ArtrStopLossPolicy(
+            self.instrument_data.copy_to(device),
+            self.atr_multiple,
+            self.alpha,
+            self.acrossday,
         )
 
     def _precompute_potential_stops(self) -> torch.Tensor:
@@ -99,19 +93,42 @@ class ArtrStopLossPolicy(StopLossPolicy):
 
         return potential_stops
 
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
+    def reset(self, state: td.TensorDict) -> td.TensorDict:
         """ArtrStopLossPolicy does not maintain state."""
-        return None
+        instrument_data = self.instrument_data
+
+        if (
+            len(instrument_data.artr) == 0
+            or instrument_data.artr_alpha != self.alpha
+            or instrument_data.artr_acrossday != self.acrossday
+        ):
+            instrument_data.calculate_artr(alpha=self.alpha, acrossday=self.acrossday)
+
+        self._artr = instrument_data.artr
+
+        if (
+            self._cached_potential_stops.numel() == 0
+            or self._cached_potential_stops.shape[0] != self._artr.shape[0]
+            or self._cached_potential_stops.shape[1] != self._artr.shape[1]
+        ):
+            self._cached_potential_stops = self._precompute_potential_stops()
+
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+
+    def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
+        """ArtrStopLossPolicy does not maintain state."""
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     def forward(
         self,
-        state: State,
-        action: torch.Tensor,
-    ) -> torch.Tensor:
-        date_idx = state.date_idx
-        time_idx = state.time_idx
-        position = state.position
-        prev_stop = state.prev_stop_loss
+        state: td.TensorDict,
+    ) -> td.TensorDict:
+        """Calculate stop loss levels based on ATR."""
+        date_idx = state["date_idx"]
+        time_idx = state["time_idx"]
+        position = state["position"]
+        prev_stop = state["prev_stop_loss"]
+        action = state["action"]
 
         direction = (position + action).sign()
 
@@ -139,23 +156,48 @@ class ArtrStopLossPolicy(StopLossPolicy):
             torch.isnan(stop_price) | (direction == 0), prev_stop, stop_price
         )
 
-        return stop_price
+        td_out = td.TensorDict(
+            {"stop_loss": stop_price},
+            batch_size=state.batch_size,
+            device=state.device,
+        )
+
+        return td_out
 
 
-class InitialArtrStopLossPolicy(StopLossPolicy):
+class InitialArtrStopLossPolicy(PolicyBase):
     """Stop loss policy for setting initial stops using ATR."""
 
     def __init__(self, instrument_data: InstrumentData, atr_multiple: float) -> None:
         super().__init__()
+        self.instrument_data = instrument_data
+        self.atr_multiple = atr_multiple
         self.artr_policy = ArtrStopLossPolicy(instrument_data, atr_multiple)
 
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
+    def copy_to(self, device: torch.device) -> InitialArtrStopLossPolicy:
+        """Return a copy of the policy on the specified device."""
+        return InitialArtrStopLossPolicy(
+            self.instrument_data.copy_to(device),
+            self.atr_multiple,
+        )
+
+    def reset(self, state: td.TensorDict) -> td.TensorDict:
         """InitialArtrStopLossPolicy holds no state to reset."""
-        _ = state
+        return self.artr_policy.reset(state)
+
+    def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
+        """InitialArtrStopLossPolicy holds no state to reset."""
+        return self.artr_policy.masked_reset(state, mask)
 
     def forward(
         self,
-        state: State,
-        action: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.artr_policy(state, action)
+        state: td.TensorDict,
+    ) -> td.TensorDict:
+        """Calculate initial stop loss levels based on ATR."""
+        no_position_mask = state["no_position_mask"]
+        td_out = self.artr_policy(state)
+        td_out["stop_loss"] = torch.where(
+            no_position_mask, torch.nan, td_out["stop_loss"]
+        )
+
+        return td_out
