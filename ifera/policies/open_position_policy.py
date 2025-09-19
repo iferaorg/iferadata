@@ -66,38 +66,23 @@ class OpenOncePolicy(PolicyBase):
 
     def reset(self, state: td.TensorDict) -> td.TensorDict:
         """Reset ``opened`` state to ``False`` for all batches."""
-        td_out = td.TensorDict(
-            {
-                "opened": torch.zeros(
-                    state.batch_size, dtype=torch.bool, device=state.device
-                )
-            },
-            batch_size=state.batch_size,
-            device=state.device,
-        )
-
-        return td_out
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
         """Reset ``opened`` state to ``False`` where mask is True."""
-        td_out = td.TensorDict(
-            {
-                "opened": torch.where(mask, False, state["opened"]),
-            },
-            batch_size=state.batch_size,
-            device=state.device,
-        )
-
-        return td_out
+        _ = mask
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     def forward(self, state: td.TensorDict) -> td.TensorDict:
         """Return the direction for all batches that can open a position."""
-        opened = state["opened"]
+        had_position = state["had_position"]
         no_position_mask = state["no_position_mask"]
-        open_mask = no_position_mask & ~opened
+        open_mask = no_position_mask & ~had_position
 
         td_out = td.TensorDict(
-            {"action": open_mask * self.direction, "opened": opened | open_mask},
+            {
+                "action": open_mask * self.direction
+            },
             batch_size=state.batch_size,
             device=state.device,
         )

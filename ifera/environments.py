@@ -231,9 +231,6 @@ class SingleMarketEnv:
 
         result.update(policy_result)
         
-        # Ensure had_position is correctly set based on environment logic
-        result["had_position"] = had_position
-
         return result
 
     def step_no_action(
