@@ -1,18 +1,17 @@
 import torch
 import pytest
+import tensordict as td
 
 from ifera.policies import (
     TradingPolicy,
     AlwaysOpenPolicy,
     AlwaysFalseDonePolicy,
     SingleTradeDonePolicy,
-    PositionMaintenancePolicy,
-    StopLossPolicy,
+    PolicyBase,
 )
 from ifera.data_models import DataManager
 from ifera.config import BaseInstrumentConfig
 from ifera.environments import SingleMarketEnv
-from ifera.state import State
 
 
 class DummyData:
@@ -38,42 +37,89 @@ class DummyData:
         return next_date, next_time
 
 
-class DummyInitialStopLoss(StopLossPolicy):
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
-        _ = state
-        return None
+class DummyInitialStopLoss(PolicyBase):
+    def copy_to(self, device: torch.device) -> "DummyInitialStopLoss":
+        return DummyInitialStopLoss()
 
-    def forward(self, state: State, action: torch.Tensor):
-        _ = state, action
-        return torch.zeros_like(action, dtype=torch.float32)
+    def reset(self, state: td.TensorDict) -> td.TensorDict:
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+
+    def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+
+    def forward(self, state: td.TensorDict) -> td.TensorDict:
+        batch_size = state.batch_size
+        device = state.device
+        dtype = state["position"].dtype if "position" in state else torch.float32
+        
+        return td.TensorDict(
+            {
+                "stop_loss": torch.zeros(batch_size, dtype=dtype, device=device)
+            },
+            batch_size=batch_size,
+            device=device,
+        )
 
 
-class DummyMaintenance(PositionMaintenancePolicy):
-    def masked_reset(self, state: State, mask: torch.Tensor) -> None:
-        pass
+class DummyMaintenance(PolicyBase):
+    def copy_to(self, device: torch.device) -> "DummyMaintenance":
+        return DummyMaintenance()
 
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
-        _ = state
-        return None
+    def reset(self, state: td.TensorDict) -> td.TensorDict:
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
-    def forward(self, state: State):
-        position = state.position
-        return torch.zeros_like(position), state.prev_stop_loss
+    def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+
+    def forward(self, state: td.TensorDict) -> td.TensorDict:
+        batch_size = state.batch_size
+        device = state.device
+        
+        # Preserve action when we don't have a position, just like real maintenance policies
+        has_position_mask = state.get("has_position_mask", torch.zeros(batch_size, dtype=torch.bool, device=device))
+        current_action = state.get("action", torch.zeros(batch_size, dtype=torch.int32, device=device))
+        
+        # Only modify action when we have a position (return 0 to hold position)
+        action = torch.where(has_position_mask, torch.zeros_like(current_action), current_action)
+        
+        return td.TensorDict(
+            {
+                "action": action,
+                "stop_loss": state.get("prev_stop_loss", torch.zeros(batch_size, dtype=torch.float32, device=device))
+            },
+            batch_size=batch_size,
+            device=device,
+        )
 
 
-class CloseAfterOneStep(PositionMaintenancePolicy):
-    def masked_reset(self, state: State, mask: torch.Tensor) -> None:
-        pass
+class CloseAfterOneStep(PolicyBase):
+    def copy_to(self, device: torch.device) -> "CloseAfterOneStep":
+        return CloseAfterOneStep()
 
-    def reset(self, state: State, batch_size: int, device: torch.device) -> None:
-        _ = state
-        return None
+    def reset(self, state: td.TensorDict) -> td.TensorDict:
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
-    def forward(self, state: State):
-        time_idx = state.time_idx
-        position = state.position
-        action = torch.where(time_idx >= 1, -position, torch.zeros_like(position))
-        return action, state.prev_stop_loss
+    def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
+
+    def forward(self, state: td.TensorDict) -> td.TensorDict:
+        time_idx = state["time_idx"]
+        position = state["position"]
+        has_position_mask = state.get("has_position_mask", torch.zeros_like(position, dtype=torch.bool))
+        current_action = state.get("action", torch.zeros_like(position))
+        
+        # Close position after time_idx >= 1, but only if we have a position
+        close_action = torch.where(time_idx >= 1, -position, torch.zeros_like(position))
+        action = torch.where(has_position_mask, close_action, current_action)
+        
+        return td.TensorDict(
+            {
+                "action": action,
+                "stop_loss": state.get("prev_stop_loss", torch.zeros_like(position, dtype=torch.float32))
+            },
+            batch_size=state.batch_size,
+            device=state.device,
+        )
 
 
 @pytest.fixture
@@ -104,20 +150,22 @@ def test_trading_policy_done_override(monkeypatch, dummy_data_last_bar):
     d_idx = torch.tensor([0], dtype=torch.int32)
     t_idx = torch.tensor([0], dtype=torch.int32)
 
-    state = State.create(
+    state = td.TensorDict(
+        {
+            "date_idx": d_idx,
+            "time_idx": t_idx,
+            "position": torch.tensor([0], dtype=torch.int32),
+            "prev_stop_loss": torch.tensor([float("nan")]),
+            "entry_price": torch.tensor([float("nan")]),
+            "done": torch.tensor([False]),
+        },
         batch_size=1,
         device=torch.device("cpu"),
-        dtype=torch.float32,
-        start_date_idx=d_idx,
-        start_time_idx=t_idx,
     )
-    state.position = torch.tensor([0], dtype=torch.int32)
-    state.prev_stop_loss = torch.tensor([float("nan")])
-    state.entry_price = torch.tensor([float("nan")])
 
-    policy.reset(state, batch_size=1, device=torch.device("cpu"))
-    _, _, done = policy(state)
-    assert done.item() is True
+    policy.reset(state)
+    result = policy(state)
+    assert result["done"].item() is True
 
 
 def test_single_market_env_rollout(monkeypatch, dummy_data_three_steps):
@@ -197,18 +245,19 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
             self.last_batch_size = 0
 
         def reset(
-            self, state: State, batch_size: int, device: torch.device
-        ) -> None:  # pragma: no cover - simple flag
+            self, state: td.TensorDict
+        ) -> td.TensorDict:  # pragma: no cover - simple flag
             self.reset_called = True
-            super().reset(state, batch_size, device)
-            # Track the batch size from parameters instead
-            self.last_batch_size = batch_size
+            result = super().reset(state)
+            # Track the batch size from state
+            self.last_batch_size = state.batch_size
+            return result
 
         def masked_reset(
-            self, state: State, mask: torch.Tensor
-        ) -> None:  # pragma: no cover - simple flag
+            self, state: td.TensorDict, mask: torch.Tensor
+        ) -> td.TensorDict:  # pragma: no cover - simple flag
             self.reset_called = True
-            super().masked_reset(state, mask)
+            return super().masked_reset(state, mask)
 
     done_policy = TrackingDonePolicy()
     trading_policy = TradingPolicy(
@@ -225,7 +274,14 @@ def test_single_market_env_reset_calls_done_policy(monkeypatch, dummy_data_three
     env.reset(start_d, start_t, trading_policy)
 
     assert done_policy.reset_called is True
-    assert done_policy.last_batch_size == start_d.shape[0]
+    # Handle the fact that last_batch_size is now state.batch_size which can be torch.Size
+    expected_batch_size = start_d.shape[0]
+    actual_batch_size = done_policy.last_batch_size
+    if hasattr(actual_batch_size, '__len__'):
+        # It's a torch.Size or similar - compare the first element
+        assert actual_batch_size[0] == expected_batch_size
+    else:
+        assert actual_batch_size == expected_batch_size
 
 
 def test_step_profit_percent_calculation(monkeypatch, dummy_data_three_steps):
@@ -261,9 +317,9 @@ def test_step_profit_percent_calculation(monkeypatch, dummy_data_three_steps):
         trading_policy,
     )
     step_state = env.step(trading_policy, state)
-    assert step_state.profit_percent.item() == pytest.approx(0.1)
-    assert step_state.entry_cost.item() == pytest.approx(10.0 * cm)
-    assert step_state.entry_position.item() == 1
+    assert step_state["profit_percent"].item() == pytest.approx(0.1)
+    assert step_state["entry_cost"].item() == pytest.approx(10.0 * cm)
+    assert step_state["entry_position"].item() == 1
 
 
 def test_profit_percent_immediate_stop(monkeypatch, dummy_data_three_steps):
@@ -299,10 +355,10 @@ def test_profit_percent_immediate_stop(monkeypatch, dummy_data_three_steps):
         trading_policy,
     )
     step_state = env.step(trading_policy, state)
-    assert step_state.entry_price.item() == pytest.approx(10.0)
-    assert step_state.profit_percent.item() == pytest.approx(-0.1)
-    assert step_state.entry_position.item() == 0
-    assert step_state.entry_cost.item() == pytest.approx(0.0)
+    assert step_state["entry_price"].item() == pytest.approx(10.0)
+    assert step_state["profit_percent"].item() == pytest.approx(-0.1)
+    assert step_state["entry_position"].item() == 0
+    assert step_state["entry_cost"].item() == pytest.approx(0.0)
 
 
 def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_steps):
@@ -337,20 +393,20 @@ def test_single_trade_done_policy_immediate_stop(monkeypatch, dummy_data_three_s
     )
     step_state = env.step(trading_policy, state)
     # Update state manually for testing purposes
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
-    _, _, done = trading_policy(state)
-    assert done.item() is True
+    result = trading_policy(state)
+    assert result["done"].item() is True
 
 
 def test_entry_price_weighted_average_add_to_position(
@@ -386,10 +442,20 @@ def test_entry_price_weighted_average_add_to_position(
 
             stop_loss = torch.tensor([float("nan")], dtype=env.dtype, device=env.device)
             done = torch.tensor([False], dtype=torch.bool, device=env.device)
-            return action, stop_loss, done
+            
+            return td.TensorDict(
+                {
+                    "action": action,
+                    "stop_loss": stop_loss,
+                    "done": done
+                },
+                batch_size=state.batch_size,
+                device=state.device,
+            )
 
-        def reset(self, state, batch_size: int = None, device: torch.device = None):
+        def reset(self, state):
             self.step_number = 0
+            return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     trading_policy = CustomTradingPolicy()
 
@@ -422,35 +488,35 @@ def test_entry_price_weighted_average_add_to_position(
 
     # First step: Enter position of 2 contracts at 10.0
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 2
-    assert step_state.entry_price.item() == pytest.approx(10.0)
+    assert step_state["position"].item() == 2
+    assert step_state["entry_price"].item() == pytest.approx(10.0)
 
     # Update state for next step - manually copy all relevant fields
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.opened = step_state.opened
-    state.maint_stage = step_state.maint_stage
-    state.base_price = step_state.base_price
-    state.entry_date_idx = step_state.entry_date_idx
-    state.entry_time_idx = step_state.entry_time_idx
-    state.maint_anchor = step_state.maint_anchor
-    state.prev_stop = step_state.prev_stop
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    if "opened" in step_state: state["opened"] = step_state["opened"]
+    if "maint_stage" in step_state: state["maint_stage"] = step_state["maint_stage"]
+    if "base_price" in step_state: state["base_price"] = step_state["base_price"]
+    if "entry_date_idx" in step_state: state["entry_date_idx"] = step_state["entry_date_idx"]
+    if "entry_time_idx" in step_state: state["entry_time_idx"] = step_state["entry_time_idx"]
+    if "maint_anchor" in step_state: state["maint_anchor"] = step_state["maint_anchor"]
+    if "prev_stop" in step_state: state["prev_stop"] = step_state["prev_stop"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
     # Second step: Add 3 contracts at 12.0
     # Expected weighted average: (10.0 * 2 + 12.0 * 3) / (2 + 3) = (20 + 36) / 5 = 11.2
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 5
+    assert step_state["position"].item() == 5
     expected_avg_price = (10.0 * 2 + 12.0 * 3) / (2 + 3)
-    assert step_state.entry_price.item() == pytest.approx(expected_avg_price)
+    assert step_state["entry_price"].item() == pytest.approx(expected_avg_price)
 
 
 def test_entry_price_weighted_average_add_to_short_position(
@@ -486,10 +552,20 @@ def test_entry_price_weighted_average_add_to_short_position(
 
             stop_loss = torch.tensor([float("nan")], dtype=env.dtype, device=env.device)
             done = torch.tensor([False], dtype=torch.bool, device=env.device)
-            return action, stop_loss, done
+            
+            return td.TensorDict(
+                {
+                    "action": action,
+                    "stop_loss": stop_loss,
+                    "done": done
+                },
+                batch_size=state.batch_size,
+                device=state.device,
+            )
 
-        def reset(self, state, batch_size: int = None, device: torch.device = None):
+        def reset(self, state):
             self.step_number = 0
+            return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     trading_policy = CustomTradingPolicy()
 
@@ -522,35 +598,35 @@ def test_entry_price_weighted_average_add_to_short_position(
 
     # First step: Enter short position of 2 contracts at 15.0
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == -2
-    assert step_state.entry_price.item() == pytest.approx(15.0)
+    assert step_state["position"].item() == -2
+    assert step_state["entry_price"].item() == pytest.approx(15.0)
 
     # Update state for next step - manually copy all relevant fields
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.opened = step_state.opened
-    state.maint_stage = step_state.maint_stage
-    state.base_price = step_state.base_price
-    state.entry_date_idx = step_state.entry_date_idx
-    state.entry_time_idx = step_state.entry_time_idx
-    state.maint_anchor = step_state.maint_anchor
-    state.prev_stop = step_state.prev_stop
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    if "opened" in step_state: state["opened"] = step_state["opened"]
+    if "maint_stage" in step_state: state["maint_stage"] = step_state["maint_stage"]
+    if "base_price" in step_state: state["base_price"] = step_state["base_price"]
+    if "entry_date_idx" in step_state: state["entry_date_idx"] = step_state["entry_date_idx"]
+    if "entry_time_idx" in step_state: state["entry_time_idx"] = step_state["entry_time_idx"]
+    if "maint_anchor" in step_state: state["maint_anchor"] = step_state["maint_anchor"]
+    if "prev_stop" in step_state: state["prev_stop"] = step_state["prev_stop"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
     # Second step: Add 3 short contracts at 18.0
     # Expected weighted average: (15.0 * 2 + 18.0 * 3) / (2 + 3) = (30 + 54) / 5 = 16.8
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == -5
+    assert step_state["position"].item() == -5
     expected_avg_price = (15.0 * 2 + 18.0 * 3) / (2 + 3)
-    assert step_state.entry_price.item() == pytest.approx(expected_avg_price)
+    assert step_state["entry_price"].item() == pytest.approx(expected_avg_price)
 
 
 def test_entry_price_no_weighted_average_opposite_signs(
@@ -586,10 +662,20 @@ def test_entry_price_no_weighted_average_opposite_signs(
 
             stop_loss = torch.tensor([float("nan")], dtype=env.dtype, device=env.device)
             done = torch.tensor([False], dtype=torch.bool, device=env.device)
-            return action, stop_loss, done
+            
+            return td.TensorDict(
+                {
+                    "action": action,
+                    "stop_loss": stop_loss,
+                    "done": done
+                },
+                batch_size=state.batch_size,
+                device=state.device,
+            )
 
-        def reset(self, state, batch_size: int = None, device: torch.device = None):
+        def reset(self, state):
             self.step_number = 0
+            return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     trading_policy = CustomTradingPolicy()
 
@@ -622,33 +708,33 @@ def test_entry_price_no_weighted_average_opposite_signs(
 
     # First step: Enter position of 3 contracts at 10.0
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 3
-    assert step_state.entry_price.item() == pytest.approx(10.0)
+    assert step_state["position"].item() == 3
+    assert step_state["entry_price"].item() == pytest.approx(10.0)
 
     # Update state for next step - manually copy all relevant fields
-    state.date_idx = step_state.date_idx
-    state.time_idx = step_state.time_idx
-    state.position = step_state.position
-    state.entry_price = step_state.entry_price
-    state.entry_position = step_state.entry_position
-    state.entry_cost = step_state.entry_cost
-    state.prev_stop_loss = step_state.prev_stop_loss
-    state.had_position = step_state.had_position
-    state.opened = step_state.opened
-    state.maint_stage = step_state.maint_stage
-    state.base_price = step_state.base_price
-    state.entry_date_idx = step_state.entry_date_idx
-    state.entry_time_idx = step_state.entry_time_idx
-    state.maint_anchor = step_state.maint_anchor
-    state.prev_stop = step_state.prev_stop
-    state.total_profit += step_state.profit
-    state.total_profit_percent += step_state.profit_percent
-    state.done = state.done | step_state.done
+    state["date_idx"] = step_state["date_idx"]
+    state["time_idx"] = step_state["time_idx"]
+    state["position"] = step_state["position"]
+    state["entry_price"] = step_state["entry_price"]
+    state["entry_position"] = step_state["entry_position"]
+    state["entry_cost"] = step_state["entry_cost"]
+    state["prev_stop_loss"] = step_state["prev_stop_loss"]
+    state["had_position"] = step_state["had_position"]
+    if "opened" in step_state: state["opened"] = step_state["opened"]
+    if "maint_stage" in step_state: state["maint_stage"] = step_state["maint_stage"]
+    if "base_price" in step_state: state["base_price"] = step_state["base_price"]
+    if "entry_date_idx" in step_state: state["entry_date_idx"] = step_state["entry_date_idx"]
+    if "entry_time_idx" in step_state: state["entry_time_idx"] = step_state["entry_time_idx"]
+    if "maint_anchor" in step_state: state["maint_anchor"] = step_state["maint_anchor"]
+    if "prev_stop" in step_state: state["prev_stop"] = step_state["prev_stop"]
+    state["total_profit"] += step_state["profit"]
+    state["total_profit_percent"] += step_state["profit_percent"]
+    state["done"] = state["done"] | step_state["done"]
 
     # Second step: Sell 1 contract at 12.0 (reducing position, not adding)
     # Entry price should remain unchanged at 10.0 since we're not adding to position
     step_state = env.step(trading_policy, state)
-    assert step_state.position.item() == 2
-    assert step_state.entry_price.item() == pytest.approx(
+    assert step_state["position"].item() == 2
+    assert step_state["entry_price"].item() == pytest.approx(
         10.0
     )  # Should remain unchanged

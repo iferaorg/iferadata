@@ -3,7 +3,7 @@ import pytest
 
 from ifera.policies import ScaledArtrMaintenancePolicy
 from ifera.data_models import DataManager
-from ifera.state import State
+import tensordict as td
 
 higher_ops_available = hasattr(torch, "cond") and hasattr(torch, "while_loop")
 pytestmark = pytest.mark.skipif(
@@ -14,15 +14,27 @@ pytestmark = pytest.mark.skipif(
 class DummyData:
     def __init__(self, instrument):
         self.instrument = instrument
-        self.data = torch.zeros((1, 1, 4), dtype=torch.float32)
-        self.artr = torch.zeros((1, 1), dtype=torch.float32)
-        self.multiplier = torch.ones((1, 1), dtype=torch.float32)
+        self.data = torch.zeros((2, 2, 4), dtype=torch.float32)  # More data
+        self.artr = torch.ones((2, 2), dtype=torch.float32)  # More artr data
+        self.multiplier = torch.ones((2, 2), dtype=torch.float32)
         self.device = torch.device("cpu")
         self.dtype = torch.float32
         self.backadjust = False
+        self.artr_alpha = 0.3  # Missing attribute
+        self.artr_acrossday = False  # Missing attribute
 
     def convert_indices(self, _base, date_idx, time_idx):
         return date_idx, time_idx
+
+    def calculate_artr(self, alpha: float, acrossday: bool) -> torch.Tensor:
+        """Mock calculate_artr method."""
+        self.artr_alpha = alpha
+        self.artr_acrossday = acrossday
+        return self.artr
+
+    @property
+    def valid_mask(self):
+        return torch.ones((2, 2), dtype=torch.bool)  # Larger valid mask
 
 
 @pytest.fixture
@@ -51,19 +63,19 @@ def test_scaled_artr_cond_predicate_is_tensor(monkeypatch, dummy_instrument_data
 
     monkeypatch.setattr(torch, "cond", fake_cond)
 
-    state = State.create(
-        batch_size=1,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
-        start_date_idx=torch.tensor([0]),
-        start_time_idx=torch.tensor([0]),
-    )
-    state.entry_price = torch.tensor([1.0])
-    state.prev_stop_loss = torch.tensor([0.5])
-    state.position = torch.tensor([1])
-    state.base_price = torch.tensor([1.0])
-    state.maint_stage = torch.tensor([0])
-    state.entry_date_idx = torch.tensor([0])
-    state.entry_time_idx = torch.tensor([0])
+    state = td.TensorDict({
+        "date_idx": torch.tensor([0]),
+        "time_idx": torch.tensor([0]),
+        "entry_price": torch.tensor([1.0]),
+        "prev_stop_loss": torch.tensor([0.5]),
+        "position": torch.tensor([1]),
+        "base_price": torch.tensor([1.0]),
+        "maint_stage": torch.tensor([0]),
+        "entry_date_idx": torch.tensor([0]),
+        "entry_time_idx": torch.tensor([0]),
+        "has_position_mask": torch.tensor([True]),  # Has position
+        "action": torch.tensor([0]),  # Missing action field
+    }, batch_size=1, device=torch.device("cpu"))
 
+    policy.reset(state)
     policy(state)

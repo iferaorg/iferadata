@@ -16,12 +16,6 @@ class AlwaysFalseDonePolicy(PolicyBase):
 
     def __init__(self, device: torch.device) -> None:
         super().__init__()
-        self._device = device
-        # Register _false as a buffer so it gets moved with .to(device)
-        self._false: torch.Tensor
-        self.register_buffer(
-            "_false", torch.tensor((), dtype=torch.bool, device=device)
-        )
 
     def copy_to(self, device: torch.device) -> AlwaysFalseDonePolicy:
         """Return a copy of the policy on the specified device."""
@@ -29,12 +23,6 @@ class AlwaysFalseDonePolicy(PolicyBase):
 
     def reset(self, state: td.TensorDict) -> td.TensorDict:
         """Initialize _false buffer based on state batch size."""
-        # Update device if it has changed
-        self._device = state.device
-        self._false = torch.zeros(
-            state.batch_size, dtype=torch.bool, device=state.device
-        )
-
         return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
@@ -61,7 +49,6 @@ class SingleTradeDonePolicy(PolicyBase):
 
     def __init__(self, device: torch.device) -> None:
         super().__init__()
-        self._device = device
 
     def copy_to(self, device: torch.device) -> SingleTradeDonePolicy:
         """Return a copy of the policy on the specified device."""
@@ -69,30 +56,12 @@ class SingleTradeDonePolicy(PolicyBase):
 
     def reset(self, state: td.TensorDict) -> td.TensorDict:
         """Reset ``had_position`` for all batches."""
-        # Update device if it has changed
-        self._device = state.device
-
-        td_out = td.TensorDict(
-            {
-                "had_position": torch.zeros(
-                    state.batch_size, dtype=torch.bool, device=state.device
-                )
-            },
-            batch_size=state.batch_size,
-            device=state.device,
-        )
-
-        return td_out
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     def masked_reset(self, state: td.TensorDict, mask: torch.Tensor) -> td.TensorDict:
         """Reset ``had_position`` where mask is True."""
-        td_out = td.TensorDict(
-            {"had_position": torch.where(mask, False, state["had_position"])},
-            batch_size=state.batch_size,
-            device=state.device,
-        )
-
-        return td_out
+        _ = mask
+        return td.TensorDict({}, batch_size=state.batch_size, device=state.device)
 
     def forward(
         self,
@@ -106,7 +75,6 @@ class SingleTradeDonePolicy(PolicyBase):
         td_out = td.TensorDict(
             {
                 "done": state["done"] | done,
-                "had_position": torch.where(position != 0, True, had_position),
             },
             batch_size=state.batch_size,
             device=state.device,
