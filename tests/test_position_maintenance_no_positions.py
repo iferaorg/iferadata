@@ -73,7 +73,9 @@ def test_scaled_artr_no_position(monkeypatch, dummy_instrument_data):
         "action": torch.tensor([0]),  # Missing action field
     }, batch_size=1, device=torch.device("cpu"))
 
-    _, stop_loss = policy(state)
+    policy.reset(state)
+    result = policy(state)
+    stop_loss = result["stop_loss"]
     assert torch.isnan(stop_loss).all()
 
 
@@ -105,5 +107,7 @@ def test_percent_gain_no_position(dummy_instrument_data, monkeypatch):
         "has_position_mask": torch.tensor([False]),  # No position
     }, batch_size=1, device=torch.device("cpu"))
 
-    _, stop_loss = policy(state)
+    policy.reset(state)
+    result = policy(state)
+    stop_loss = result["stop_loss"]
     assert torch.isnan(stop_loss).all()

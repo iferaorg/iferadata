@@ -51,7 +51,8 @@ def test_done_policies_buffers():
     print(
         f"AlwaysFalseDonePolicy state_dict keys: {list(false_policy.state_dict().keys())}"
     )
-    assert "_false" in false_policy.state_dict(), "_false should be in state_dict"
+    # After refactor, AlwaysFalseDonePolicy no longer has internal buffers
+    # It just preserves the done state from input
 
     print("✓ Done policies buffer registration working correctly!")
 

@@ -71,5 +71,6 @@ def test_scaled_artr_active_position(monkeypatch, dummy_instrument_data):
     }, batch_size=2, device=torch.device("cpu"))
 
     policy.reset(state)
-    _, stop_loss = policy(state)
+    result = policy(state)
+    stop_loss = result["stop_loss"]
     assert stop_loss.shape == (2,)

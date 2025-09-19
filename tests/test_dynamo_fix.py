@@ -16,12 +16,12 @@ def test_torch_dynamo_compilation_with_state():
         action = policy.forward(state)
         return action
 
-    # Test OpenOncePolicy which mutates state.opened
+    # Test OpenOncePolicy which uses had_position from state
     state = td.TensorDict({
         "date_idx": torch.tensor([0, 1]),
         "time_idx": torch.tensor([0, 0]),
         "no_position_mask": torch.tensor([True, True]),
-        "opened": torch.tensor([False, False], dtype=torch.bool),
+        "had_position": torch.tensor([False, False], dtype=torch.bool),
     }, batch_size=2, device=torch.device("cpu"))
 
     policy = OpenOncePolicy(direction=1, device=torch.device("cpu"))
@@ -31,8 +31,7 @@ def test_torch_dynamo_compilation_with_state():
     try:
         result = test_policy_mutation(state, policy)
         assert result["action"].shape == (2,)
-        # The opened state should be in the result, not mutated in the original state
-        assert result["opened"].all()  # Should be set to True after mutation
+        # OpenOncePolicy now just uses had_position, doesn't modify it
         print("✓ OpenOncePolicy compilation test passed!")
     except Exception as e:
         pytest.fail(f"OpenOncePolicy compilation failed: {e}")
@@ -70,14 +69,6 @@ def test_dict_state_would_fail():
     """Demonstrate that the old dict-based approach would fail with torch.compile."""
 
     # This would fail with the old dict-based state
-    def dict_based_mutation(state_dict):
-        # This type of mutation would cause:
-        # UncapturedHigherOrderOpError: Mutating a variable not in the current scope
-        state_dict["opened"] = state_dict.get(
-            "opened", torch.zeros(2, dtype=torch.bool)
-        ) | torch.tensor([True, True])
-        return state_dict["opened"]
-
     # Note: We can't actually test the failure because our code no longer uses dicts,
     # but this demonstrates the problematic pattern that we fixed
     print("✓ Dict-based mutation pattern identified (would fail with torch.compile)")

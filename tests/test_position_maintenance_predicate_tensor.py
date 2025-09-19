@@ -77,4 +77,5 @@ def test_scaled_artr_cond_predicate_is_tensor(monkeypatch, dummy_instrument_data
         "action": torch.tensor([0]),  # Missing action field
     }, batch_size=1, device=torch.device("cpu"))
 
+    policy.reset(state)
     policy(state)

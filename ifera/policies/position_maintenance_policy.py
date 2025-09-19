@@ -402,7 +402,7 @@ class PercentGainMaintenancePolicy(PolicyBase):
         state: td.TensorDict,
     ) -> td.TensorDict:
         action = self._action
-        stop_loss = state["prev_stop"].clone()
+        stop_loss = state["prev_stop_loss"].clone()
         position = state["position"]
         entry_price = state["entry_price"]
         prev_stop = state["prev_stop_loss"]
