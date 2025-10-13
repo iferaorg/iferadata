@@ -15,4 +15,4 @@ python-dateutil==2.9.0.post0
 holidays==0.82
 readerwriterlock==1.0.9
 rich==14.2.0
-tensordict==0.9.1
+tensordict==0.10.0
