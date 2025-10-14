@@ -16,3 +16,4 @@ holidays==0.82
 readerwriterlock==1.0.9
 rich==14.2.0
 tensordict==0.10.0
+httpx==0.28.1
