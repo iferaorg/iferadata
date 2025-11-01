@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ifera.optionalpha import parse_trade_log, _extract_dollar_amount
+from ifera.optionalpha import parse_trade_log, _extract_dollar_amount, _parse_time
 from bs4 import BeautifulSoup
 
 
@@ -81,28 +81,33 @@ def test_parse_trade_log_simple(simple_html):
     # Check DataFrame shape
     assert len(df) == 2
     assert list(df.columns) == [
-        "description",
+        "symbol",
+        "trade_type",
         "date",
         "start_time",
         "end_time",
         "status",
         "risk",
-        "pl",
+        "profit",
     ]
 
     # Check first row
-    assert df.iloc[0]["description"] == "SPX Long Call"
-    assert df.iloc[0]["date"] == "Jan 10, 2022"
-    assert df.iloc[0]["start_time"] == "3:47pm"
-    assert df.iloc[0]["end_time"] == "4:00pm"
+    from datetime import time as dt_time
+
+    assert df.iloc[0]["symbol"] == "SPX"
+    assert df.iloc[0]["trade_type"] == "Long Call"
+    assert df.iloc[0]["date"] == pd.Timestamp("2022-01-10")
+    assert df.iloc[0]["start_time"] == dt_time(15, 47)
+    assert df.iloc[0]["end_time"] == dt_time(16, 0)
     assert df.iloc[0]["status"] == "Expired"
     assert df.iloc[0]["risk"] == 380.0
-    assert df.iloc[0]["pl"] == 1149.0
+    assert df.iloc[0]["profit"] == 1149.0
 
     # Check second row (negative P/L)
-    assert df.iloc[1]["description"] == "SPX Long Call"
-    assert df.iloc[1]["date"] == "Jan 14, 2022"
-    assert df.iloc[1]["pl"] == -350.0
+    assert df.iloc[1]["symbol"] == "SPX"
+    assert df.iloc[1]["trade_type"] == "Long Call"
+    assert df.iloc[1]["date"] == pd.Timestamp("2022-01-14")
+    assert df.iloc[1]["profit"] == -350.0
 
 
 def test_parse_trade_log_grid_example(grid_example_html):
@@ -114,36 +119,39 @@ def test_parse_trade_log_grid_example(grid_example_html):
 
     # Check column names
     assert list(df.columns) == [
-        "description",
+        "symbol",
+        "trade_type",
         "date",
         "start_time",
         "end_time",
         "status",
         "risk",
-        "pl",
+        "profit",
     ]
 
     # Check data types
-    assert df["description"].dtype == object
-    assert df["date"].dtype == object
-    assert df["start_time"].dtype == object
-    assert df["end_time"].dtype == object
+    assert df["symbol"].dtype == object
+    assert df["trade_type"].dtype == object
+    assert pd.api.types.is_datetime64_any_dtype(df["date"])
+    assert df["start_time"].dtype == object  # datetime.time objects
+    assert df["end_time"].dtype == object  # datetime.time objects
     assert df["status"].dtype == object
     assert pd.api.types.is_numeric_dtype(df["risk"])
-    assert pd.api.types.is_numeric_dtype(df["pl"])
+    assert pd.api.types.is_numeric_dtype(df["profit"])
 
-    # Check for NaN values (should not exist)
-    assert df.isna().any().any() == False  # type: ignore[comparison-overlap]
+    # Check for NaN values (should not exist in numeric columns)
+    assert df["risk"].isna().sum() == 0
+    assert df["profit"].isna().sum() == 0
 
     # Check some sample values
     first_row = df.iloc[0]
-    assert "SPX" in first_row["description"]
-    assert "Long Call" in first_row["description"]
+    assert first_row["symbol"] == "SPX"
+    assert first_row["trade_type"] == "Long Call"
     assert first_row["status"] == "Expired"
 
     # Check that both positive and negative P/L values exist
-    has_positive_pl: bool = bool((df["pl"] > 0).any())
-    has_negative_pl: bool = bool((df["pl"] < 0).any())
+    has_positive_pl: bool = bool((df["profit"] > 0).any())
+    has_negative_pl: bool = bool((df["profit"] < 0).any())
     all_risk_nonnegative: bool = bool((df["risk"] >= 0).all())
 
     assert has_positive_pl
@@ -182,8 +190,9 @@ def test_parse_trade_log_missing_dollar_values():
 
     # Check that missing values are replaced with 0
     assert df.iloc[0]["risk"] == 0.0
-    assert df.iloc[0]["pl"] == 0.0
-    assert df.isna().any().any() == False  # type: ignore[comparison-overlap]
+    assert df.iloc[0]["profit"] == 0.0
+    assert df["risk"].isna().sum() == 0
+    assert df["profit"].isna().sum() == 0
 
 
 def test_parse_trade_log_empty_string():
@@ -263,22 +272,30 @@ def test_parse_trade_log_result_no_nan_values(grid_example_html):
     """Explicitly verify no NaN values in output."""
     df = parse_trade_log(grid_example_html)
 
-    # Check each column individually
-    has_nan_desc: bool = bool(df["description"].isna().any())
-    has_nan_date: bool = bool(df["date"].isna().any())
-    has_nan_start: bool = bool(df["start_time"].isna().any())
-    has_nan_end: bool = bool(df["end_time"].isna().any())
-    has_nan_status: bool = bool(df["status"].isna().any())
+    # Check numeric columns for NaN values
     has_nan_risk: bool = bool(df["risk"].isna().any())
-    has_nan_pl: bool = bool(df["pl"].isna().any())
+    has_nan_profit: bool = bool(df["profit"].isna().any())
 
-    assert not has_nan_desc
-    assert not has_nan_date
-    assert not has_nan_start
-    assert not has_nan_end
-    assert not has_nan_status
     assert not has_nan_risk
-    assert not has_nan_pl
+    assert not has_nan_profit
 
-    # Double-check with overall check
-    assert df.isna().sum().sum() == 0
+    # Check that numeric columns don't have NaN
+    assert df["risk"].isna().sum() == 0
+    assert df["profit"].isna().sum() == 0
+
+
+def test_parse_time_valid():
+    """Test parsing valid time strings."""
+    from datetime import time as dt_time
+
+    assert _parse_time("3:47pm") == dt_time(15, 47)
+    assert _parse_time("4:00pm") == dt_time(16, 0)
+    assert _parse_time("10:30am") == dt_time(10, 30)
+    assert _parse_time("12:00pm") == dt_time(12, 0)
+
+
+def test_parse_time_invalid():
+    """Test parsing invalid time strings."""
+    assert _parse_time("") is None
+    assert _parse_time("   ") is None
+    assert _parse_time("invalid") is None

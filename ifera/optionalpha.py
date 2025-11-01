@@ -6,6 +6,8 @@ from Option Alpha and convert them into pandas DataFrames.
 """
 
 import re
+from datetime import datetime, time
+from typing import Optional
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -16,8 +18,8 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     Parse an Option Alpha trade log HTML grid and return a pandas DataFrame.
 
     This function extracts trade information from an HTML grid containing
-    trade log data. The grid includes columns for description (symbol and
-    trade type), date, time range, status, risk, and P/L.
+    trade log data. The grid includes columns for symbol, trade type,
+    date, time range, status, risk, and profit/loss.
 
     Parameters
     ----------
@@ -28,13 +30,14 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     -------
     pd.DataFrame
         A DataFrame with columns:
-        - description: str, e.g., "SPX Long Call"
-        - date: str, e.g., "Jan 10, 2022"
-        - start_time: str, e.g., "3:47pm"
-        - end_time: str, e.g., "4:00pm"
+        - symbol: str, e.g., "SPX"
+        - trade_type: str, e.g., "Long Call"
+        - date: datetime, parsed date
+        - start_time: datetime.time, e.g., time(15, 47)
+        - end_time: datetime.time, e.g., time(16, 0)
         - status: str, e.g., "Expired"
         - risk: float, dollar amount of risk (0 if missing)
-        - pl: float, profit/loss in dollars (0 if missing)
+        - profit: float, profit/loss in dollars (0 if missing)
 
         The DataFrame will not contain any NaN values.
 
@@ -48,7 +51,7 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     >>> html = '<grid>...</grid>'
     >>> df = parse_trade_log(html)
     >>> df.columns
-    Index(['description', 'date', 'start_time', 'end_time', 'status', 'risk', 'pl'])
+    Index(['symbol', 'trade_type', 'date', 'start_time', 'end_time', 'status', 'risk', 'profit'])
     """
     if not html_string or not html_string.strip():
         raise ValueError("HTML string cannot be empty")
@@ -74,10 +77,16 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
             if len(symbol_spans) >= 2:
                 symbol = symbol_spans[0].get_text(strip=True)
                 trade_type = symbol_spans[1].get_text(strip=True)
-                description = f"{symbol} {trade_type}"
             else:
                 # Fallback if structure is different
-                description = symbol_cell.get_text(strip=True)
+                text = symbol_cell.get_text(strip=True)
+                parts = text.split(None, 1)
+                if len(parts) == 2:
+                    symbol = parts[0]
+                    trade_type = parts[1]
+                else:
+                    symbol = text
+                    trade_type = ""
 
             # Extract date and time from closeTime cell
             close_time_cell = row.find("div", class_="closeTime")
@@ -86,21 +95,21 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
 
             time_divs = close_time_cell.find_all("div", class_="clip")
             if len(time_divs) >= 2:
-                date = time_divs[0].get_text(strip=True)
+                date_str = time_divs[0].get_text(strip=True)
                 time_range = time_divs[1].get_text(strip=True)
 
                 # Parse time range (e.g., "3:47pm → 4:00pm")
                 time_parts = time_range.split("→")
                 if len(time_parts) == 2:
-                    start_time = time_parts[0].strip()
-                    end_time = time_parts[1].strip()
+                    start_time_str = time_parts[0].strip()
+                    end_time_str = time_parts[1].strip()
                 else:
-                    start_time = ""
-                    end_time = ""
+                    start_time_str = ""
+                    end_time_str = ""
             else:
-                date = ""
-                start_time = ""
-                end_time = ""
+                date_str = ""
+                start_time_str = ""
+                end_time_str = ""
 
             # Extract status
             status_cell = row.find("div", class_="status")
@@ -116,17 +125,18 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
 
             # Extract P/L (dollar amount)
             pnl_cell = row.find("div", class_="pnl")
-            pl = _extract_dollar_amount(pnl_cell)
+            profit = _extract_dollar_amount(pnl_cell)
 
             data.append(
                 {
-                    "description": description,
-                    "date": date,
-                    "start_time": start_time,
-                    "end_time": end_time,
+                    "symbol": symbol,
+                    "trade_type": trade_type,
+                    "date": date_str,
+                    "start_time": start_time_str,
+                    "end_time": end_time_str,
                     "status": status,
                     "risk": risk,
-                    "pl": pl,
+                    "profit": profit,
                 }
             )
 
@@ -141,15 +151,57 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     df = pd.DataFrame(data)
 
     # Fill any potential NaN values with appropriate defaults
-    df["description"] = df["description"].fillna("")
+    df["symbol"] = df["symbol"].fillna("")
+    df["trade_type"] = df["trade_type"].fillna("")
     df["date"] = df["date"].fillna("")
     df["start_time"] = df["start_time"].fillna("")
     df["end_time"] = df["end_time"].fillna("")
     df["status"] = df["status"].fillna("")
     df["risk"] = df["risk"].fillna(0)
-    df["pl"] = df["pl"].fillna(0)
+    df["profit"] = df["profit"].fillna(0)
+
+    # Convert date column to datetime
+    df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
+
+    # Convert time columns to datetime.time objects
+    df["start_time"] = df["start_time"].apply(_parse_time)
+    df["end_time"] = df["end_time"].apply(_parse_time)
 
     return df
+
+
+def _parse_time(time_str: str) -> Optional[time]:
+    """
+    Parse a time string in 12-hour format to a datetime.time object.
+
+    Parameters
+    ----------
+    time_str : str
+        Time string in format like "3:47pm" or "4:00pm"
+
+    Returns
+    -------
+    datetime.time or None
+        Parsed time object, or None if parsing fails
+
+    Examples
+    --------
+    >>> _parse_time("3:47pm")
+    datetime.time(15, 47)
+    >>> _parse_time("4:00pm")
+    datetime.time(16, 0)
+    >>> _parse_time("")
+    None
+    """
+    if not time_str or time_str.strip() == "":
+        return None
+
+    try:
+        # Parse time in 12-hour format (e.g., "3:47pm")
+        dt = datetime.strptime(time_str.strip(), "%I:%M%p")
+        return dt.time()
+    except ValueError:
+        return None
 
 
 def _extract_dollar_amount(cell) -> float:
