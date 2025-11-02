@@ -427,15 +427,18 @@ class RegressionDecisionTree:
                     # Since candidates are sorted, we can progressively prune the same tree
                     for cand in candidates:
                         if cand == float("inf") and pruned.root is not None:
-                            if (
-                                pruned.root.sum_y is not None
-                                and pruned.root.n_samples is not None
-                            ):
-                                pruned.root = pruned.Node(
-                                    value=pruned.root.sum_y / pruned.root.n_samples,
-                                    n_samples=pruned.root.n_samples,
-                                    sum_y=pruned.root.sum_y,
-                                )
+                            # For infinite threshold, convert to a single leaf
+                            # Only do this if the root is not already a leaf
+                            if pruned.root.value is None:
+                                if (
+                                    pruned.root.sum_y is not None
+                                    and pruned.root.n_samples is not None
+                                ):
+                                    pruned.root = pruned.Node(
+                                        value=pruned.root.sum_y / pruned.root.n_samples,
+                                        n_samples=pruned.root.n_samples,
+                                        sum_y=pruned.root.sum_y,
+                                    )
                         else:
                             pruned.prune(cand)
 
