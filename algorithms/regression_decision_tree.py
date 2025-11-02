@@ -417,18 +417,9 @@ class RegressionDecisionTree:
                     )
                     fold_tree.fit(X_train, y_train)
 
-                    # Save the original root to restore for progressive pruning
-                    original_root = fold_tree.copy_tree(fold_tree.root)
-
                     # Iterate through candidates in ascending order
                     # Since candidates are sorted, we can progressively prune the same tree
                     for cand in candidates:
-                        # Restore from original and prune progressively
-                        if cand == candidates[0]:
-                            # First candidate: use the copied root
-                            fold_tree.root = original_root
-                        # For subsequent candidates, continue pruning the same tree
-
                         if cand == float("inf") and fold_tree.root is not None:
                             # For infinite threshold, convert to a single leaf
                             # Only do this if the root is not already a leaf
