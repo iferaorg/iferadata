@@ -15,6 +15,12 @@ class RegressionDecisionTree:
         Minimum impurity decrease required to split (lower bound).
     look_ahead : int, optional
         Number of levels to look ahead when evaluating splits. Defaults to 0.
+    criterion : str, optional
+        The function to measure split quality. Supported criteria are "MSE" (mean
+        squared error) and "absolute_error" (mean absolute deviation). Defaults to "MSE".
+    leaf_value : str, optional
+        The method to compute leaf node values. Supported methods are "mean" and
+        "median". Defaults to "mean".
     """
 
     class Node:
@@ -52,7 +58,14 @@ class RegressionDecisionTree:
             self.n_samples = n_samples
             self.sum_y = sum_y
 
-    def __init__(self, max_depth, min_impurity_decrease, look_ahead=0):
+    def __init__(
+        self,
+        max_depth,
+        min_impurity_decrease,
+        look_ahead=0,
+        criterion="MSE",
+        leaf_value="mean",
+    ):
         """Initialize the RegressionDecisionTree with hyperparameters.
 
         Args:
@@ -61,15 +74,31 @@ class RegressionDecisionTree:
                 (lower bound).
             look_ahead (int, optional): Number of levels to look ahead when evaluating
                 splits. Defaults to 0.
+            criterion (str, optional): The function to measure split quality. Supported
+                criteria are "MSE" (mean squared error) and "absolute_error" (mean absolute
+                deviation). Defaults to "MSE".
+            leaf_value (str, optional): The method to compute leaf node values. Supported
+                methods are "mean" and "median". Defaults to "mean".
         """
+        if criterion not in ["MSE", "absolute_error"]:
+            raise ValueError(
+                f"criterion must be 'MSE' or 'absolute_error', got '{criterion}'"
+            )
+        if leaf_value not in ["mean", "median"]:
+            raise ValueError(
+                f"leaf_value must be 'mean' or 'median', got '{leaf_value}'"
+            )
+
         self.max_depth = max_depth
         self.min_impurity_decrease = min_impurity_decrease
         self.look_ahead = look_ahead
+        self.criterion = criterion
+        self.leaf_value = leaf_value
         self.root = None
         self.impurity_decreases = []
 
     def _compute_impurity(self, y, mask=None):
-        """Compute the impurity (total sum of squares) for a set of targets.
+        """Compute the impurity for a set of targets based on the selected criterion.
 
         Args:
             y (torch.Tensor): Target tensor.
@@ -83,15 +112,33 @@ class RegressionDecisionTree:
             n = len(y)
             if n == 0:
                 return 0.0
-            return torch.sum(y**2) - (torch.sum(y) ** 2) / n
+            if self.criterion == "MSE":
+                return torch.sum(y**2) - (torch.sum(y) ** 2) / n
+            # absolute_error
+            if self.leaf_value == "mean":
+                center = torch.sum(y) / n
+            else:  # median
+                center = torch.median(y)
+            return torch.sum(torch.abs(y - center))
 
         n = torch.sum(mask).item()
         if n == 0:
             return 0.0
-        y_masked = torch.where(mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device))
-        sum_y = torch.sum(y_masked)
-        sum_y2 = torch.sum(y_masked**2)
-        return sum_y2 - (sum_y**2) / n
+        y_masked = torch.where(
+            mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device)
+        )
+
+        if self.criterion == "MSE":
+            sum_y = torch.sum(y_masked)
+            sum_y2 = torch.sum(y_masked**2)
+            return sum_y2 - (sum_y**2) / n
+        # absolute_error
+        if self.leaf_value == "mean":
+            center = torch.sum(y_masked) / n
+        else:  # median
+            y_values = y[mask]
+            center = torch.median(y_values)
+        return torch.sum(torch.abs(y_masked - center * mask.float()))
 
     def _find_best_split(
         self, X, y, mask=None, look_ahead=None
@@ -184,7 +231,9 @@ class RegressionDecisionTree:
                 decreases,
             )
 
-            max_decrease_per_feature, best_split_per_feature = torch.max(decreases, dim=0)
+            max_decrease_per_feature, best_split_per_feature = torch.max(
+                decreases, dim=0
+            )
             best_feature = torch.argmax(max_decrease_per_feature)
             best_decrease = max_decrease_per_feature[best_feature]
             best_split = best_split_per_feature[best_feature]
@@ -223,7 +272,9 @@ class RegressionDecisionTree:
             feature_values = X[:, feature]
             # Get unique values among masked samples
             masked_feature_values = torch.where(
-                mask, feature_values, torch.tensor(float("inf"), dtype=X.dtype, device=X.device)
+                mask,
+                feature_values,
+                torch.tensor(float("inf"), dtype=X.dtype, device=X.device),
             )
             sorted_indices = torch.argsort(masked_feature_values)
             sorted_feature_values = masked_feature_values[sorted_indices]
@@ -237,18 +288,25 @@ class RegressionDecisionTree:
             for split in range(1, int(n_valid)):
                 # Get the actual indices in the original tensor
                 split_idx = split
-                if sorted_feature_values[split_idx - 1] == sorted_feature_values[split_idx]:
+                if (
+                    sorted_feature_values[split_idx - 1]
+                    == sorted_feature_values[split_idx]
+                ):
                     continue
 
                 # Create masks for left and right splits
                 threshold = (
-                    sorted_feature_values[split_idx - 1] + sorted_feature_values[split_idx]
+                    sorted_feature_values[split_idx - 1]
+                    + sorted_feature_values[split_idx]
                 ) / 2
                 left_mask = mask & (feature_values <= threshold)
                 right_mask = mask & (feature_values > threshold)
 
                 # Check if both sides have samples
-                if torch.sum(left_mask).item() == 0 or torch.sum(right_mask).item() == 0:
+                if (
+                    torch.sum(left_mask).item() == 0
+                    or torch.sum(right_mask).item() == 0
+                ):
                     continue
 
                 left_imp = self._compute_impurity(y, left_mask)
@@ -288,6 +346,30 @@ class RegressionDecisionTree:
             best_immediate,
         )
 
+    def _compute_leaf_value(self, y, mask):
+        """Compute the leaf node value based on the selected leaf_value method.
+
+        Args:
+            y (torch.Tensor): Target tensor of shape (n_samples,).
+            mask (torch.Tensor): Boolean mask indicating which samples to consider.
+
+        Returns:
+            torch.Tensor: The computed leaf value.
+        """
+        n_samples = torch.sum(mask).item()
+        if n_samples == 0:
+            return torch.tensor(0.0, device=y.device)
+
+        if self.leaf_value == "mean":
+            y_masked = torch.where(
+                mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device)
+            )
+            sum_y = torch.sum(y_masked)
+            return sum_y / n_samples
+        # median
+        y_values = y[mask]
+        return torch.median(y_values)
+
     def _build_tree(self, X, y, mask, depth):  # pylint: disable=invalid-name
         """Recursively build the regression decision tree.
 
@@ -301,11 +383,13 @@ class RegressionDecisionTree:
             Node: Root node of the constructed tree or subtree.
         """
         n_samples = torch.sum(mask).item()
-        y_masked = torch.where(mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device))
+        y_masked = torch.where(
+            mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device)
+        )
         sum_y = torch.sum(y_masked)
 
         if depth == self.max_depth or n_samples < 2:
-            value = sum_y / n_samples if n_samples > 0 else torch.tensor(0.0, device=X.device)
+            value = self._compute_leaf_value(y, mask)
             return self.Node(value=value, n_samples=n_samples, sum_y=sum_y)
 
         (
@@ -333,7 +417,7 @@ class RegressionDecisionTree:
                 sum_y=left_node.sum_y + right_node.sum_y,
             )
 
-        value = sum_y / n_samples if n_samples > 0 else torch.tensor(0.0, device=X.device)
+        value = self._compute_leaf_value(y, mask)
         return self.Node(value=value, n_samples=n_samples, sum_y=sum_y)
 
     def fit(self, X, y):  # pylint: disable=invalid-name
@@ -408,7 +492,9 @@ class RegressionDecisionTree:
                 continue
 
             # At this point, node is a split node and must have a threshold
-            assert node.threshold is not None, "Split node must have a threshold"  # nosec
+            assert (
+                node.threshold is not None
+            ), "Split node must have a threshold"  # nosec
             threshold = node.threshold.to(dtype=X.dtype, device=X.device)
 
             feature_values = X[:, node.feature]
@@ -512,7 +598,11 @@ class RegressionDecisionTree:
 
                     # Build full tree on train once per fold
                     fold_tree = RegressionDecisionTree(
-                        self.max_depth, self.min_impurity_decrease, self.look_ahead
+                        self.max_depth,
+                        self.min_impurity_decrease,
+                        self.look_ahead,
+                        self.criterion,
+                        self.leaf_value,
                     )
                     fold_tree.fit(X_train, y_train)
 
@@ -528,7 +618,8 @@ class RegressionDecisionTree:
                                     and fold_tree.root.n_samples is not None
                                 ):
                                     fold_tree.root = fold_tree.Node(
-                                        value=fold_tree.root.sum_y / fold_tree.root.n_samples,
+                                        value=fold_tree.root.sum_y
+                                        / fold_tree.root.n_samples,
                                         n_samples=fold_tree.root.n_samples,
                                         sum_y=fold_tree.root.sum_y,
                                     )
