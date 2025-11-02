@@ -85,7 +85,7 @@ class RegressionDecisionTree:
                 return 0.0
             return torch.sum(y**2) - (torch.sum(y) ** 2) / n
 
-        n = torch.sum(mask)
+        n = torch.sum(mask).item()
         if n == 0:
             return 0.0
         y_masked = torch.where(mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device))
@@ -227,11 +227,11 @@ class RegressionDecisionTree:
             sorted_mask = mask[sorted_indices]
 
             # Find the range of valid (masked) samples
-            n_valid = int(torch.sum(sorted_mask).item())
+            n_valid = torch.sum(sorted_mask).item()
             if n_valid < 2:
                 continue
 
-            for split in range(1, n_valid):
+            for split in range(1, int(n_valid)):
                 # Get the actual indices in the original tensor
                 split_idx = split
                 if sorted_feature_values[split_idx - 1] == sorted_feature_values[split_idx]:
