@@ -427,7 +427,7 @@ def test_export_text_unfitted_tree():
     """Test export_text on an unfitted tree."""
     tree = RegressionDecisionTree(max_depth=3, min_impurity_decrease=0.0)
     text = tree.export_text()
-    assert "not been fitted" in text
+    assert "This tree has not been fitted yet" in text
 
 
 def test_export_text_format():

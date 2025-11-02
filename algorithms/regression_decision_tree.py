@@ -531,7 +531,7 @@ class RegressionDecisionTree:
             Text summary of all the rules in the decision tree.
         """
         if self.root is None:
-            return "Tree has not been fitted yet."
+            return "This tree has not been fitted yet."
 
         # Generate default feature names if not provided
         if feature_names is None:
