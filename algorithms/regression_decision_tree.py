@@ -68,31 +68,46 @@ class RegressionDecisionTree:
         self.root = None
         self.impurity_decreases = []
 
-    def _compute_impurity(self, y):
+    def _compute_impurity(self, y, mask=None):
         """Compute the impurity (total sum of squares) for a set of targets.
 
         Args:
             y (torch.Tensor): Target tensor.
+            mask (torch.Tensor, optional): Boolean mask indicating which samples to include.
+                If None, all samples are included.
 
         Returns:
             float: Impurity value.
         """
-        n = len(y)
+        if mask is None:
+            n = len(y)
+            if n == 0:
+                return 0.0
+            return torch.sum(y**2) - (torch.sum(y) ** 2) / n
+
+        n = torch.sum(mask).item()
         if n == 0:
             return 0.0
-        return torch.sum(y**2) - (torch.sum(y) ** 2) / n
+        y_masked = torch.where(mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device))
+        sum_y = torch.sum(y_masked)
+        sum_y2 = torch.sum(y_masked**2)
+        return sum_y2 - (sum_y**2) / n
 
-    def _find_best_split(self, X, y, look_ahead=None):  # pylint: disable=invalid-name
+    def _find_best_split(
+        self, X, y, mask=None, look_ahead=None
+    ):  # pylint: disable=invalid-name,too-many-branches
         """Find the best feature and split point that maximizes impurity decrease.
 
         Args:
             X (torch.Tensor): Feature tensor of shape (n_samples, n_features).
             y (torch.Tensor): Target tensor of shape (n_samples,).
+            mask (torch.Tensor, optional): Boolean mask indicating which samples to consider.
+                If None, all samples are considered.
             look_ahead (int, optional): Look ahead levels for this call.
                 Defaults to self.look_ahead.
 
         Returns:
-            tuple: (best_feature, best_threshold, best_left_indices, best_right_indices,
+            tuple: (best_feature, best_threshold, best_left_mask, best_right_mask,
                 best_augmented_decrease, best_immediate_decrease)
                    or (None, None, None, None, -inf, -inf) if no valid split is found.
         """
@@ -101,46 +116,75 @@ class RegressionDecisionTree:
             look_ahead = self.look_ahead
 
         n_samples, n_features = X.shape
-        if n_samples < 2:
+
+        # Create or validate mask
+        if mask is None:
+            mask = torch.ones(n_samples, dtype=torch.bool, device=X.device)
+
+        n_masked = torch.sum(mask).item()
+        if n_masked < 2:
             return None, None, None, None, float("-inf"), float("-inf")
 
-        current_impurity = self._compute_impurity(y)
+        current_impurity = self._compute_impurity(y, mask)
 
         if look_ahead == 0:
             # Vectorized implementation for look_ahead == 0
+            # Sort indices for each feature, considering only masked samples
             feature_sorted_indices = torch.argsort(X, dim=0)
             y_sorted = y[feature_sorted_indices]
-            X_sorted = torch.gather(X, 0, feature_sorted_indices)
+            x_sorted = torch.gather(X, 0, feature_sorted_indices)
 
-            consecutive_same = X_sorted[1:, :] == X_sorted[:-1, :]
+            # Propagate mask through sorting
+            mask_sorted = mask[feature_sorted_indices]
 
-            cumsum_y = torch.cumsum(y_sorted, dim=0)
-            cumsum_y2 = torch.cumsum(y_sorted**2, dim=0)
+            consecutive_same = x_sorted[1:, :] == x_sorted[:-1, :]
+
+            # Compute cumulative sums, but only for masked samples
+            y_sorted_masked = torch.where(
+                mask_sorted, y_sorted, torch.tensor(0.0, dtype=y.dtype, device=y.device)
+            )
+            mask_sorted_float = mask_sorted.float()
+
+            cumsum_y = torch.cumsum(y_sorted_masked, dim=0)
+            cumsum_y2 = torch.cumsum(y_sorted_masked**2, dim=0)
+            cumsum_mask = torch.cumsum(mask_sorted_float, dim=0)
 
             left_sum_y = cumsum_y[:-1, :]
             left_sum_y2 = cumsum_y2[:-1, :]
-            left_n = (
-                torch.arange(1, n_samples, device=X.device)
-                .unsqueeze(1)
-                .expand(-1, n_features)
-            )
+            left_n = cumsum_mask[:-1, :]
 
             total_sum_y = cumsum_y[-1, :]
             total_sum_y2 = cumsum_y2[-1, :]
+            total_n = cumsum_mask[-1, :]
+
             right_sum_y = total_sum_y - left_sum_y
             right_sum_y2 = total_sum_y2 - left_sum_y2
-            right_n = n_samples - left_n
+            right_n = total_n - left_n
 
-            left_impurity = left_sum_y2 - (left_sum_y**2) / left_n
-            right_impurity = right_sum_y2 - (right_sum_y**2) / right_n
+            # Compute impurities, avoiding division by zero
+            left_impurity = torch.where(
+                left_n > 0,
+                left_sum_y2 - (left_sum_y**2) / left_n,
+                torch.tensor(0.0, dtype=y.dtype, device=y.device),
+            )
+            right_impurity = torch.where(
+                right_n > 0,
+                right_sum_y2 - (right_sum_y**2) / right_n,
+                torch.tensor(0.0, dtype=y.dtype, device=y.device),
+            )
             impurity_after_split = left_impurity + right_impurity
 
             decreases = current_impurity - impurity_after_split
-            decreases[consecutive_same] = float("-inf")
-
-            max_decrease_per_feature, best_split_per_feature = torch.max(
-                decreases, dim=0
+            # Invalidate splits where consecutive values are same or split doesn't respect mask
+            # Also invalidate if left or right side would have no masked samples
+            invalid_splits = consecutive_same | (left_n == 0) | (right_n == 0)
+            decreases = torch.where(
+                invalid_splits,
+                torch.tensor(float("-inf"), dtype=decreases.dtype, device=X.device),
+                decreases,
             )
+
+            max_decrease_per_feature, best_split_per_feature = torch.max(decreases, dim=0)
             best_feature = torch.argmax(max_decrease_per_feature)
             best_decrease = max_decrease_per_feature[best_feature]
             best_split = best_split_per_feature[best_feature]
@@ -153,14 +197,16 @@ class RegressionDecisionTree:
             threshold_right = X[sorted_indices[best_split + 1], best_feature]
             best_threshold = (threshold_left + threshold_right) / 2
 
-            best_left_indices = sorted_indices[: best_split + 1]
-            best_right_indices = sorted_indices[best_split + 1 :]
+            # Create masks instead of indices
+            feature_values = X[:, best_feature]
+            best_left_mask = mask & (feature_values <= best_threshold)
+            best_right_mask = mask & (feature_values > best_threshold)
 
             return (
                 best_feature,
                 best_threshold,
-                best_left_indices,
-                best_right_indices,
+                best_left_mask,
+                best_right_mask,
                 best_decrease,
                 best_decrease,
             )
@@ -168,39 +214,55 @@ class RegressionDecisionTree:
         # Looped implementation for look_ahead > 0
         best_feature = None
         best_threshold = None
-        best_left_indices = None
-        best_right_indices = None
+        best_left_mask = None
+        best_right_mask = None
         best_augmented = float("-inf")
         best_immediate = float("-inf")
 
         for feature in range(n_features):
             feature_values = X[:, feature]
-            sorted_indices = torch.argsort(feature_values)
-            sorted_feature_values = feature_values[sorted_indices]
-            for split in range(1, n_samples):
-                if sorted_feature_values[split - 1] == sorted_feature_values[split]:
+            # Get unique values among masked samples
+            masked_feature_values = torch.where(
+                mask, feature_values, torch.tensor(float("inf"), dtype=X.dtype, device=X.device)
+            )
+            sorted_indices = torch.argsort(masked_feature_values)
+            sorted_feature_values = masked_feature_values[sorted_indices]
+            sorted_mask = mask[sorted_indices]
+
+            # Find the range of valid (masked) samples
+            n_valid = torch.sum(sorted_mask).item()
+            if n_valid < 2:
+                continue
+
+            for split in range(1, int(n_valid)):
+                # Get the actual indices in the original tensor
+                split_idx = split
+                if sorted_feature_values[split_idx - 1] == sorted_feature_values[split_idx]:
                     continue
 
-                left_indices = sorted_indices[:split]
-                right_indices = sorted_indices[split:]
+                # Create masks for left and right splits
+                threshold = (
+                    sorted_feature_values[split_idx - 1] + sorted_feature_values[split_idx]
+                ) / 2
+                left_mask = mask & (feature_values <= threshold)
+                right_mask = mask & (feature_values > threshold)
 
-                X_left = X[left_indices]
-                y_left = y[left_indices]
-                X_right = X[right_indices]
-                y_right = y[right_indices]
+                # Check if both sides have samples
+                if torch.sum(left_mask).item() == 0 or torch.sum(right_mask).item() == 0:
+                    continue
 
-                left_imp = self._compute_impurity(y_left)
-                right_imp = self._compute_impurity(y_right)
+                left_imp = self._compute_impurity(y, left_mask)
+                right_imp = self._compute_impurity(y, right_mask)
                 immediate_after = left_imp + right_imp
                 immediate_decrease = current_impurity - immediate_after
 
                 left_best_aug = self._find_best_split(
-                    X_left, y_left, look_ahead=look_ahead - 1
+                    X, y, mask=left_mask, look_ahead=look_ahead - 1
                 )[4]
                 if left_best_aug == float("-inf"):
                     left_best_aug = 0.0
                 right_best_aug = self._find_best_split(
-                    X_right, y_right, look_ahead=look_ahead - 1
+                    X, y, mask=right_mask, look_ahead=look_ahead - 1
                 )[4]
                 if right_best_aug == float("-inf"):
                     right_best_aug = 0.0
@@ -211,62 +273,53 @@ class RegressionDecisionTree:
                     best_augmented = augmented
                     best_immediate = immediate_decrease
                     best_feature = feature
-                    best_threshold = (
-                        sorted_feature_values[split - 1] + sorted_feature_values[split]
-                    ) / 2
-                    best_left_indices = left_indices.clone()
-                    best_right_indices = right_indices.clone()
+                    best_threshold = threshold
+                    best_left_mask = left_mask.clone()
+                    best_right_mask = right_mask.clone()
 
         if best_feature is None:
             return None, None, None, None, float("-inf"), float("-inf")
         return (
             best_feature,
             best_threshold,
-            best_left_indices,
-            best_right_indices,
+            best_left_mask,
+            best_right_mask,
             best_augmented,
             best_immediate,
         )
 
-    def _build_tree(self, X, y, depth):  # pylint: disable=invalid-name
+    def _build_tree(self, X, y, mask, depth):  # pylint: disable=invalid-name
         """Recursively build the regression decision tree.
 
         Args:
             X (torch.Tensor): Feature tensor of shape (n_samples, n_features).
             y (torch.Tensor): Target tensor of shape (n_samples,).
+            mask (torch.Tensor): Boolean mask indicating which samples to consider.
             depth (int): Current depth of the tree.
 
         Returns:
             Node: Root node of the constructed tree or subtree.
         """
-        n_samples = X.shape[0]
-        sum_y = torch.sum(y)
+        n_samples = torch.sum(mask).item()
+        y_masked = torch.where(mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device))
+        sum_y = torch.sum(y_masked)
 
         if depth == self.max_depth or n_samples < 2:
-            value = (
-                sum_y / n_samples
-                if n_samples > 0
-                else torch.tensor(0.0, device=X.device)
-            )
+            value = sum_y / n_samples if n_samples > 0 else torch.tensor(0.0, device=X.device)
             return self.Node(value=value, n_samples=n_samples, sum_y=sum_y)
 
         (
             feature,
             threshold,
-            left_indices,
-            right_indices,
+            left_mask,
+            right_mask,
             augmented_decrease,
             immediate_decrease,
-        ) = self._find_best_split(X, y)
+        ) = self._find_best_split(X, y, mask)
 
         if augmented_decrease > self.min_impurity_decrease and feature is not None:
-            left_X = X[left_indices]
-            left_y = y[left_indices]
-            right_X = X[right_indices]
-            right_y = y[right_indices]
-
-            left_node = self._build_tree(left_X, left_y, depth + 1)
-            right_node = self._build_tree(right_X, right_y, depth + 1)
+            left_node = self._build_tree(X, y, left_mask, depth + 1)
+            right_node = self._build_tree(X, y, right_mask, depth + 1)
 
             self.impurity_decreases.append(immediate_decrease)
 
@@ -280,9 +333,7 @@ class RegressionDecisionTree:
                 sum_y=left_node.sum_y + right_node.sum_y,
             )
 
-        value = (
-            sum_y / n_samples if n_samples > 0 else torch.tensor(0.0, device=X.device)
-        )
+        value = sum_y / n_samples if n_samples > 0 else torch.tensor(0.0, device=X.device)
         return self.Node(value=value, n_samples=n_samples, sum_y=sum_y)
 
     def fit(self, X, y):  # pylint: disable=invalid-name
@@ -293,7 +344,9 @@ class RegressionDecisionTree:
             y (torch.Tensor): 1D tensor of shape (n_samples,) with targets.
         """
         self.impurity_decreases = []  # Reset for each fit
-        self.root = self._build_tree(X, y, 0)
+        n_samples = X.shape[0]
+        mask = torch.ones(n_samples, dtype=torch.bool, device=X.device)
+        self.root = self._build_tree(X, y, mask, 0)
 
     def _predict_one(self, node, x):
         """Make a prediction for a single sample.
@@ -351,13 +404,11 @@ class RegressionDecisionTree:
                 continue
             if node.value is not None:
                 value = node.value.to(dtype=pred_dtype, device=X.device)
-                predictions[mask] = value
+                predictions = torch.where(mask, value, predictions)
                 continue
 
             # At this point, node is a split node and must have a threshold
-            assert (
-                node.threshold is not None
-            ), "Split node must have a threshold"  # nosec
+            assert node.threshold is not None, "Split node must have a threshold"  # nosec
             threshold = node.threshold.to(dtype=X.dtype, device=X.device)
 
             feature_values = X[:, node.feature]
@@ -448,7 +499,7 @@ class RegressionDecisionTree:
         total_iterations = k_repeats * n_folds * len(candidates)
 
         with tqdm(total=total_iterations, desc="Cross-validation") as pbar:
-            for _ in range(k_repeats):
+            for _ in range(k_repeats):  # pylint: disable=too-many-nested-blocks
                 indices = torch.randperm(n_samples, device=device)
                 for f in range(n_folds):
                     test_start = f * fold_size
@@ -477,8 +528,7 @@ class RegressionDecisionTree:
                                     and fold_tree.root.n_samples is not None
                                 ):
                                     fold_tree.root = fold_tree.Node(
-                                        value=fold_tree.root.sum_y
-                                        / fold_tree.root.n_samples,
+                                        value=fold_tree.root.sum_y / fold_tree.root.n_samples,
                                         n_samples=fold_tree.root.n_samples,
                                         sum_y=fold_tree.root.sum_y,
                                     )
