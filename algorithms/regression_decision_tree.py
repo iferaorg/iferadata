@@ -176,10 +176,13 @@ class RegressionDecisionTree:
 
             decreases = current_impurity - impurity_after_split
             # Invalidate splits where consecutive values are same or split doesn't respect mask
-            decreases[consecutive_same] = float("-inf")
             # Also invalidate if left or right side would have no masked samples
-            decreases[left_n == 0] = float("-inf")
-            decreases[right_n == 0] = float("-inf")
+            invalid_splits = consecutive_same | (left_n == 0) | (right_n == 0)
+            decreases = torch.where(
+                invalid_splits,
+                torch.tensor(float("-inf"), dtype=decreases.dtype, device=X.device),
+                decreases,
+            )
 
             max_decrease_per_feature, best_split_per_feature = torch.max(decreases, dim=0)
             best_feature = torch.argmax(max_decrease_per_feature)
@@ -401,7 +404,7 @@ class RegressionDecisionTree:
                 continue
             if node.value is not None:
                 value = node.value.to(dtype=pred_dtype, device=X.device)
-                predictions[mask] = value
+                predictions = torch.where(mask, value, predictions)
                 continue
 
             # At this point, node is a split node and must have a threshold
