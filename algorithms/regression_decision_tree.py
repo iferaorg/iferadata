@@ -132,7 +132,7 @@ class RegressionDecisionTree:
         # absolute_error - use median as center to minimize absolute deviations
         y_values = y[mask]
         center = torch.median(y_values)
-        return torch.sum(torch.abs(y_masked - center * mask.float()))
+        return torch.sum(torch.abs(y_values - center))
 
     def _find_best_split(
         self, X, y, mask=None, look_ahead=None
@@ -532,6 +532,12 @@ class RegressionDecisionTree:
         Args:
             min_imp (float): The min_impurity_decrease threshold for pruning.
             node (Node, optional): The current node to prune (defaults to root).
+
+        Note:
+            When converting a split node to a leaf node, this method always uses the
+            mean (sum_y / n_samples) regardless of the leaf_value parameter, as the
+            original data is not available during pruning and we cannot compute the
+            median from sum_y and n_samples alone.
         """
         if node is None:
             node = self.root
@@ -543,6 +549,7 @@ class RegressionDecisionTree:
             self.prune(min_imp, node.right)
         if node.decrease is not None and node.decrease <= min_imp:
             if node.sum_y is not None and node.n_samples is not None:
+                # Note: Always uses mean here as we don't have original data for median
                 node.value = node.sum_y / node.n_samples
             node.left = None
             node.right = None
@@ -611,6 +618,7 @@ class RegressionDecisionTree:
                                     fold_tree.root.sum_y is not None
                                     and fold_tree.root.n_samples is not None
                                 ):
+                                    # Note: Always uses mean here as we don't have original data
                                     fold_tree.root = fold_tree.Node(
                                         value=fold_tree.root.sum_y
                                         / fold_tree.root.n_samples,
