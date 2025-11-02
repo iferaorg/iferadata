@@ -170,6 +170,30 @@ def test_compute_impurity_with_absolute_error():
     assert impurity_mse != impurity_mae
 
 
+def test_absolute_error_uses_median_for_impurity():
+    """Test that absolute_error always uses median for impurity, regardless of leaf_value."""
+    tree_mae_mean = RegressionDecisionTree(
+        max_depth=3,
+        min_impurity_decrease=0.0,
+        criterion="absolute_error",
+        leaf_value="mean",
+    )
+    tree_mae_median = RegressionDecisionTree(
+        max_depth=3,
+        min_impurity_decrease=0.0,
+        criterion="absolute_error",
+        leaf_value="median",
+    )
+
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0, 100.0])  # Outlier
+
+    # Both should compute the same impurity (using median as center)
+    impurity_mean = tree_mae_mean._compute_impurity(y)
+    impurity_median = tree_mae_median._compute_impurity(y)
+
+    assert impurity_mean == impurity_median
+
+
 def test_compute_leaf_value_mean():
     """Test _compute_leaf_value with mean method."""
     tree = RegressionDecisionTree(

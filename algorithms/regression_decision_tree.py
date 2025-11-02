@@ -114,11 +114,8 @@ class RegressionDecisionTree:
                 return 0.0
             if self.criterion == "MSE":
                 return torch.sum(y**2) - (torch.sum(y) ** 2) / n
-            # absolute_error
-            if self.leaf_value == "mean":
-                center = torch.sum(y) / n
-            else:  # median
-                center = torch.median(y)
+            # absolute_error - use median as center to minimize absolute deviations
+            center = torch.median(y)
             return torch.sum(torch.abs(y - center))
 
         n = torch.sum(mask).item()
@@ -132,12 +129,9 @@ class RegressionDecisionTree:
             sum_y = torch.sum(y_masked)
             sum_y2 = torch.sum(y_masked**2)
             return sum_y2 - (sum_y**2) / n
-        # absolute_error
-        if self.leaf_value == "mean":
-            center = torch.sum(y_masked) / n
-        else:  # median
-            y_values = y[mask]
-            center = torch.median(y_values)
+        # absolute_error - use median as center to minimize absolute deviations
+        y_values = y[mask]
+        center = torch.median(y_values)
         return torch.sum(torch.abs(y_masked - center * mask.float()))
 
     def _find_best_split(
