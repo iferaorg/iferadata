@@ -411,38 +411,42 @@ class RegressionDecisionTree:
                     X_train, y_train = X[train_idx], y[train_idx]
                     X_test, y_test = X[test_idx], y[test_idx]
 
-                    # Build full tree on train
-                    train_tree = RegressionDecisionTree(
+                    # Build full tree on train once per fold
+                    fold_tree = RegressionDecisionTree(
                         self.max_depth, self.min_impurity_decrease, self.look_ahead
                     )
-                    train_tree.fit(X_train, y_train)
+                    fold_tree.fit(X_train, y_train)
 
-                    # Create pruned tree once and reuse it for all candidates
-                    pruned = RegressionDecisionTree(
-                        self.max_depth, self.min_impurity_decrease, self.look_ahead
-                    )
-                    pruned.root = train_tree.copy_tree(train_tree.root)
+                    # Save the original root to restore for progressive pruning
+                    original_root = fold_tree.copy_tree(fold_tree.root)
 
                     # Iterate through candidates in ascending order
                     # Since candidates are sorted, we can progressively prune the same tree
                     for cand in candidates:
-                        if cand == float("inf") and pruned.root is not None:
+                        # Restore from original and prune progressively
+                        if cand == candidates[0]:
+                            # First candidate: use the copied root
+                            fold_tree.root = original_root
+                        # For subsequent candidates, continue pruning the same tree
+
+                        if cand == float("inf") and fold_tree.root is not None:
                             # For infinite threshold, convert to a single leaf
                             # Only do this if the root is not already a leaf
-                            if pruned.root.value is None:
+                            if fold_tree.root.value is None:
                                 if (
-                                    pruned.root.sum_y is not None
-                                    and pruned.root.n_samples is not None
+                                    fold_tree.root.sum_y is not None
+                                    and fold_tree.root.n_samples is not None
                                 ):
-                                    pruned.root = pruned.Node(
-                                        value=pruned.root.sum_y / pruned.root.n_samples,
-                                        n_samples=pruned.root.n_samples,
-                                        sum_y=pruned.root.sum_y,
+                                    fold_tree.root = fold_tree.Node(
+                                        value=fold_tree.root.sum_y
+                                        / fold_tree.root.n_samples,
+                                        n_samples=fold_tree.root.n_samples,
+                                        sum_y=fold_tree.root.sum_y,
                                     )
                         else:
-                            pruned.prune(cand)
+                            fold_tree.prune(cand)
 
-                        pred = pruned.predict(X_test)
+                        pred = fold_tree.predict(X_test)
                         mse = torch.mean((pred - y_test) ** 2).item()
                         mse_per_cand[cand].append(mse)
 
