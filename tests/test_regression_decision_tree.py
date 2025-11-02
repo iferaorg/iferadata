@@ -320,3 +320,146 @@ def test_progressive_pruning():
 
         # Progressive pruning should match separate pruning for the higher threshold
         assert torch.allclose(pred_prog, pred_sep)
+
+
+def test_export_text_basic():
+    """Test basic export_text functionality."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text = tree.export_text()
+    assert isinstance(text, str)
+    assert "feature_0" in text  # Should use default feature names
+    assert "value:" in text  # Should contain leaf values
+
+
+def test_export_text_with_feature_names():
+    """Test export_text with custom feature names."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text = tree.export_text(feature_names=["x"])
+    assert "x" in text
+    assert "feature_0" not in text
+
+
+def test_export_text_max_depth():
+    """Test export_text with max_depth truncation."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0], [5.0], [6.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+
+    tree = RegressionDecisionTree(max_depth=5, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    # Export with max_depth=1 should show truncation
+    text = tree.export_text(max_depth=1)
+    if tree.root.value is None:  # If tree has splits
+        assert "..." in text  # Should show truncation
+
+
+def test_export_text_spacing():
+    """Test export_text with different spacing values."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text_spacing_3 = tree.export_text(spacing=3)
+    text_spacing_5 = tree.export_text(spacing=5)
+
+    # More spacing should result in longer lines (more indentation)
+    if tree.root.value is None:  # If tree has splits
+        assert len(text_spacing_5) > len(text_spacing_3)
+
+
+def test_export_text_decimals():
+    """Test export_text with different decimal precision."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text_2_decimals = tree.export_text(decimals=2)
+    text_4_decimals = tree.export_text(decimals=4)
+
+    # Both should be valid strings
+    assert isinstance(text_2_decimals, str)
+    assert isinstance(text_4_decimals, str)
+
+
+def test_export_text_leaf_only():
+    """Test export_text with a tree that is just a leaf node."""
+    X = torch.tensor([[1.0], [1.0], [1.0]])
+    y = torch.tensor([2.0, 2.0, 2.0])
+
+    tree = RegressionDecisionTree(max_depth=3, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text = tree.export_text()
+    # Tree should be just a leaf
+    assert "value:" in text
+    assert "2.00" in text  # Default decimals=2
+
+
+def test_export_text_multiple_features():
+    """Test export_text with multiple features."""
+    X = torch.tensor([[1.0, 1.0], [2.0, 1.0], [1.0, 2.0], [2.0, 2.0]])
+    y = torch.tensor([1.0, 2.0, 2.0, 3.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text = tree.export_text()
+    assert isinstance(text, str)
+    # Should mention at least one feature
+    assert ("feature_0" in text) or ("feature_1" in text)
+
+
+def test_export_text_unfitted_tree():
+    """Test export_text on an unfitted tree."""
+    tree = RegressionDecisionTree(max_depth=3, min_impurity_decrease=0.0)
+    text = tree.export_text()
+    assert "not been fitted" in text
+
+
+def test_export_text_format():
+    """Test that export_text produces properly formatted output."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text = tree.export_text()
+
+    # Check for proper formatting elements
+    assert "|---" in text  # Branch indicators
+    lines = text.split("\n")
+    # All lines should start with some combination of | and spaces
+    for line in lines:
+        assert line.startswith("|") or line.startswith(" ")
+
+
+def test_export_text_custom_feature_names_multiple():
+    """Test export_text with custom feature names for multiple features."""
+    X = torch.tensor([[1.0, 5.0], [2.0, 6.0], [3.0, 7.0], [4.0, 8.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    text = tree.export_text(feature_names=["temperature", "humidity"])
+
+    # Check that at least one custom feature name appears
+    assert ("temperature" in text) or ("humidity" in text)
+    # Check that default names don't appear
+    assert "feature_0" not in text
+    assert "feature_1" not in text
