@@ -355,7 +355,9 @@ class RegressionDecisionTree:
                 continue
 
             # At this point, node is a split node and must have a threshold
-            assert node.threshold is not None, "Split node must have a threshold"  # nosec
+            assert (
+                node.threshold is not None
+            ), "Split node must have a threshold"  # nosec
             threshold = node.threshold.to(dtype=X.dtype, device=X.device)
 
             feature_values = X[:, node.feature]
@@ -506,3 +508,103 @@ class RegressionDecisionTree:
 
         # Clear collected decreases as they were for candidate generation
         self.impurity_decreases = []
+
+    def export_text(self, feature_names=None, max_depth=10, spacing=3, decimals=2):
+        """Build a text report showing the rules of the regression decision tree.
+
+        Parameters
+        ----------
+        feature_names : list of str, optional
+            Names of each of the features. If None, generic names will be used
+            ("feature_0", "feature_1", ...).
+        max_depth : int, default=10
+            Only the first max_depth levels of the tree are exported.
+            Truncated branches will be marked with "...".
+        spacing : int, default=3
+            Number of spaces between edges. The higher it is, the wider the result.
+        decimals : int, default=2
+            Number of decimal digits to display.
+
+        Returns
+        -------
+        report : str
+            Text summary of all the rules in the decision tree.
+        """
+        if self.root is None:
+            return "This tree has not been fitted yet."
+
+        # Generate default feature names if not provided
+        if feature_names is None:
+            # Count features from the tree structure
+            n_features = self._count_features(self.root)
+            feature_names = [f"feature_{i}" for i in range(n_features)]
+
+        # Build the report recursively
+        lines = []
+        self._export_text_recursive(
+            self.root, feature_names, max_depth, spacing, decimals, lines, depth=0
+        )
+        return "\n".join(lines)
+
+    def _count_features(self, node):
+        """Count the number of features used in the tree.
+
+        Args:
+            node (Node): Current node.
+
+        Returns:
+            int: Maximum feature index + 1.
+        """
+        if node is None or node.value is not None:
+            return 0
+        max_feature = node.feature
+        left_features = self._count_features(node.left)
+        right_features = self._count_features(node.right)
+        return max(max_feature + 1, left_features, right_features)
+
+    def _export_text_recursive(
+        self, node, feature_names, max_depth, spacing, decimals, lines, depth=0
+    ):
+        """Recursively build the text representation of the tree.
+
+        Args:
+            node (Node): Current node.
+            feature_names (list): Names of features.
+            max_depth (int): Maximum depth to export.
+            spacing (int): Number of spaces between edges.
+            decimals (int): Number of decimal digits.
+            lines (list): List to accumulate output lines.
+            depth (int): Current depth in the tree.
+        """
+        # Build indentation: each level adds "|" + spacing spaces
+        indent = ("|" + " " * spacing) * depth
+
+        if depth >= max_depth:
+            lines.append(f"{indent}|--- ...")
+            return
+
+        if node.value is not None:
+            # Leaf node - display the predicted value
+            value = node.value
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            lines.append(f"{indent}|--- value: [{value:.{decimals}f}]")
+            return
+
+        # Split node - display the feature and threshold
+        feature_name = feature_names[node.feature]
+        threshold = node.threshold
+        if isinstance(threshold, torch.Tensor):
+            threshold = threshold.item()
+
+        # Left branch (<=)
+        lines.append(f"{indent}|--- {feature_name} <= {threshold:.{decimals}f}")
+        self._export_text_recursive(
+            node.left, feature_names, max_depth, spacing, decimals, lines, depth + 1
+        )
+
+        # Right branch (>)
+        lines.append(f"{indent}|--- {feature_name} >  {threshold:.{decimals}f}")
+        self._export_text_recursive(
+            node.right, feature_names, max_depth, spacing, decimals, lines, depth + 1
+        )
