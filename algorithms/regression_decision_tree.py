@@ -320,9 +320,63 @@ class RegressionDecisionTree:
         Returns:
             torch.Tensor: 1D tensor of shape (n_samples,) with predictions.
         """
-        return torch.tensor(
-            [self._predict_one(self.root, x) for x in X], device=X.device
+        if self.root is None:
+            raise ValueError("The tree has not been fitted yet.")
+
+        n_samples = X.shape[0]
+        if n_samples == 0:
+            root_sum_y = self.root.sum_y
+            if isinstance(root_sum_y, torch.Tensor):
+                return torch.empty(0, dtype=root_sum_y.dtype, device=X.device)
+            return torch.empty(0, dtype=X.dtype, device=X.device)
+
+        root_sum_y = self.root.sum_y
+        pred_dtype = (
+            root_sum_y.dtype
+            if isinstance(root_sum_y, torch.Tensor)
+            else X.dtype if torch.is_floating_point(X) else torch.get_default_dtype()
         )
+        predictions = torch.empty(n_samples, dtype=pred_dtype, device=X.device)
+
+        stack = [
+            (
+                self.root,
+                torch.ones(n_samples, dtype=torch.bool, device=X.device),
+            )
+        ]
+
+        while stack:
+            node, mask = stack.pop()
+            if not torch.any(mask):
+                continue
+            if node.value is not None:
+                value = node.value
+                if not isinstance(value, torch.Tensor):
+                    value = torch.tensor(value, dtype=pred_dtype, device=X.device)
+                else:
+                    value = value.to(dtype=pred_dtype, device=X.device)
+                predictions[mask] = value
+                continue
+
+            threshold = node.threshold
+            if not isinstance(threshold, torch.Tensor):
+                threshold_tensor = torch.tensor(
+                    threshold, dtype=X.dtype, device=X.device
+                )
+            else:
+                threshold_tensor = threshold.to(dtype=X.dtype, device=X.device)
+
+            feature_values = X[:, node.feature]
+            go_left = feature_values <= threshold_tensor
+            left_mask = mask & go_left
+            right_mask = mask & (~go_left)
+
+            if node.left is not None:
+                stack.append((node.left, left_mask))
+            if node.right is not None:
+                stack.append((node.right, right_mask))
+
+        return predictions
 
     def copy_tree(self, node):
         """Deep copy a tree node and its subtrees.
