@@ -266,3 +266,57 @@ def test_sum_y_tracking():
 
     # Root sum_y should equal total sum
     assert torch.isclose(tree.root.sum_y, torch.sum(y))
+
+
+def test_find_optimal_with_progress_bar():
+    """Test that find_optimal works with tqdm progress bar."""
+    # Create a simple dataset
+    torch.manual_seed(123)
+    X = torch.randn(30, 2)
+    y = X[:, 0] + X[:, 1] + torch.randn(30) * 0.1
+
+    tree = RegressionDecisionTree(max_depth=3, min_impurity_decrease=0.0)
+    # This should show progress bar during execution
+    tree.find_optimal_min_impurity_decrease(X, y, n_folds=2, k_repeats=2)
+
+    # Verify tree can still predict
+    predictions = tree.predict(X)
+    assert predictions.shape == y.shape
+    # Check that predictions are reasonable (low MSE)
+    mse = torch.mean((predictions - y) ** 2)
+    assert mse < 10.0  # Should be reasonably accurate
+
+
+def test_progressive_pruning():
+    """Test that progressive pruning works correctly with increasing thresholds."""
+    # Create a dataset
+    torch.manual_seed(42)
+    X = torch.randn(20, 2)
+    y = X[:, 0] * 2 + X[:, 1] * 3 + torch.randn(20) * 0.1
+
+    # Build a tree
+    tree = RegressionDecisionTree(max_depth=5, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    # Get some decreases
+    decreases = sorted([d.item() for d in tree.impurity_decreases])
+    if len(decreases) >= 2:
+        # Test that progressive pruning matches separate pruning
+        threshold1 = decreases[0] + 0.01
+        threshold2 = decreases[-1] + 0.01
+
+        # Progressive pruning
+        tree_prog = RegressionDecisionTree(max_depth=5, min_impurity_decrease=0.0)
+        tree_prog.root = tree.copy_tree(tree.root)
+        tree_prog.prune(threshold1)
+        tree_prog.prune(threshold2)
+        pred_prog = tree_prog.predict(X)
+
+        # Separate pruning with higher threshold
+        tree_sep = RegressionDecisionTree(max_depth=5, min_impurity_decrease=0.0)
+        tree_sep.root = tree.copy_tree(tree.root)
+        tree_sep.prune(threshold2)
+        pred_sep = tree_sep.predict(X)
+
+        # Progressive pruning should match separate pruning for the higher threshold
+        assert torch.allclose(pred_prog, pred_sep)

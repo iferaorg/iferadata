@@ -1,6 +1,7 @@
 """Regression Decision Tree algorithm implemented using PyTorch tensors."""
 
 import torch
+from tqdm import tqdm
 
 
 class RegressionDecisionTree:
@@ -385,7 +386,7 @@ class RegressionDecisionTree:
         self.fit(X, y)
         ds = sorted([d.item() for d in self.impurity_decreases])
         mids = [(ds[i] + ds[i + 1]) / 2 for i in range(len(ds) - 1)] if ds else []
-        candidates = [self.min_impurity_decrease] + mids + [float("inf")]
+        candidates = sorted([self.min_impurity_decrease] + mids + [float("inf")])
 
         # Initialize MSE tracker
         mse_per_cand = {cand: [] for cand in candidates}
@@ -395,45 +396,52 @@ class RegressionDecisionTree:
         n_samples = X.shape[0]
         fold_size = n_samples // n_folds
 
-        for _ in range(k_repeats):
-            indices = torch.randperm(n_samples, device=device)
-            for f in range(n_folds):
-                test_start = f * fold_size
-                test_end = (f + 1) * fold_size if f < n_folds - 1 else n_samples
-                test_idx = indices[test_start:test_end]
-                train_idx = torch.cat((indices[:test_start], indices[test_end:]))
+        # Calculate total iterations for progress bar
+        total_iterations = k_repeats * n_folds * len(candidates)
 
-                X_train, y_train = X[train_idx], y[train_idx]
-                X_test, y_test = X[test_idx], y[test_idx]
+        with tqdm(total=total_iterations, desc="Cross-validation") as pbar:
+            for _ in range(k_repeats):
+                indices = torch.randperm(n_samples, device=device)
+                for f in range(n_folds):
+                    test_start = f * fold_size
+                    test_end = (f + 1) * fold_size if f < n_folds - 1 else n_samples
+                    test_idx = indices[test_start:test_end]
+                    train_idx = torch.cat((indices[:test_start], indices[test_end:]))
 
-                # Build full tree on train
-                train_tree = RegressionDecisionTree(
-                    self.max_depth, self.min_impurity_decrease, self.look_ahead
-                )
-                train_tree.fit(X_train, y_train)
+                    X_train, y_train = X[train_idx], y[train_idx]
+                    X_test, y_test = X[test_idx], y[test_idx]
 
-                for cand in candidates:
-                    pruned = RegressionDecisionTree(
+                    # Build full tree on train once per fold
+                    fold_tree = RegressionDecisionTree(
                         self.max_depth, self.min_impurity_decrease, self.look_ahead
                     )
-                    pruned.root = train_tree.copy_tree(train_tree.root)
+                    fold_tree.fit(X_train, y_train)
 
-                    if cand == float("inf") and pruned.root is not None:
-                        if (
-                            pruned.root.sum_y is not None
-                            and pruned.root.n_samples is not None
-                        ):
-                            pruned.root = pruned.Node(
-                                value=pruned.root.sum_y / pruned.root.n_samples,
-                                n_samples=pruned.root.n_samples,
-                                sum_y=pruned.root.sum_y,
-                            )
-                    else:
-                        pruned.prune(cand)
+                    # Iterate through candidates in ascending order
+                    # Since candidates are sorted, we can progressively prune the same tree
+                    for cand in candidates:
+                        if cand == float("inf") and fold_tree.root is not None:
+                            # For infinite threshold, convert to a single leaf
+                            # Only do this if the root is not already a leaf
+                            if fold_tree.root.value is None:
+                                if (
+                                    fold_tree.root.sum_y is not None
+                                    and fold_tree.root.n_samples is not None
+                                ):
+                                    fold_tree.root = fold_tree.Node(
+                                        value=fold_tree.root.sum_y
+                                        / fold_tree.root.n_samples,
+                                        n_samples=fold_tree.root.n_samples,
+                                        sum_y=fold_tree.root.sum_y,
+                                    )
+                        else:
+                            fold_tree.prune(cand)
 
-                    pred = pruned.predict(X_test)
-                    mse = torch.mean((pred - y_test) ** 2).item()
-                    mse_per_cand[cand].append(mse)
+                        pred = fold_tree.predict(X_test)
+                        mse = torch.mean((pred - y_test) ** 2).item()
+                        mse_per_cand[cand].append(mse)
+
+                        pbar.update(1)
 
         # Compute average MSE and select best
         avg_mse = {cand: sum(mses) / len(mses) for cand, mses in mse_per_cand.items()}
