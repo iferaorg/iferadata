@@ -121,7 +121,7 @@ class RegressionDecisionTree:
         if mask is None:
             mask = torch.ones(n_samples, dtype=torch.bool, device=X.device)
 
-        n_masked = torch.sum(mask)
+        n_masked = torch.sum(mask).item()
         if n_masked < 2:
             return None, None, None, None, float("-inf"), float("-inf")
 
@@ -245,7 +245,7 @@ class RegressionDecisionTree:
                 right_mask = mask & (feature_values > threshold)
 
                 # Check if both sides have samples
-                if torch.sum(left_mask) == 0 or torch.sum(right_mask) == 0:
+                if torch.sum(left_mask).item() == 0 or torch.sum(right_mask).item() == 0:
                     continue
 
                 left_imp = self._compute_impurity(y, left_mask)
@@ -297,7 +297,7 @@ class RegressionDecisionTree:
         Returns:
             Node: Root node of the constructed tree or subtree.
         """
-        n_samples = torch.sum(mask)
+        n_samples = torch.sum(mask).item()
         y_masked = torch.where(mask, y, torch.tensor(0.0, dtype=y.dtype, device=y.device))
         sum_y = torch.sum(y_masked)
 
