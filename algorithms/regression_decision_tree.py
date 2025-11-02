@@ -311,7 +311,7 @@ class RegressionDecisionTree:
             return self._predict_one(node.left, x)
         return self._predict_one(node.right, x)
 
-    def predict(self, X):  # pylint: disable=invalid-name
+    def predict(self, X: torch.Tensor) -> torch.Tensor:  # pylint: disable=invalid-name
         """Make predictions for a batch of samples.
 
         Args:
@@ -350,24 +350,16 @@ class RegressionDecisionTree:
             if not torch.any(mask):
                 continue
             if node.value is not None:
-                value = node.value
-                if not isinstance(value, torch.Tensor):
-                    value = torch.tensor(value, dtype=pred_dtype, device=X.device)
-                else:
-                    value = value.to(dtype=pred_dtype, device=X.device)
+                value = node.value.to(dtype=pred_dtype, device=X.device)
                 predictions[mask] = value
                 continue
 
-            threshold = node.threshold
-            if not isinstance(threshold, torch.Tensor):
-                threshold_tensor = torch.tensor(
-                    threshold, dtype=X.dtype, device=X.device
-                )
-            else:
-                threshold_tensor = threshold.to(dtype=X.dtype, device=X.device)
+            # At this point, node is a split node and must have a threshold
+            assert node.threshold is not None, "Split node must have a threshold"  # nosec
+            threshold = node.threshold.to(dtype=X.dtype, device=X.device)
 
             feature_values = X[:, node.feature]
-            go_left = feature_values <= threshold_tensor
+            go_left = feature_values <= threshold
             left_mask = mask & go_left
             right_mask = mask & (~go_left)
 
