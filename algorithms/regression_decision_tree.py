@@ -386,7 +386,7 @@ class RegressionDecisionTree:
         self.fit(X, y)
         ds = sorted([d.item() for d in self.impurity_decreases])
         mids = [(ds[i] + ds[i + 1]) / 2 for i in range(len(ds) - 1)] if ds else []
-        candidates = [self.min_impurity_decrease] + mids + [float("inf")]
+        candidates = sorted([self.min_impurity_decrease] + mids + [float("inf")])
 
         # Initialize MSE tracker
         mse_per_cand = {cand: [] for cand in candidates}
