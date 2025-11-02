@@ -36,6 +36,7 @@ class RegressionDecisionTree:
             decrease=None,
             n_samples=None,
             sum_y=None,
+            is_leaf=False,
         ):
             """Initialize a tree node.
 
@@ -44,10 +45,11 @@ class RegressionDecisionTree:
                 threshold (float, optional): Threshold value for the split.
                 left (Node, optional): Left child node.
                 right (Node, optional): Right child node.
-                value (float, optional): Predicted value if leaf node.
+                value (float, optional): Predicted value for this node.
                 decrease (float, optional): Impurity decrease from the split.
                 n_samples (int, optional): Number of samples in the subtree.
                 sum_y (torch.Tensor, optional): Sum of target values in the subtree.
+                is_leaf (bool, optional): Whether this node is a leaf node. Defaults to False.
             """
             self.feature = feature
             self.threshold = threshold
@@ -57,6 +59,7 @@ class RegressionDecisionTree:
             self.decrease = decrease
             self.n_samples = n_samples
             self.sum_y = sum_y
+            self.is_leaf = is_leaf
 
     def __init__(
         self,
@@ -382,9 +385,13 @@ class RegressionDecisionTree:
         )
         sum_y = torch.sum(y_masked)
 
+        # Always compute the value for this node
+        value = self._compute_leaf_value(y, mask)
+
         if depth == self.max_depth or n_samples < 2:
-            value = self._compute_leaf_value(y, mask)
-            return self.Node(value=value, n_samples=n_samples, sum_y=sum_y)
+            return self.Node(
+                value=value, n_samples=n_samples, sum_y=sum_y, is_leaf=True
+            )
 
         (
             feature,
@@ -406,13 +413,14 @@ class RegressionDecisionTree:
                 threshold=threshold,
                 left=left_node,
                 right=right_node,
+                value=value,
                 decrease=immediate_decrease,
-                n_samples=left_node.n_samples + right_node.n_samples,
-                sum_y=left_node.sum_y + right_node.sum_y,
+                n_samples=left_node.n_samples + right_node.n_samples,  # type: ignore
+                sum_y=left_node.sum_y + right_node.sum_y,  # type: ignore
+                is_leaf=False,
             )
 
-        value = self._compute_leaf_value(y, mask)
-        return self.Node(value=value, n_samples=n_samples, sum_y=sum_y)
+        return self.Node(value=value, n_samples=n_samples, sum_y=sum_y, is_leaf=True)
 
     def fit(self, X, y):  # pylint: disable=invalid-name
         """Build the regression decision tree using the provided data.
@@ -436,7 +444,7 @@ class RegressionDecisionTree:
         Returns:
             float: Predicted value.
         """
-        if node.value is not None:
+        if node.is_leaf:
             return node.value
         if x[node.feature] <= node.threshold:
             return self._predict_one(node.left, x)
@@ -480,8 +488,8 @@ class RegressionDecisionTree:
             node, mask = stack.pop()
             if not torch.any(mask):
                 continue
-            if node.value is not None:
-                value = node.value.to(dtype=pred_dtype, device=X.device)
+            if node.is_leaf:
+                value = node.value.to(dtype=pred_dtype, device=X.device)  # type: ignore
                 predictions = torch.where(mask, value, predictions)
                 continue
 
@@ -521,6 +529,7 @@ class RegressionDecisionTree:
             decrease=node.decrease,
             n_samples=node.n_samples,
             sum_y=node.sum_y,
+            is_leaf=node.is_leaf,
         )
         new_node.left = self.copy_tree(node.left)
         new_node.right = self.copy_tree(node.right)
@@ -534,23 +543,21 @@ class RegressionDecisionTree:
             node (Node, optional): The current node to prune (defaults to root).
 
         Note:
-            When converting a split node to a leaf node, this method always uses the
-            mean (sum_y / n_samples) regardless of the leaf_value parameter, as the
-            original data is not available during pruning and we cannot compute the
-            median from sum_y and n_samples alone.
+            When converting a split node to a leaf node, this method uses the value
+            that was already computed for the node during tree building, which respects
+            the leaf_value parameter (mean or median).
         """
         if node is None:
             node = self.root
-        if node is None or node.value is not None:
+        if node is None or node.is_leaf:
             return
         if node.left is not None:
             self.prune(min_imp, node.left)
         if node.right is not None:
             self.prune(min_imp, node.right)
         if node.decrease is not None and node.decrease <= min_imp:
-            if node.sum_y is not None and node.n_samples is not None:
-                # Note: Always uses mean here as we don't have original data for median
-                node.value = node.sum_y / node.n_samples
+            # Convert to leaf by using the value already stored in the node
+            node.is_leaf = True
             node.left = None
             node.right = None
             node.feature = None
@@ -613,18 +620,14 @@ class RegressionDecisionTree:
                         if cand == float("inf") and fold_tree.root is not None:
                             # For infinite threshold, convert to a single leaf
                             # Only do this if the root is not already a leaf
-                            if fold_tree.root.value is None:
-                                if (
-                                    fold_tree.root.sum_y is not None
-                                    and fold_tree.root.n_samples is not None
-                                ):
-                                    # Note: Always uses mean here as we don't have original data
-                                    fold_tree.root = fold_tree.Node(
-                                        value=fold_tree.root.sum_y
-                                        / fold_tree.root.n_samples,
-                                        n_samples=fold_tree.root.n_samples,
-                                        sum_y=fold_tree.root.sum_y,
-                                    )
+                            if not fold_tree.root.is_leaf:
+                                # Convert root to leaf using its already-stored value
+                                fold_tree.root.is_leaf = True
+                                fold_tree.root.left = None
+                                fold_tree.root.right = None
+                                fold_tree.root.feature = None
+                                fold_tree.root.threshold = None
+                                fold_tree.root.decrease = None
                         else:
                             fold_tree.prune(cand)
 
@@ -640,12 +643,14 @@ class RegressionDecisionTree:
 
         # Step 4: Prune the full tree to the best candidate
         if best_cand == float("inf") and self.root is not None:
-            if self.root.sum_y is not None and self.root.n_samples is not None:
-                self.root = self.Node(
-                    value=self.root.sum_y / self.root.n_samples,
-                    n_samples=self.root.n_samples,
-                    sum_y=self.root.sum_y,
-                )
+            if not self.root.is_leaf:
+                # Convert root to leaf using its already-stored value
+                self.root.is_leaf = True
+                self.root.left = None
+                self.root.right = None
+                self.root.feature = None
+                self.root.threshold = None
+                self.root.decrease = None
         else:
             self.prune(best_cand)
 
@@ -698,7 +703,7 @@ class RegressionDecisionTree:
         Returns:
             int: Maximum feature index + 1.
         """
-        if node is None or node.value is not None:
+        if node is None or node.is_leaf:
             return 0
         max_feature = node.feature
         left_features = self._count_features(node.left)
@@ -726,7 +731,7 @@ class RegressionDecisionTree:
             lines.append(f"{indent}|--- ...")
             return
 
-        if node.value is not None:
+        if node.is_leaf:
             # Leaf node - display the predicted value
             value = node.value
             if isinstance(value, torch.Tensor):

@@ -390,3 +390,88 @@ def test_device_consistency_with_new_parameters():
 
     predictions = tree.predict(X)
     assert predictions.device == X.device
+
+
+def test_prune_respects_leaf_value():
+    """Test that pruning respects the leaf_value parameter."""
+    # Create simple data where we can control the tree structure
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0], [5.0]])
+    y = torch.tensor([10.0, 11.0, 12.0, 13.0, 100.0])  # Outlier at end
+
+    # Build tree with median leaf_value
+    tree_median = RegressionDecisionTree(
+        max_depth=3, min_impurity_decrease=0.0, leaf_value="median"
+    )
+    tree_median.fit(X, y)
+
+    # Build tree with mean leaf_value
+    tree_mean = RegressionDecisionTree(
+        max_depth=3, min_impurity_decrease=0.0, leaf_value="mean"
+    )
+    tree_mean.fit(X, y)
+
+    # Both trees should have values computed at all nodes (including root)
+    assert tree_median.root.value is not None
+    assert tree_mean.root.value is not None
+
+    # The root values should differ (median vs mean of entire dataset)
+    # Mean: (10+11+12+13+100)/5 = 29.2
+    # Median: 12.0
+    mean_val = torch.mean(y).item()
+    median_val = torch.median(y).item()
+
+    # Verify the root values match expected mean/median
+    assert torch.isclose(tree_mean.root.value, torch.tensor(mean_val), atol=0.1)
+    assert torch.isclose(tree_median.root.value, torch.tensor(median_val), atol=0.1)
+
+    # Find a node with small decrease that we can prune
+    # Let's prune child nodes with decrease < 5.0
+    tree_median.prune(min_imp=5.0)
+    tree_mean.prune(min_imp=5.0)
+
+    # After some pruning occurred, verify the values are preserved
+    # The key insight is that values are stored in all nodes during build,
+    # so when a node becomes a leaf through pruning, it already has the
+    # correct value (mean or median) computed during tree building.
+
+    # Get predictions - these should use the stored values
+    pred_median = tree_median.predict(X)
+    pred_mean = tree_mean.predict(X)
+
+    # Verify predictions are valid
+    assert torch.all(torch.isfinite(pred_median))
+    assert torch.all(torch.isfinite(pred_mean))
+
+
+def test_is_leaf_flag():
+    """Test that is_leaf flag is correctly set and maintained."""
+    X = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+    y = torch.tensor([1.0, 2.0, 3.0, 4.0])
+
+    tree = RegressionDecisionTree(max_depth=2, min_impurity_decrease=0.0)
+    tree.fit(X, y)
+
+    # Root should not be a leaf (assuming tree splits)
+    if tree.root.left is not None or tree.root.right is not None:
+        assert not tree.root.is_leaf
+
+    # Traverse to find a leaf
+    node = tree.root
+    while not node.is_leaf:
+        if node.left is not None:
+            node = node.left
+        else:
+            break
+
+    # This should be a leaf
+    assert node.is_leaf
+    assert node.left is None
+    assert node.right is None
+
+    # Prune the tree heavily
+    tree.prune(min_imp=1000.0)
+
+    # After aggressive pruning, root should become a leaf
+    assert tree.root.is_leaf
+    assert tree.root.left is None
+    assert tree.root.right is None
