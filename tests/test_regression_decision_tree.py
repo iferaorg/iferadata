@@ -266,3 +266,22 @@ def test_sum_y_tracking():
 
     # Root sum_y should equal total sum
     assert torch.isclose(tree.root.sum_y, torch.sum(y))
+
+
+def test_find_optimal_with_progress_bar():
+    """Test that find_optimal works with tqdm progress bar."""
+    # Create a simple dataset
+    torch.manual_seed(123)
+    X = torch.randn(30, 2)
+    y = X[:, 0] + X[:, 1] + torch.randn(30) * 0.1
+
+    tree = RegressionDecisionTree(max_depth=3, min_impurity_decrease=0.0)
+    # This should show progress bar during execution
+    tree.find_optimal_min_impurity_decrease(X, y, n_folds=2, k_repeats=2)
+
+    # Verify tree can still predict
+    predictions = tree.predict(X)
+    assert predictions.shape == y.shape
+    # Check that predictions are reasonable (low MSE)
+    mse = torch.mean((predictions - y) ** 2)
+    assert mse < 10.0  # Should be reasonably accurate
