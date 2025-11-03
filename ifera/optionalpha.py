@@ -204,6 +204,114 @@ def _parse_time(time_str: str) -> Optional[time]:
         return None
 
 
+def parse_filter_log(html_string: str) -> pd.DataFrame:
+    """
+    Parse an Option Alpha filter log HTML and return a pandas DataFrame.
+
+    This function extracts filter information from an HTML grid containing
+    filter log data. The grid includes columns for date, filter type, and
+    an optional description.
+
+    Parameters
+    ----------
+    html_string : str
+        HTML string containing the filter log grid data.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with columns:
+        - date: datetime, parsed date
+        - filter_type: str, the type of filter applied
+        - description: str, optional description (empty string if not present)
+
+        The DataFrame will not contain any NaN values.
+
+    Raises
+    ------
+    ValueError
+        If the HTML string is empty or cannot be parsed.
+
+    Examples
+    --------
+    >>> html = '<div class="rows"><div class="flex">...</div></div>'
+    >>> df = parse_filter_log(html)
+    >>> df.columns
+    Index(['date', 'filter_type', 'description'])
+    """
+    if not html_string or not html_string.strip():
+        raise ValueError("HTML string cannot be empty")
+
+    soup = BeautifulSoup(html_string, "html.parser")
+
+    # Find all filter entries (div elements with class="flex")
+    entries = soup.find_all("div", class_="flex")
+
+    if not entries:
+        raise ValueError("No filter entries found in HTML")
+
+    data = []
+
+    for entry in entries:
+        try:
+            # Extract the date from the first child div with width:12rem
+            date_div = entry.find(
+                "div", style=lambda s: bool(s and "width:12rem" in s)
+            )
+            if not date_div:
+                continue
+
+            date_str = date_div.get_text(strip=True)
+
+            # Extract the filter type and description from the second div with flex:1
+            content_div = entry.find("div", style=lambda s: bool(s and "flex:1" in s))
+            if not content_div:
+                continue
+
+            # The content div might have a desc tag for the description
+            desc_tag = content_div.find("desc")
+            if desc_tag:
+                # Filter type is the text before the desc tag
+                filter_type = (
+                    content_div.get_text(strip=True)
+                    .replace(desc_tag.get_text(strip=True), "")
+                    .strip()
+                )
+                description = desc_tag.get_text(strip=True)
+            else:
+                # No description, just the filter type
+                filter_type = content_div.get_text(strip=True)
+                description = ""
+
+            data.append(
+                {
+                    "date": date_str,
+                    "filter_type": filter_type,
+                    "description": description,
+                }
+            )
+
+        except (AttributeError, KeyError, IndexError):
+            # Skip entries that fail to parse
+            continue
+
+    if not data:
+        raise ValueError("No valid filter data could be extracted from HTML")
+
+    # Create DataFrame and ensure no NaN values
+    df = pd.DataFrame(data)
+
+    # Fill any potential NaN values with appropriate defaults
+    df["date"] = df["date"].fillna("")
+    df["filter_type"] = df["filter_type"].fillna("")
+    df["description"] = df["description"].fillna("")
+
+    # Convert date column to datetime
+    df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
+
+    return df
+
+
 def _extract_dollar_amount(cell) -> float:
     """
     Extract dollar amount from a cell element.

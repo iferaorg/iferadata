@@ -6,7 +6,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ifera.optionalpha import parse_trade_log, _extract_dollar_amount, _parse_time
+from ifera.optionalpha import (
+    parse_trade_log,
+    parse_filter_log,
+    _extract_dollar_amount,
+    _parse_time,
+)
 from bs4 import BeautifulSoup
 
 
@@ -299,3 +304,160 @@ def test_parse_time_invalid():
     assert _parse_time("") is None
     assert _parse_time("   ") is None
     assert _parse_time("invalid") is None
+
+
+@pytest.fixture
+def filter_log_range_width():
+    """Load the SPX-ORB-L-RANGE_WIDTH.txt filter log file."""
+    test_dir = Path(__file__).parent
+    filter_file = test_dir / "filter_examples" / "SPX-ORB-L-RANGE_WIDTH.txt"
+    with open(filter_file, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.fixture
+def filter_log_skip_fomc():
+    """Load the SPX-ORB-L-SKIP_FOMC.txt filter log file."""
+    test_dir = Path(__file__).parent
+    filter_file = test_dir / "filter_examples" / "SPX-ORB-L-SKIP_FOMC.txt"
+    with open(filter_file, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.fixture
+def simple_filter_html():
+    """Create a simple filter log HTML for basic testing."""
+    return """
+    <div class="rows">
+        <div class="flex" style="padding:1.2rem 2rem;font-size:1.5rem;border-top:var(--border);align-items:flex-start;">
+            <div style="width:12rem;">Jan 3, 2022</div>
+            <div style="flex:1;">Min opening range<desc style="display:block;font-size:1.4rem;margin-top:.3rem;">Opening Range: 4,758.17 - 4,795.86, Width: 0.79%</desc></div>
+        </div>
+        <div class="flex" style="padding:1.2rem 2rem;font-size:1.5rem;border-top:var(--border);align-items:flex-start;">
+            <div style="width:12rem;">Jan 26, 2022</div>
+            <div style="flex:1;">FOMC Meeting</div>
+        </div>
+    </div>
+    """
+
+
+def test_parse_filter_log_simple(simple_filter_html):
+    """Test parsing a simple filter log HTML."""
+    df = parse_filter_log(simple_filter_html)
+
+    # Check DataFrame shape
+    assert len(df) == 2
+    assert list(df.columns) == ["date", "filter_type", "description"]
+
+    # Check first row (with description)
+    assert df.iloc[0]["date"] == pd.Timestamp("2022-01-03")
+    assert df.iloc[0]["filter_type"] == "Min opening range"
+    assert (
+        df.iloc[0]["description"] == "Opening Range: 4,758.17 - 4,795.86, Width: 0.79%"
+    )
+
+    # Check second row (without description)
+    assert df.iloc[1]["date"] == pd.Timestamp("2022-01-26")
+    assert df.iloc[1]["filter_type"] == "FOMC Meeting"
+    assert df.iloc[1]["description"] == ""
+
+
+def test_parse_filter_log_range_width(filter_log_range_width):
+    """Test parsing the SPX-ORB-L-RANGE_WIDTH.txt filter log file."""
+    df = parse_filter_log(filter_log_range_width)
+
+    # Check that we parsed a substantial number of rows
+    assert len(df) > 900
+
+    # Check column names
+    assert list(df.columns) == ["date", "filter_type", "description"]
+
+    # Check data types
+    assert pd.api.types.is_datetime64_any_dtype(df["date"])
+    assert df["filter_type"].dtype == object
+    assert df["description"].dtype == object
+
+    # Check for NaN values (should not exist)
+    assert df["filter_type"].isna().sum() == 0
+    assert df["description"].isna().sum() == 0
+
+    # Check some sample values
+    first_row = df.iloc[0]
+    assert first_row["date"] == pd.Timestamp("2022-01-03")
+    assert first_row["filter_type"] == "Min opening range"
+    assert "Opening Range:" in first_row["description"]
+    assert "Width:" in first_row["description"]
+
+    # All rows should have descriptions in this file
+    assert (df["description"] != "").all()
+
+
+def test_parse_filter_log_skip_fomc(filter_log_skip_fomc):
+    """Test parsing the SPX-ORB-L-SKIP_FOMC.txt filter log file."""
+    df = parse_filter_log(filter_log_skip_fomc)
+
+    # Check that we parsed the expected number of rows
+    assert len(df) == 30
+
+    # Check column names
+    assert list(df.columns) == ["date", "filter_type", "description"]
+
+    # Check data types
+    assert pd.api.types.is_datetime64_any_dtype(df["date"])
+    assert df["filter_type"].dtype == object
+    assert df["description"].dtype == object
+
+    # Check for NaN values (should not exist)
+    assert df["filter_type"].isna().sum() == 0
+    assert df["description"].isna().sum() == 0
+
+    # Check some sample values
+    first_row = df.iloc[0]
+    assert first_row["date"] == pd.Timestamp("2022-01-26")
+    assert first_row["filter_type"] == "FOMC Meeting"
+    assert first_row["description"] == ""
+
+    # All rows should be FOMC Meeting
+    assert (df["filter_type"] == "FOMC Meeting").all()
+    # All rows should have no description in this file
+    assert (df["description"] == "").all()
+
+
+def test_parse_filter_log_empty_string():
+    """Test that empty string raises ValueError."""
+    with pytest.raises(ValueError, match="HTML string cannot be empty"):
+        parse_filter_log("")
+
+
+def test_parse_filter_log_whitespace_only():
+    """Test that whitespace-only string raises ValueError."""
+    with pytest.raises(ValueError, match="HTML string cannot be empty"):
+        parse_filter_log("   \n\t  ")
+
+
+def test_parse_filter_log_no_entries():
+    """Test that HTML with no filter entries raises ValueError."""
+    html = "<div class='rows'></div>"
+    with pytest.raises(ValueError, match="No filter entries found"):
+        parse_filter_log(html)
+
+
+def test_parse_filter_log_invalid_html():
+    """Test that invalid HTML still raises appropriate error."""
+    html = "<invalid>not a filter log</invalid>"
+    with pytest.raises(ValueError, match="No filter entries found"):
+        parse_filter_log(html)
+
+
+def test_parse_filter_log_result_no_nan_values(filter_log_range_width):
+    """Explicitly verify no NaN values in output."""
+    df = parse_filter_log(filter_log_range_width)
+
+    # Check all columns for NaN values
+    has_nan_date: bool = bool(df["date"].isna().any())
+    has_nan_filter_type: bool = bool(df["filter_type"].isna().any())
+    has_nan_description: bool = bool(df["description"].isna().any())
+
+    assert not has_nan_date
+    assert not has_nan_filter_type
+    assert not has_nan_description
