@@ -406,7 +406,7 @@ class RegressionDecisionTree:
             left_node = self._build_tree(X, y, left_mask, depth + 1)
             right_node = self._build_tree(X, y, right_mask, depth + 1)
 
-            self.impurity_decreases.append(immediate_decrease)
+            self.impurity_decreases.append(augmented_decrease)
 
             return self.Node(
                 feature=feature,
@@ -414,7 +414,7 @@ class RegressionDecisionTree:
                 left=left_node,
                 right=right_node,
                 value=value,
-                decrease=immediate_decrease,
+                decrease=augmented_decrease,
                 n_samples=left_node.n_samples + right_node.n_samples,  # type: ignore
                 sum_y=left_node.sum_y + right_node.sum_y,  # type: ignore
                 is_leaf=False,
