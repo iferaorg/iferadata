@@ -255,9 +255,7 @@ def parse_filter_log(html_string: str) -> pd.DataFrame:
     for entry in entries:
         try:
             # Extract the date from the first child div with width:12rem
-            date_div = entry.find(
-                "div", style=lambda s: bool(s and "width:12rem" in s)
-            )
+            date_div = entry.find("div", style=lambda s: bool(s and "width:12rem" in s))
             if not date_div:
                 continue
 
@@ -301,13 +299,26 @@ def parse_filter_log(html_string: str) -> pd.DataFrame:
     # Create DataFrame and ensure no NaN values
     df = pd.DataFrame(data)
 
-    # Fill any potential NaN values with appropriate defaults
-    df["date"] = df["date"].fillna("")
+    # Fill any potential NaN values with appropriate defaults for string columns
     df["filter_type"] = df["filter_type"].fillna("")
     df["description"] = df["description"].fillna("")
 
-    # Convert date column to datetime
+    # Convert date column to datetime, filtering out any invalid dates
     df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
+
+    # Drop rows where date conversion failed (resulting in NaT)
+    # This ensures the guarantee of no NaN/NaT values
+    initial_count = len(df)
+    df = df.dropna(subset=["date"])
+    if len(df) < initial_count:
+        # Some dates failed to parse, but we continue with valid entries
+        pass
+
+    if len(df) == 0:
+        raise ValueError("No valid filter data with parseable dates could be extracted")
+
+    # Reset index after dropping rows
+    df = df.reset_index(drop=True)
 
     return df
 
