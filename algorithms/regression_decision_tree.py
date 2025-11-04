@@ -231,22 +231,52 @@ class RegressionDecisionTree:
             max_decrease_per_feature, best_split_per_feature = torch.max(
                 decreases, dim=0
             )
-            best_feature = torch.argmax(max_decrease_per_feature)
-            best_decrease = max_decrease_per_feature[best_feature]
-            best_split = best_split_per_feature[best_feature]
+            best_feature_idx = torch.argmax(max_decrease_per_feature)
 
+            # Use gather to avoid data-dependent indexing
+            best_decrease = torch.gather(
+                max_decrease_per_feature, 0, best_feature_idx.unsqueeze(0)
+            ).squeeze(0)
+            best_split_idx = torch.gather(
+                best_split_per_feature, 0, best_feature_idx.unsqueeze(0)
+            ).squeeze(0)
+
+            # Check if best_decrease is -inf (no valid split found)
             if best_decrease == float("-inf"):
                 return None, None, None, None, float("-inf"), float("-inf")
 
-            sorted_indices = feature_sorted_indices[:, best_feature]
-            threshold_left = X[sorted_indices[best_split], best_feature]
-            threshold_right = X[sorted_indices[best_split + 1], best_feature]
+            # Extract the feature column using gather
+            # feature_sorted_indices has shape (n_samples, n_features)
+            # We want to get column best_feature_idx
+            best_feature_idx_expanded = best_feature_idx.view(1, 1).expand(n_samples, 1)
+            sorted_indices_col = torch.gather(
+                feature_sorted_indices, 1, best_feature_idx_expanded
+            ).squeeze(1)
+
+            # Get threshold values using gather
+            # First, get the feature values at split positions
+            threshold_indices = torch.stack([best_split_idx, best_split_idx + 1], dim=0)
+            threshold_sample_indices = torch.gather(
+                sorted_indices_col.unsqueeze(0).expand(2, -1),
+                1,
+                threshold_indices.unsqueeze(1).expand(-1, 1),
+            ).squeeze(1)
+
+            # Extract feature column from X using gather
+            X_feature_col = torch.gather(X, 1, best_feature_idx_expanded).squeeze(1)
+
+            # Get threshold values
+            threshold_left = X_feature_col[threshold_sample_indices[0]]
+            threshold_right = X_feature_col[threshold_sample_indices[1]]
             best_threshold = (threshold_left + threshold_right) / 2
 
             # Create masks instead of indices
-            feature_values = X[:, best_feature]
-            best_left_mask = mask & (feature_values <= best_threshold)
-            best_right_mask = mask & (feature_values > best_threshold)
+            best_left_mask = mask & (X_feature_col <= best_threshold)
+            best_right_mask = mask & (X_feature_col > best_threshold)
+
+            # Convert best_feature_idx to int for return
+            # (it will be used outside the compiled graph)
+            best_feature = best_feature_idx.item()
 
             return (
                 best_feature,
@@ -364,7 +394,7 @@ class RegressionDecisionTree:
             sum_y = torch.sum(y_masked)
             return sum_y / n_samples
         # median
-        y_values = torch.where(mask, y, float('nan'))
+        y_values = torch.where(mask, y, float("nan"))
         return torch.nanmedian(y_values)
 
     def _build_tree(self, X, y, mask, depth):  # pylint: disable=invalid-name
@@ -399,7 +429,7 @@ class RegressionDecisionTree:
             left_mask,
             right_mask,
             augmented_decrease,
-            immediate_decrease,
+            _,  # immediate_decrease not used here
         ) = self._find_best_split(X, y, mask)
 
         if augmented_decrease > self.min_impurity_decrease and feature is not None:
@@ -643,9 +673,8 @@ class RegressionDecisionTree:
         avg_mse = {cand: sum(mses) / len(mses) for cand, mses in mse_per_cand.items()}
         best_cand = min(avg_mse.items(), key=lambda x: x[1])[0]
         print(
-            "Optimal min_impurity_decrease found: {:.6f} with average MSE: {:.6f}".format(
-                best_cand, avg_mse[best_cand]
-            )
+            f"Optimal min_impurity_decrease found: {best_cand:.6f} "
+            f"with average MSE: {avg_mse[best_cand]:.6f}"
         )
 
         # Step 4: Prune the full tree to the best candidate
