@@ -265,9 +265,14 @@ class RegressionDecisionTree:
             # Extract feature column from X using gather
             X_feature_col = torch.gather(X, 1, best_feature_idx_expanded).squeeze(1)
 
-            # Get threshold values
-            threshold_left = X_feature_col[threshold_sample_indices[0]]
-            threshold_right = X_feature_col[threshold_sample_indices[1]]
+            # Get threshold values using gather to avoid any data-dependent indexing
+            threshold_values = torch.gather(
+                X_feature_col.unsqueeze(0).expand(2, -1),
+                1,
+                threshold_sample_indices.unsqueeze(1),
+            ).squeeze(1)
+            threshold_left = threshold_values[0]
+            threshold_right = threshold_values[1]
             best_threshold = (threshold_left + threshold_right) / 2
 
             # Create masks instead of indices
