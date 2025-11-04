@@ -364,7 +364,7 @@ class RegressionDecisionTree:
             sum_y = torch.sum(y_masked)
             return sum_y / n_samples
         # median
-        y_values = torch.where(mask, y, float('nan'))
+        y_values = torch.where(mask, y, float("nan"))
         return torch.nanmedian(y_values)
 
     def _build_tree(self, X, y, mask, depth):  # pylint: disable=invalid-name
@@ -422,7 +422,6 @@ class RegressionDecisionTree:
 
         return self.Node(value=value, n_samples=n_samples, sum_y=sum_y, is_leaf=True)
 
-    @torch.compile()
     def fit(self, X, y):  # pylint: disable=invalid-name
         """Build the regression decision tree using the provided data.
 
@@ -451,7 +450,6 @@ class RegressionDecisionTree:
             return self._predict_one(node.left, x)
         return self._predict_one(node.right, x)
 
-    @torch.compile()
     def predict(self, X: torch.Tensor) -> torch.Tensor:  # pylint: disable=invalid-name
         """Make predictions for a batch of samples.
 
