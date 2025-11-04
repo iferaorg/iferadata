@@ -28,7 +28,7 @@ from .s3_utils import (
 )
 from .decorators import ThreadSafeCache
 from .date_utils import calculate_expiration
-from .optionalpha import parse_trade_log
+from .optionalpha import parse_trade_log, parse_filter_log, get_filters
 
 __all__ = [
     "BaseInstrumentConfig",
@@ -77,4 +77,6 @@ __all__ = [
     "check_s3_file_exists",
     "rename_s3_file",
     "parse_trade_log",
+    "parse_filter_log",
+    "get_filters",
 ]

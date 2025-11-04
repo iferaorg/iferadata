@@ -164,8 +164,8 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
 
     # Convert time columns to datetime.time objects
-    df["start_time"] = df["start_time"].apply(_parse_time)
-    df["end_time"] = df["end_time"].apply(_parse_time)
+    df["start_time"] = df["start_time"].apply(_parse_time) # type: ignore
+    df["end_time"] = df["end_time"].apply(_parse_time)  # type: ignore
 
     return df
 
@@ -368,3 +368,91 @@ def _extract_dollar_amount(cell) -> float:
         return -value if sign == "-" else value
 
     return 0.0
+
+
+FILTERS_FOLDER = 'data/results/option_alpha/filters/'
+
+
+def parse_simple_filter(file_name: str) -> pd.DataFrame | None:
+    try:
+        with open(file_name, 'r') as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+        df['filter'] = 1
+
+    except FileNotFoundError:
+        return None
+
+    return df[['date', 'filter']]
+
+
+def parse_simple_indicator(file_name: str) -> pd.DataFrame | None:
+    try:
+        with open(file_name, 'r') as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+        df['indicator'] = df['description'].astype(float)
+
+    except FileNotFoundError:
+        return None
+
+    return df[['date', 'indicator']]
+
+def parse_range_with(prefix: str) -> pd.DataFrame | None:
+    file_name = f'{FILTERS_FOLDER}{prefix}-RANGE_WIDTH.txt'
+    try:
+        with open(file_name, 'r') as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_range_width(description):
+        match = re.search(r'Opening Range: ([\d,]+\.\d+) - ([\d,]+\.\d+)', description)
+        if match:
+            min_val = float(match.group(1).replace(',', ''))
+            max_val = float(match.group(2).replace(',', ''))
+            return (max_val - min_val) / max_val if max_val != 0 else 0
+        else:
+            return None
+
+    df['range_width'] = df['description'].apply(_parse_range_width)
+    
+    return df[['date', 'range_width']]
+
+
+def get_filters(prefix: str) -> pd.DataFrame:
+    dfs = []
+
+    range_df = parse_range_with(prefix)
+    if range_df is not None:
+        dfs.append(range_df)
+        
+    simple_filters = ['FIRST_BO', 'SKIP_CPI', 'SKIP_EOM', 'SKIP_EOQ', 'SKIP_FM', 'SKIP_FOMC', 'SKIP_FW', 'SKIP_ME', 'SKIP_PAY', 'SKIP_PCE', 'SKIP_PPI', 'SKIP_TW']
+    for filter_name in simple_filters:
+        filter_df = parse_simple_filter(f'{FILTERS_FOLDER}{prefix}-{filter_name}.txt')
+        if filter_df is not None:
+            filter_df = filter_df.rename(columns={'filter': f'{filter_name.lower()}'})
+            dfs.append(filter_df)
+
+    indicator_names = ['ADX_14']
+    for indicator_name in indicator_names:
+        indicator_df = parse_simple_indicator(f'{FILTERS_FOLDER}{prefix}-{indicator_name}.txt')
+        if indicator_df is not None:
+            indicator_df = indicator_df.rename(columns={'indicator': f'{indicator_name.lower()}'})
+            dfs.append(indicator_df)
+
+    if dfs:
+        from functools import reduce
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on='date', how='outer'), dfs)
+        # Replace NaN with 0 for filter columns
+        for col in df_merged.columns:
+            if col != 'date':
+                df_merged[col] = df_merged[col].fillna(0)
+        return df_merged
+    else:
+        return pd.DataFrame()
