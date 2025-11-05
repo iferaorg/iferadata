@@ -54,7 +54,7 @@ def test_multiplier_no_backadjust(
     )
 
     expected = torch.ones((1, dummy_data.shape[1]))
-    torch.testing.assert_close(data.multiplier, expected)
+    torch.testing.assert_close(data.multiplier, expected.to(data.multiplier.device))
 
 
 def test_multiplier_backadjust(monkeypatch, tmp_path, base_instrument_config):
@@ -90,7 +90,7 @@ def test_multiplier_backadjust(monkeypatch, tmp_path, base_instrument_config):
     )
 
     expected = torch.tensor([[1.0, 1.0, 1.0], [1.0, 2.0, 2.0]])
-    torch.testing.assert_close(data.multiplier, expected)
+    torch.testing.assert_close(data.multiplier, expected.to(data.multiplier.device))
 
 
 def test_multiplier_backadjust_unquoted_start_date(
@@ -126,7 +126,7 @@ def test_multiplier_backadjust_unquoted_start_date(
     )
 
     expected = torch.full((1, 1), 2.406085968017578)
-    torch.testing.assert_close(data.multiplier, expected)
+    torch.testing.assert_close(data.multiplier, expected.to(data.multiplier.device))
 
 
 def test_copy_to(monkeypatch, base_instrument_config, ohlcv_single_date):
