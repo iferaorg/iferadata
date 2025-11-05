@@ -575,21 +575,15 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(
-            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
-        )
+        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
-            )
+            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -685,9 +679,9 @@ def prepare_splits(
       consecutive unique values.
     - Left splits include values <= threshold, right splits include values >= threshold.
     - Splits are mutually exclusive if they:
-      1. Come from the same filter and same direction
-      2. Would result in an empty set when both are applied
-      3. One split's rows are a subset of the other's (redundant split)
+      1. Would result in an empty set when both are applied
+      2. One split's rows are a subset of the other's (mutually exclusive)
+      3. A split is also marked as exclusive with itself (no point applying same mask twice)
     """
     # Step 1: Align filters_df with trades_df
     # Remove rows from filters_df that don't exist in trades_df
@@ -705,9 +699,7 @@ def prepare_splits(
     filters_df = filters_df.reindex(trades_df.index)
 
     # Step 2: Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
 
     # Add weekday filters based on date
     filters_df["is_monday"] = (filters_df.index.dayofweek == 0).astype(int)  # type: ignore
@@ -754,9 +746,7 @@ def prepare_splits(
             threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
 
             # Convert filter column to tensor for masking
-            col_tensor = torch.tensor(
-                filters_df[col_name].values, dtype=dtype, device=device
-            )
+            col_tensor = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
             # Create left split (values <= threshold) if not in right_only_filters
             if col_name not in right_only_filters:
@@ -764,9 +754,7 @@ def prepare_splits(
                 splits.append(
                     Split(
                         mask=left_mask,
-                        filters=[
-                            FilterInfo(col_idx, col_name, threshold.item(), "left")
-                        ],
+                        filters=[FilterInfo(col_idx, col_name, threshold.item(), "left")],
                     )
                 )
 
@@ -776,9 +764,7 @@ def prepare_splits(
                 splits.append(
                     Split(
                         mask=right_mask,
-                        filters=[
-                            FilterInfo(col_idx, col_name, threshold.item(), "right")
-                        ],
+                        filters=[FilterInfo(col_idx, col_name, threshold.item(), "right")],
                     )
                 )
 
@@ -835,9 +821,7 @@ def prepare_splits(
 
     # Step 4: Calculate splits_exclusion_mask (vectorized)
     n_splits = len(splits)
-    splits_exclusion_mask = torch.zeros(
-        (n_splits, n_splits), dtype=torch.bool, device=device
-    )
+    splits_exclusion_mask = torch.zeros((n_splits, n_splits), dtype=torch.bool, device=device)
 
     if n_splits == 0:
         # No splits, return empty mask
@@ -846,26 +830,7 @@ def prepare_splits(
         # Stack all masks into a 2D tensor (n_splits x n_samples)
         all_masks = torch.stack([split.mask for split in splits], dim=0)
 
-        # Rule 1: Splits are mutually exclusive if they share any filter with same direction
-        # After merging, we need to check all filters in each split
-        rule1_mask = torch.zeros((n_splits, n_splits), dtype=torch.bool, device=device)
-        for i in range(n_splits):
-            for j in range(i + 1, n_splits):
-                # Check if any filter in split i matches any filter in split j
-                # (same filter_idx and same direction)
-                for filter_i in splits[i].filters:
-                    for filter_j in splits[j].filters:
-                        if (
-                            filter_i.filter_idx == filter_j.filter_idx
-                            and filter_i.direction == filter_j.direction
-                        ):
-                            rule1_mask[i, j] = True
-                            rule1_mask[j, i] = True
-                            break
-                    if rule1_mask[i, j]:
-                        break
-
-        # Rule 2 & 3: Use matrix multiplication to avoid 3D tensors
+        # Use matrix multiplication for all rules
         # Convert masks to float for matrix operations
         all_masks_float = all_masks.float()
 
@@ -873,29 +838,32 @@ def prepare_splits(
         # intersection_counts[i, j] = number of samples where both mask[i] and mask[j] are True
         intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
 
-        # Rule 2: If applying both splits results in empty set
+        # Rule 1: If applying both splits results in empty set
         # has_intersection[i, j] = True if intersection_counts[i, j] > 0
         has_intersection = intersection_counts > 0
         # Empty intersection means mutually exclusive
-        rule2_mask = ~has_intersection
+        rule1_mask = ~has_intersection
 
-        # Rule 3: Split i excludes split j if i's rows are a subset of j's rows
-        # This means: all rows in i are also in j
-        # Equivalently: intersection_counts[i, j] == mask_sums[i]
+        # Rule 2: Splits are mutually exclusive if one's rows are a subset of the other's
+        # This means: all rows in i are also in j OR all rows in j are also in i
+        # Split i is subset of j if: intersection_counts[i, j] == mask_sums[i]
+        # Split j is subset of i if: intersection_counts[i, j] == mask_sums[j]
         mask_sums = all_masks_float.sum(dim=1)  # (n_splits,)
         # Broadcasting: (n_splits, 1) == (n_splits, n_splits)
-        rule3_mask = intersection_counts == mask_sums.unsqueeze(1)
+        i_subset_of_j = intersection_counts == mask_sums.unsqueeze(1)
+        # Broadcasting: (n_splits, n_splits) == (1, n_splits)
+        j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
+        # Mutually exclusive if either is a subset of the other
+        rule2_mask = i_subset_of_j | j_subset_of_i
 
         # Combine all rules with OR operation
-        splits_exclusion_mask = rule1_mask | rule2_mask | rule3_mask
+        splits_exclusion_mask = rule1_mask | rule2_mask
 
-        # A split doesn't exclude itself, so set diagonal to False
-        splits_exclusion_mask.fill_diagonal_(False)
+        # Splits are exclusive with themselves (no point applying same mask twice)
+        splits_exclusion_mask.fill_diagonal_(True)
 
     # Step 5: Convert filters_df to torch tensor X
-    X = torch.tensor(
-        filters_df.values, dtype=dtype, device=device
-    )  # pylint: disable=invalid-name
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     # Step 6: Calculate RoR (y) as profit / risk
     y = torch.tensor(  # pylint: disable=invalid-name
