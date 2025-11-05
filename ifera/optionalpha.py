@@ -693,6 +693,31 @@ def prepare_splits(
         spread_width * 100 - trades_df["risk"]
     ) / trades_df["risk"]
 
+    # Add weekday filters based on date
+    filters_df["is_monday"] = (filters_df.index.dayofweek == 0).astype(int)  # type: ignore
+    filters_df["is_tuesday"] = (filters_df.index.dayofweek == 1).astype(int)  # type: ignore
+    filters_df["is_wednesday"] = (filters_df.index.dayofweek == 2).astype(int)  # type: ignore
+    filters_df["is_thursday"] = (filters_df.index.dayofweek == 3).astype(int)  # type: ignore
+    filters_df["is_friday"] = (filters_df.index.dayofweek == 4).astype(int)  # type: ignore
+
+    # Add open_minutes based on start_time (hours*60+minutes)
+    if "start_time" in trades_df.columns:
+        filters_df["open_minutes"] = trades_df["start_time"].apply(
+            lambda t: t.hour * 60 + t.minute if t is not None else 0
+        )
+    else:
+        # Default to 0 if start_time column doesn't exist
+        filters_df["open_minutes"] = 0
+
+    # Append weekday filters to left_only_filters (they can only be excluded)
+    left_only_filters = left_only_filters + [
+        "is_monday",
+        "is_tuesday",
+        "is_wednesday",
+        "is_thursday",
+        "is_friday",
+    ]
+
     # Step 3: Find all splits
     splits: list[Split] = []
     filter_names = filters_df.columns.tolist()
@@ -778,7 +803,9 @@ def prepare_splits(
                 splits_exclusion_mask[i, j] = True
 
     # Step 5: Convert filters_df to torch tensor X
-    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
+    X = torch.tensor(
+        filters_df.values, dtype=dtype, device=device
+    )  # pylint: disable=invalid-name
 
     # Step 6: Calculate RoR (y) as profit / risk
     y = torch.tensor(  # pylint: disable=invalid-name

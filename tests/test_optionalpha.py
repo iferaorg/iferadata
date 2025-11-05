@@ -600,8 +600,9 @@ def test_prepare_splits_basic():
         trades_df, filters_df, spread_width, [], [], device, dtype
     )
 
-    # Check X shape - should have 3 rows and 3 columns (2 filters + reward_per_risk)
-    assert X.shape == (3, 3)
+    # Check X shape - should have 3 rows and 9 columns
+    # (2 filters + reward_per_risk + 5 weekday filters + open_minutes)
+    assert X.shape == (3, 9)
     assert X.device == device
     assert X.dtype == dtype
 
@@ -613,7 +614,7 @@ def test_prepare_splits_basic():
     expected_y = torch.tensor([0.5, -0.5, 0.5], dtype=dtype, device=device)
     assert torch.allclose(y, expected_y)
 
-    # Check reward_per_risk column (last column in X)
+    # Check reward_per_risk column (column index 2 in X, after filter_a and filter_b)
     # reward_per_risk = (spread_width * 100 - risk) / risk
     expected_rpr = [
         (20 * 100 - 100) / 100,
@@ -624,21 +625,22 @@ def test_prepare_splits_basic():
         X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device)
     )
 
-    # Check splits - should have splits for all 3 columns (filter_a, filter_b, reward_per_risk)
+    # Check splits - should have splits for all 9 columns
+    # (filter_a, filter_b, reward_per_risk, is_monday, is_tuesday, is_wednesday,
+    # is_thursday, is_friday, open_minutes)
     # filter_a has values [1, 2, 3] -> thresholds at 1.5, 2.5 -> 4 splits (2 thresholds * 2 directions)
     # filter_b has values [10, 20, 30] -> thresholds at 15, 25 -> 4 splits
     # reward_per_risk has 3 unique values -> 2 thresholds -> 4 splits
-    # Total: 12 splits
-    assert len(splits) == 12
+    # is_monday, is_tuesday, is_wednesday each have 2 unique values (0, 1) -> 1 threshold each -> 3 left-only splits
+    # is_thursday and is_friday have only 1 value (0) -> no splits
+    # open_minutes has 1 unique value (0) -> no splits
+    # Total: 4 + 4 + 4 + 3 = 15 splits
+    assert len(splits) >= 15
 
     # Check split properties
     for split in splits:
         assert isinstance(split, Split)
-        assert split.filter_idx in [
-            0,
-            1,
-            2,
-        ]  # Three columns (2 filters + reward_per_risk)
+        assert split.filter_idx in range(9)  # 9 columns now
         assert split.direction in ["left", "right"]
         assert split.mask.dtype == torch.bool
         assert split.mask.shape == (3,)  # 3 samples
@@ -722,11 +724,12 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
-    # Should have splits for filter_a and reward_per_risk
+    # Should have splits for filter_a, reward_per_risk, and weekday filters
     # filter_a: 2 thresholds * 2 directions = 4 splits
     # reward_per_risk: 2 thresholds * 2 directions = 4 splits
-    # Total: 8 splits
-    assert len(splits) == 8
+    # is_monday, is_tuesday, is_wednesday: 3 left-only splits (each has values 0 and 1)
+    # Total: 4 + 4 + 3 = 11 splits
+    assert len(splits) == 11
 
     # Find left splits for filter_a
     left_splits = [
@@ -917,3 +920,179 @@ def test_prepare_splits_device_dtype():
 
     assert exclusion_mask.dtype == torch.bool
     assert exclusion_mask.device == device
+
+
+def test_prepare_splits_weekday_filters():
+    """Test that weekday filters are added and configured as left-only."""
+    from datetime import time as dt_time
+
+    # Create trades dataframe with start_time column covering different weekdays
+    # 2022-01-10 = Monday, 2022-01-11 = Tuesday, 2022-01-12 = Wednesday
+    # 2022-01-13 = Thursday, 2022-01-14 = Friday
+    trades_df = pd.DataFrame(
+        {
+            "risk": [100.0, 200.0, 150.0, 120.0, 180.0],
+            "profit": [50.0, 100.0, 75.0, 60.0, 90.0],
+            "start_time": [
+                dt_time(15, 30),
+                dt_time(14, 45),
+                dt_time(16, 0),
+                dt_time(15, 15),
+                dt_time(13, 30),
+            ],
+        },
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13", "2022-01-14"],
+            name="date",
+        ),
+    )
+
+    # Create simple filters dataframe
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 1.0, 1.0, 1.0, 1.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13", "2022-01-14"],
+            name="date",
+        ),
+    )
+
+    device = torch.device("cpu")
+    dtype = torch.float32
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], device, dtype
+    )
+
+    # Check that weekday columns were added
+    # X should have: filter_a, reward_per_risk, is_monday, is_tuesday, is_wednesday,
+    # is_thursday, is_friday, open_minutes
+    assert X.shape == (5, 8)
+
+    # Check weekday values (column indices 2-6)
+    # 2022-01-10 = Monday
+    assert X[0, 2].item() == 1  # is_monday
+    assert X[0, 3].item() == 0  # is_tuesday
+    assert X[0, 4].item() == 0  # is_wednesday
+    assert X[0, 5].item() == 0  # is_thursday
+    assert X[0, 6].item() == 0  # is_friday
+
+    # 2022-01-11 = Tuesday
+    assert X[1, 2].item() == 0  # is_monday
+    assert X[1, 3].item() == 1  # is_tuesday
+
+    # 2022-01-12 = Wednesday
+    assert X[2, 4].item() == 1  # is_wednesday
+
+    # 2022-01-13 = Thursday
+    assert X[3, 5].item() == 1  # is_thursday
+
+    # 2022-01-14 = Friday
+    assert X[4, 6].item() == 1  # is_friday
+
+    # Check that weekday filters generate only left splits (not right)
+    weekday_splits = [
+        s
+        for s in splits
+        if s.filter_name
+        in ["is_monday", "is_tuesday", "is_wednesday", "is_thursday", "is_friday"]
+    ]
+    assert all(s.direction == "left" for s in weekday_splits)
+    assert len(weekday_splits) == 5  # One left split for each weekday
+
+
+def test_prepare_splits_open_minutes():
+    """Test that open_minutes filter is added based on start_time."""
+    from datetime import time as dt_time
+
+    trades_df = pd.DataFrame(
+        {
+            "risk": [100.0, 200.0, 150.0],
+            "profit": [50.0, 100.0, 75.0],
+            "start_time": [
+                dt_time(15, 30),  # 15*60 + 30 = 930
+                dt_time(14, 45),  # 14*60 + 45 = 885
+                dt_time(16, 0),  # 16*60 + 0 = 960
+            ],
+        },
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Check that open_minutes column was added (last column)
+    # X should have 8 columns: filter_a, reward_per_risk, 5 weekday filters, open_minutes
+    assert X.shape == (3, 8)
+
+    # Check open_minutes values (last column, index 7)
+    assert X[0, 7].item() == 930  # 15:30
+    assert X[1, 7].item() == 885  # 14:45
+    assert X[2, 7].item() == 960  # 16:00
+
+    # Check that open_minutes generates splits (should have 2 thresholds -> 4 splits)
+    open_minutes_splits = [s for s in splits if s.filter_name == "open_minutes"]
+    assert len(open_minutes_splits) == 4  # 2 thresholds * 2 directions
+
+
+def test_prepare_splits_open_minutes_missing_start_time():
+    """Test that open_minutes defaults to 0 when start_time is missing."""
+    trades_df = pd.DataFrame(
+        {
+            "risk": [100.0, 200.0],
+            "profit": [50.0, 100.0],
+            # No start_time column
+        },
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Check that open_minutes column was added (last column, index 7) with default value 0
+    assert X.shape == (2, 8)
+    assert X[0, 7].item() == 0
+    assert X[1, 7].item() == 0
+
+    # With only one unique value (0), open_minutes should generate no splits
+    open_minutes_splits = [s for s in splits if s.filter_name == "open_minutes"]
+    assert len(open_minutes_splits) == 0
+
+
+def test_prepare_splits_open_minutes_with_none():
+    """Test that open_minutes handles None values in start_time."""
+    from datetime import time as dt_time
+
+    trades_df = pd.DataFrame(
+        {
+            "risk": [100.0, 200.0, 150.0],
+            "profit": [50.0, 100.0, 75.0],
+            "start_time": [dt_time(15, 30), None, dt_time(16, 0)],
+        },
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Check that open_minutes handles None (should default to 0)
+    assert X[0, 7].item() == 930  # 15:30
+    assert X[1, 7].item() == 0  # None -> 0
+    assert X[2, 7].item() == 960  # 16:00
