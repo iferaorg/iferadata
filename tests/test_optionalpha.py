@@ -583,17 +583,13 @@ def test_prepare_splits_basic():
             "risk": [100.0, 200.0, 150.0],
             "profit": [50.0, -100.0, 75.0],
         },
-        index=pd.DatetimeIndex(
-            ["2022-01-10", "2022-01-11", "2022-01-12"], name="date"
-        ),
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
     # Create simple filters dataframe
     filters_df = pd.DataFrame(
         {"filter_a": [1.0, 2.0, 3.0], "filter_b": [10.0, 20.0, 30.0]},
-        index=pd.DatetimeIndex(
-            ["2022-01-10", "2022-01-11", "2022-01-12"], name="date"
-        ),
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
     spread_width = 20
@@ -619,8 +615,14 @@ def test_prepare_splits_basic():
 
     # Check reward_per_risk column (last column in X)
     # reward_per_risk = (spread_width * 100 - risk) / risk
-    expected_rpr = [(20 * 100 - 100) / 100, (20 * 100 - 200) / 200, (20 * 100 - 150) / 150]
-    assert torch.allclose(X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device))
+    expected_rpr = [
+        (20 * 100 - 100) / 100,
+        (20 * 100 - 200) / 200,
+        (20 * 100 - 150) / 150,
+    ]
+    assert torch.allclose(
+        X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device)
+    )
 
     # Check splits - should have splits for all 3 columns (filter_a, filter_b, reward_per_risk)
     # filter_a has values [1, 2, 3] -> thresholds at 1.5, 2.5 -> 4 splits (2 thresholds * 2 directions)
@@ -632,7 +634,11 @@ def test_prepare_splits_basic():
     # Check split properties
     for split in splits:
         assert isinstance(split, Split)
-        assert split.filter_idx in [0, 1, 2]  # Three columns (2 filters + reward_per_risk)
+        assert split.filter_idx in [
+            0,
+            1,
+            2,
+        ]  # Three columns (2 filters + reward_per_risk)
         assert split.direction in ["left", "right"]
         assert split.mask.dtype == torch.bool
         assert split.mask.shape == (3,)  # 3 samples
@@ -723,7 +729,11 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
     assert len(splits) == 8
 
     # Find left splits for filter_a
-    left_splits = [i for i, s in enumerate(splits) if s.direction == "left" and s.filter_name == "filter_a"]
+    left_splits = [
+        i
+        for i, s in enumerate(splits)
+        if s.direction == "left" and s.filter_name == "filter_a"
+    ]
     assert len(left_splits) == 2
 
     # Left splits for filter_a should exclude each other
@@ -731,7 +741,11 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
     assert exclusion_mask[left_splits[1], left_splits[0]].item()
 
     # Find right splits for filter_a
-    right_splits = [i for i, s in enumerate(splits) if s.direction == "right" and s.filter_name == "filter_a"]
+    right_splits = [
+        i
+        for i, s in enumerate(splits)
+        if s.direction == "right" and s.filter_name == "filter_a"
+    ]
     assert len(right_splits) == 2
 
     # Right splits for filter_a should exclude each other

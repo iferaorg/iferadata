@@ -690,8 +690,8 @@ def prepare_splits(
 
     # Step 2: Add reward_per_risk column
     filters_df["reward_per_risk"] = (
-        (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
-    )
+        spread_width * 100 - trades_df["risk"]
+    ) / trades_df["risk"]
 
     # Step 3: Find all splits
     splits: list[Split] = []
@@ -778,10 +778,10 @@ def prepare_splits(
                 splits_exclusion_mask[i, j] = True
 
     # Step 5: Convert filters_df to torch tensor X
-    X = torch.tensor(filters_df.values, dtype=dtype, device=device)
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     # Step 6: Calculate RoR (y) as profit / risk
-    y = torch.tensor(
+    y = torch.tensor(  # pylint: disable=invalid-name
         (trades_df["profit"] / trades_df["risk"]).values, dtype=dtype, device=device
     )
 
