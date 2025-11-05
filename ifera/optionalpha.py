@@ -680,7 +680,7 @@ def prepare_splits(
     - Left splits include values <= threshold, right splits include values >= threshold.
     - Splits are mutually exclusive if they:
       1. Would result in an empty set when both are applied
-      2. One split's rows are a subset of the other's (mutually exclusive)
+      2. One split's rows are a subset of the other's (redundant/overlapping masks)
       3. A split is also marked as exclusive with itself (no point applying same mask twice)
     """
     # Step 1: Align filters_df with trades_df
@@ -844,7 +844,7 @@ def prepare_splits(
         # Empty intersection means mutually exclusive
         rule1_mask = ~has_intersection
 
-        # Rule 2: Splits are mutually exclusive if one's rows are a subset of the other's
+        # Rule 2: Splits are exclusive if one's rows are a subset of the other's (redundant)
         # This means: all rows in i are also in j OR all rows in j are also in i
         # Split i is subset of j if: intersection_counts[i, j] == mask_sums[i]
         # Split j is subset of i if: intersection_counts[i, j] == mask_sums[j]
@@ -853,7 +853,7 @@ def prepare_splits(
         i_subset_of_j = intersection_counts == mask_sums.unsqueeze(1)
         # Broadcasting: (n_splits, n_splits) == (1, n_splits)
         j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
-        # Mutually exclusive if either is a subset of the other
+        # Mark as exclusive if either is a subset of the other (prevents redundant masks)
         rule2_mask = i_subset_of_j | j_subset_of_i
 
         # Combine all rules with OR operation
