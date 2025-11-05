@@ -28,7 +28,13 @@ from .s3_utils import (
 )
 from .decorators import ThreadSafeCache
 from .date_utils import calculate_expiration
-from .optionalpha import parse_trade_log, parse_filter_log, get_filters
+from .optionalpha import (
+    parse_trade_log,
+    parse_filter_log,
+    get_filters,
+    prepare_splits,
+    Split,
+)
 
 __all__ = [
     "BaseInstrumentConfig",
@@ -79,4 +85,6 @@ __all__ = [
     "parse_trade_log",
     "parse_filter_log",
     "get_filters",
+    "prepare_splits",
+    "Split",
 ]
