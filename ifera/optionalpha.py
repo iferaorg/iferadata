@@ -29,10 +29,9 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame
-        A DataFrame with columns:
+        A DataFrame with a DatetimeIndex (named 'date') and columns:
         - symbol: str, e.g., "SPX"
         - trade_type: str, e.g., "Long Call"
-        - date: datetime, parsed date
         - start_time: datetime.time, e.g., time(15, 47)
         - end_time: datetime.time, e.g., time(16, 0)
         - status: str, e.g., "Expired"
@@ -40,18 +39,22 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
         - profit: float, profit/loss in dollars (0 if missing)
 
         The DataFrame will not contain any NaN values.
+        The index is a pd.DatetimeIndex containing unique dates.
 
     Raises
     ------
     ValueError
-        If the HTML string is empty or cannot be parsed.
+        If the HTML string is empty or cannot be parsed, or if duplicate
+        dates are found in the trade log.
 
     Examples
     --------
     >>> html = '<grid>...</grid>'
     >>> df = parse_trade_log(html)
     >>> df.columns
-    Index(['symbol', 'trade_type', 'date', 'start_time', 'end_time', 'status', 'risk', 'profit'])
+    Index(['symbol', 'trade_type', 'start_time', 'end_time', 'status', 'risk', 'profit'])
+    >>> isinstance(df.index, pd.DatetimeIndex)
+    True
     """
     if not html_string or not html_string.strip():
         raise ValueError("HTML string cannot be empty")
@@ -164,8 +167,18 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
 
     # Convert time columns to datetime.time objects
-    df["start_time"] = df["start_time"].apply(_parse_time) # type: ignore
+    df["start_time"] = df["start_time"].apply(_parse_time)  # type: ignore
     df["end_time"] = df["end_time"].apply(_parse_time)  # type: ignore
+
+    # Check for duplicate dates and raise error if found
+    duplicates = df[df["date"].duplicated(keep=False)]
+    if len(duplicates) > 0:
+        unique_dup_dates = duplicates["date"].drop_duplicates().tolist()  # type: ignore
+        raise ValueError(f"Duplicate dates found in trade log: " f"{unique_dup_dates}")
+
+    # Set date as the index
+    df = df.set_index("date")
+    df.index.name = "date"
 
     return df
 
@@ -370,40 +383,92 @@ def _extract_dollar_amount(cell) -> float:
     return 0.0
 
 
-FILTERS_FOLDER = 'data/results/option_alpha/filters/'
+FILTERS_FOLDER = "data/results/option_alpha/filters/"
+
+
+def _check_and_eliminate_duplicates(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+    """
+    Check for duplicate dates and eliminate them if values are the same.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with a 'date' column
+    column_name : str
+        Name of the value column to check for consistency across duplicates
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with duplicates removed
+
+    Raises
+    ------
+    ValueError
+        If duplicate dates have different values for the specified column
+    """
+    if "date" not in df.columns:
+        return df
+
+    duplicates = df[df["date"].duplicated(keep=False)]
+    if len(duplicates) > 0:
+        # Check if duplicate dates have the same values
+        unique_dates = duplicates["date"].drop_duplicates().tolist()  # type: ignore
+        for date in unique_dates:
+            date_rows = df[df["date"] == date]
+            # Check if all values for this date are the same
+            if len(date_rows[column_name].unique()) > 1:  # type: ignore
+                raise ValueError(
+                    f"Duplicate date {date} found with different values for '{column_name}': "
+                    f"{date_rows[column_name].tolist()}"
+                )
+
+        # Remove duplicates, keeping first occurrence
+        df = df.drop_duplicates(subset=["date"], keep="first")
+
+    return df
 
 
 def parse_simple_filter(file_name: str) -> pd.DataFrame | None:
     try:
-        with open(file_name, 'r') as f:
+        with open(file_name, "r") as f:
             html = f.read()
 
         df = parse_filter_log(html)
-        df['filter'] = 1
+        df["filter"] = 1
+
+        # Eliminate duplicate dates
+        df = _check_and_eliminate_duplicates(df, "filter")
 
     except FileNotFoundError:
         return None
 
-    return df[['date', 'filter']]
+    result: pd.DataFrame = df[["date", "filter"]]  # type: ignore
+    return result
 
 
 def parse_simple_indicator(file_name: str) -> pd.DataFrame | None:
     try:
-        with open(file_name, 'r') as f:
+        with open(file_name, "r") as f:
             html = f.read()
 
         df = parse_filter_log(html)
-        df['indicator'] = df['description'].astype(float)
+        df["indicator"] = df["description"].astype(float)
+
+        # Eliminate duplicate dates
+        df = _check_and_eliminate_duplicates(df, "indicator")
 
     except FileNotFoundError:
         return None
 
-    return df[['date', 'indicator']]
+    result: pd.DataFrame = df[["date", "indicator"]]  # type: ignore
+    return result
+
 
 def parse_range_with(prefix: str) -> pd.DataFrame | None:
-    file_name = f'{FILTERS_FOLDER}{prefix}-RANGE_WIDTH.txt'
+    file_name = f"{FILTERS_FOLDER}{prefix}-RANGE_WIDTH.txt"
     try:
-        with open(file_name, 'r') as f:
+        with open(file_name, "r") as f:
             html = f.read()
 
         df = parse_filter_log(html)
@@ -412,47 +477,105 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
         return None
 
     def _parse_range_width(description):
-        match = re.search(r'Opening Range: ([\d,]+\.\d+) - ([\d,]+\.\d+)', description)
+        match = re.search(r"Opening Range: ([\d,]+\.\d+) - ([\d,]+\.\d+)", description)
         if match:
-            min_val = float(match.group(1).replace(',', ''))
-            max_val = float(match.group(2).replace(',', ''))
+            min_val = float(match.group(1).replace(",", ""))
+            max_val = float(match.group(2).replace(",", ""))
             return (max_val - min_val) / max_val if max_val != 0 else 0
         else:
             return None
 
-    df['range_width'] = df['description'].apply(_parse_range_width)
-    
-    return df[['date', 'range_width']]
+    df["range_width"] = df["description"].apply(_parse_range_width)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "range_width")
+
+    result: pd.DataFrame = df[["date", "range_width"]]  # type: ignore
+    return result
 
 
 def get_filters(prefix: str) -> pd.DataFrame:
+    """
+    Get and merge filter data for a given prefix.
+
+    This function reads various filter files (range width, skip filters, indicators)
+    for a given prefix, eliminates duplicate dates from each filter, and merges them
+    into a single DataFrame.
+
+    Parameters
+    ----------
+    prefix : str
+        The prefix for filter file names (e.g., "SPX-ORB-L")
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with a DatetimeIndex (named 'date') and columns for each filter.
+        If no filter files are found, returns an empty DataFrame with a DatetimeIndex.
+        Missing values are filled with 0.
+
+    Notes
+    -----
+    - Duplicate dates in individual filters are eliminated. If duplicates have different
+      values, a ValueError is raised.
+    - Filter files are loaded from FILTERS_FOLDER.
+    - The function attempts to load: RANGE_WIDTH, FIRST_BO, SKIP_CPI, SKIP_EOM,
+      SKIP_EOQ, SKIP_FM, SKIP_FOMC, SKIP_FW, SKIP_ME, SKIP_PAY, SKIP_PCE,
+      SKIP_PPI, SKIP_TW, and ADX_14.
+    """
     dfs = []
 
     range_df = parse_range_with(prefix)
     if range_df is not None:
         dfs.append(range_df)
-        
-    simple_filters = ['FIRST_BO', 'SKIP_CPI', 'SKIP_EOM', 'SKIP_EOQ', 'SKIP_FM', 'SKIP_FOMC', 'SKIP_FW', 'SKIP_ME', 'SKIP_PAY', 'SKIP_PCE', 'SKIP_PPI', 'SKIP_TW']
+
+    simple_filters = [
+        "FIRST_BO",
+        "SKIP_CPI",
+        "SKIP_EOM",
+        "SKIP_EOQ",
+        "SKIP_FM",
+        "SKIP_FOMC",
+        "SKIP_FW",
+        "SKIP_ME",
+        "SKIP_PAY",
+        "SKIP_PCE",
+        "SKIP_PPI",
+        "SKIP_TW",
+    ]
     for filter_name in simple_filters:
-        filter_df = parse_simple_filter(f'{FILTERS_FOLDER}{prefix}-{filter_name}.txt')
+        filter_df = parse_simple_filter(f"{FILTERS_FOLDER}{prefix}-{filter_name}.txt")
         if filter_df is not None:
-            filter_df = filter_df.rename(columns={'filter': f'{filter_name.lower()}'})
+            filter_df = filter_df.rename(columns={"filter": f"{filter_name.lower()}"})
             dfs.append(filter_df)
 
-    indicator_names = ['ADX_14']
+    indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(f'{FILTERS_FOLDER}{prefix}-{indicator_name}.txt')
+        indicator_df = parse_simple_indicator(
+            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
+        )
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(columns={'indicator': f'{indicator_name.lower()}'})
+            indicator_df = indicator_df.rename(
+                columns={"indicator": f"{indicator_name.lower()}"}
+            )
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
-        df_merged = reduce(lambda left, right: pd.merge(left, right, on='date', how='outer'), dfs)
+
+        df_merged = reduce(
+            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
+        )
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
-            if col != 'date':
+            if col != "date":
                 df_merged[col] = df_merged[col].fillna(0)
+
+        # Set date as the index
+        df_merged = df_merged.set_index("date")
+        df_merged.index.name = "date"
+
         return df_merged
     else:
-        return pd.DataFrame()
+        # Return empty DataFrame with DatetimeIndex
+        return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))

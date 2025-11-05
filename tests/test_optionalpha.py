@@ -88,7 +88,6 @@ def test_parse_trade_log_simple(simple_html):
     assert list(df.columns) == [
         "symbol",
         "trade_type",
-        "date",
         "start_time",
         "end_time",
         "status",
@@ -96,12 +95,16 @@ def test_parse_trade_log_simple(simple_html):
         "profit",
     ]
 
+    # Check that index is DatetimeIndex
+    assert isinstance(df.index, pd.DatetimeIndex)
+    assert df.index.name == "date"
+
     # Check first row
     from datetime import time as dt_time
 
     assert df.iloc[0]["symbol"] == "SPX"
     assert df.iloc[0]["trade_type"] == "Long Call"
-    assert df.iloc[0]["date"] == pd.Timestamp("2022-01-10")
+    assert df.index[0] == pd.Timestamp("2022-01-10")
     assert df.iloc[0]["start_time"] == dt_time(15, 47)
     assert df.iloc[0]["end_time"] == dt_time(16, 0)
     assert df.iloc[0]["status"] == "Expired"
@@ -111,7 +114,7 @@ def test_parse_trade_log_simple(simple_html):
     # Check second row (negative P/L)
     assert df.iloc[1]["symbol"] == "SPX"
     assert df.iloc[1]["trade_type"] == "Long Call"
-    assert df.iloc[1]["date"] == pd.Timestamp("2022-01-14")
+    assert df.index[1] == pd.Timestamp("2022-01-14")
     assert df.iloc[1]["profit"] == -350.0
 
 
@@ -126,7 +129,6 @@ def test_parse_trade_log_grid_example(grid_example_html):
     assert list(df.columns) == [
         "symbol",
         "trade_type",
-        "date",
         "start_time",
         "end_time",
         "status",
@@ -134,10 +136,14 @@ def test_parse_trade_log_grid_example(grid_example_html):
         "profit",
     ]
 
+    # Check that index is DatetimeIndex
+    assert isinstance(df.index, pd.DatetimeIndex)
+    assert df.index.name == "date"
+
     # Check data types
     assert df["symbol"].dtype == object
     assert df["trade_type"].dtype == object
-    assert pd.api.types.is_datetime64_any_dtype(df["date"])
+    assert pd.api.types.is_datetime64_any_dtype(df.index)
     assert df["start_time"].dtype == object  # datetime.time objects
     assert df["end_time"].dtype == object  # datetime.time objects
     assert df["status"].dtype == object
@@ -461,3 +467,105 @@ def test_parse_filter_log_result_no_nan_values(filter_log_range_width):
     assert not has_nan_date
     assert not has_nan_filter_type
     assert not has_nan_description
+
+
+def test_parse_trade_log_duplicate_dates_raises_error():
+    """Test that duplicate dates in trade log raise an error."""
+    html = """
+    <grid>
+        <row>
+            <bd>
+                <div class="cell symbol">
+                    <div class="clip">
+                        <span class="sym">SPX</span>
+                        <span>Long Call</span>
+                    </div>
+                </div>
+                <div class="cell closeTime">
+                    <div class="clip">Jan 10, 2022</div>
+                    <div class="clip">3:47pm → 4:00pm</div>
+                </div>
+                <div class="cell status">
+                    <span class="lbl">Expired</span>
+                </div>
+                <div class="cell risk">
+                    <span class="val pos">$380</span>
+                </div>
+                <div class="cell pnl">
+                    <span class="val pos pnl">$1,149</span>
+                </div>
+            </bd>
+        </row>
+        <row>
+            <bd>
+                <div class="cell symbol">
+                    <div class="clip">
+                        <span class="sym">SPX</span>
+                        <span>Long Put</span>
+                    </div>
+                </div>
+                <div class="cell closeTime">
+                    <div class="clip">Jan 10, 2022</div>
+                    <div class="clip">3:50pm → 4:00pm</div>
+                </div>
+                <div class="cell status">
+                    <span class="lbl">Closed</span>
+                </div>
+                <div class="cell risk">
+                    <span class="val pos">$400</span>
+                </div>
+                <div class="cell pnl">
+                    <span class="val pos pnl">$200</span>
+                </div>
+            </bd>
+        </row>
+    </grid>
+    """
+    with pytest.raises(ValueError, match="Duplicate dates found in trade log"):
+        parse_trade_log(html)
+
+
+def test_check_and_eliminate_duplicates_same_values():
+    """Test that duplicates with same values are eliminated."""
+    from ifera.optionalpha import _check_and_eliminate_duplicates
+
+    df = pd.DataFrame(
+        {
+            "date": [
+                pd.Timestamp("2022-01-10"),
+                pd.Timestamp("2022-01-10"),
+                pd.Timestamp("2022-01-11"),
+            ],
+            "filter": [1, 1, 1],
+        }
+    )
+
+    result = _check_and_eliminate_duplicates(df, "filter")
+
+    # Should have only 2 rows now
+    assert len(result) == 2
+    assert result["date"].tolist() == [
+        pd.Timestamp("2022-01-10"),
+        pd.Timestamp("2022-01-11"),
+    ]
+
+
+def test_check_and_eliminate_duplicates_different_values():
+    """Test that duplicates with different values raise an error."""
+    from ifera.optionalpha import _check_and_eliminate_duplicates
+
+    df = pd.DataFrame(
+        {
+            "date": [
+                pd.Timestamp("2022-01-10"),
+                pd.Timestamp("2022-01-10"),
+                pd.Timestamp("2022-01-11"),
+            ],
+            "filter": [1, 0, 1],
+        }
+    )
+
+    with pytest.raises(
+        ValueError, match="Duplicate date .* found with different values"
+    ):
+        _check_and_eliminate_duplicates(df, "filter")
