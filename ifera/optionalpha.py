@@ -6,10 +6,12 @@ from Option Alpha and convert them into pandas DataFrames.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Optional
 
 import pandas as pd
+import torch
 from bs4 import BeautifulSoup
 
 
@@ -579,3 +581,208 @@ def get_filters(prefix: str) -> pd.DataFrame:
     else:
         # Return empty DataFrame with DatetimeIndex
         return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
+
+
+@dataclass
+class Split:
+    """
+    Represents a split condition for filtering data.
+
+    Attributes
+    ----------
+    filter_idx : int
+        Column index in the filters DataFrame
+    filter_name : str
+        Name of the filter column
+    threshold : float
+        Threshold value for the split
+    direction : str
+        Direction of the split: "left" (<= threshold) or "right" (>= threshold)
+    mask : torch.Tensor
+        1-D bool tensor representing the row-mask of the split
+    """
+
+    filter_idx: int
+    filter_name: str
+    threshold: float
+    direction: str
+    mask: torch.Tensor
+
+
+def prepare_splits(
+    trades_df: pd.DataFrame,
+    filters_df: pd.DataFrame,
+    spread_width: int,
+    left_only_filters: list[str],
+    right_only_filters: list[str],
+    device: torch.device,
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, torch.Tensor, list[Split], torch.Tensor]:
+    """
+    Prepare splits and tensors for Option Alpha trading analysis.
+
+    This function aligns trade and filter data, calculates reward-per-risk metrics,
+    identifies potential split points in the data, and converts everything to
+    PyTorch tensors for further analysis.
+
+    Parameters
+    ----------
+    trades_df : pd.DataFrame
+        DataFrame created from parse_trade_log function, with DatetimeIndex
+        containing columns: risk, profit, etc.
+    filters_df : pd.DataFrame
+        DataFrame created from get_filters function, with DatetimeIndex
+        containing various filter columns.
+    spread_width : int
+        Width of the option spread in points (e.g., 20 for a 20-wide spread).
+    left_only_filters : list[str]
+        List of filter column names that should only generate left splits.
+    right_only_filters : list[str]
+        List of filter column names that should only generate right splits.
+    device : torch.device
+        PyTorch device to place tensors on (e.g., torch.device('cpu')).
+    dtype : torch.dtype
+        PyTorch dtype for tensors (e.g., torch.float32).
+
+    Returns
+    -------
+    X : torch.Tensor
+        2-D tensor of filter values (n_samples x n_features) with added
+        reward_per_risk column.
+    y : torch.Tensor
+        1-D tensor of return on risk (RoR) values calculated as profit / risk.
+    splits : list[Split]
+        List of Split objects, each representing a potential split condition.
+    splits_exclusion_mask : torch.Tensor
+        2-D bool tensor (n_splits x n_splits) indicating which splits are
+        mutually exclusive with each other.
+
+    Raises
+    ------
+    ValueError
+        If there are dates in trades_df without corresponding dates in filters_df.
+
+    Notes
+    -----
+    - Reward per risk is calculated as: (spread_width * 100 - risk) / risk
+    - For each filter column, splits are created at the midpoint between
+      consecutive unique values.
+    - Left splits include values <= threshold, right splits include values >= threshold.
+    - Splits are mutually exclusive if they:
+      1. Come from the same filter and same direction
+      2. Would result in an empty set when both are applied
+      3. One split's rows are a subset of the other's (redundant split)
+    """
+    # Step 1: Align filters_df with trades_df
+    # Remove rows from filters_df that don't exist in trades_df
+    filters_df = filters_df.loc[filters_df.index.isin(trades_df.index)].copy()
+
+    # Verify that every row in trades_df has a matching row in filters_df
+    missing_dates = trades_df.index.difference(filters_df.index)
+    if len(missing_dates) > 0:
+        raise ValueError(
+            f"Trades dataframe contains dates not found in filters dataframe: "
+            f"{missing_dates.tolist()}"
+        )
+
+    # Reindex filters to match trades exactly
+    filters_df = filters_df.reindex(trades_df.index)
+
+    # Step 2: Add reward_per_risk column
+    filters_df["reward_per_risk"] = (
+        (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
+    )
+
+    # Step 3: Find all splits
+    splits: list[Split] = []
+    filter_names = filters_df.columns.tolist()
+
+    for col_idx, col_name in enumerate(filter_names):
+        # Get sorted unique values
+        unique_vals = torch.tensor(
+            sorted(filters_df[col_name].unique()), dtype=dtype, device=device
+        )
+
+        if len(unique_vals) <= 1:
+            # No splits possible for this filter
+            continue
+
+        # Find midpoint thresholds between consecutive unique values
+        for i in range(len(unique_vals) - 1):
+            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
+
+            # Convert filter column to tensor for masking
+            col_tensor = torch.tensor(
+                filters_df[col_name].values, dtype=dtype, device=device
+            )
+
+            # Create left split (values <= threshold) if not in right_only_filters
+            if col_name not in right_only_filters:
+                left_mask = col_tensor <= threshold
+                splits.append(
+                    Split(
+                        filter_idx=col_idx,
+                        filter_name=col_name,
+                        threshold=threshold.item(),
+                        direction="left",
+                        mask=left_mask,
+                    )
+                )
+
+            # Create right split (values >= threshold) if not in left_only_filters
+            if col_name not in left_only_filters:
+                right_mask = col_tensor >= threshold
+                splits.append(
+                    Split(
+                        filter_idx=col_idx,
+                        filter_name=col_name,
+                        threshold=threshold.item(),
+                        direction="right",
+                        mask=right_mask,
+                    )
+                )
+
+    # Step 4: Calculate splits_exclusion_mask
+    n_splits = len(splits)
+    splits_exclusion_mask = torch.zeros(
+        (n_splits, n_splits), dtype=torch.bool, device=device
+    )
+
+    for i in range(n_splits):
+        for j in range(n_splits):
+            if i == j:
+                # A split doesn't exclude itself
+                continue
+
+            split_i = splits[i]
+            split_j = splits[j]
+
+            # Rule 1: Same filter and same direction are mutually exclusive
+            if (
+                split_i.filter_idx == split_j.filter_idx
+                and split_i.direction == split_j.direction
+            ):
+                splits_exclusion_mask[i, j] = True
+                continue
+
+            # Rule 2: If applying both splits results in empty set
+            combined_mask = split_i.mask & split_j.mask
+            if not combined_mask.any():
+                splits_exclusion_mask[i, j] = True
+                continue
+
+            # Rule 3: Split i excludes split j if i's rows are a subset of j's rows
+            # (meaning j is redundant after applying i)
+            # If all rows in i are also in j, then j doesn't change the result after i
+            if (split_i.mask & split_j.mask).sum() == split_i.mask.sum():
+                splits_exclusion_mask[i, j] = True
+
+    # Step 5: Convert filters_df to torch tensor X
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)
+
+    # Step 6: Calculate RoR (y) as profit / risk
+    y = torch.tensor(
+        (trades_df["profit"] / trades_df["risk"]).values, dtype=dtype, device=device
+    )
+
+    return X, y, splits, splits_exclusion_mask

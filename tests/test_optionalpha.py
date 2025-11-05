@@ -5,12 +5,15 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import torch
 
 from ifera.optionalpha import (
     parse_trade_log,
     parse_filter_log,
     _extract_dollar_amount,
     _parse_time,
+    prepare_splits,
+    Split,
 )
 from bs4 import BeautifulSoup
 
@@ -569,3 +572,334 @@ def test_check_and_eliminate_duplicates_different_values():
         ValueError, match="Duplicate date .* found with different values"
     ):
         _check_and_eliminate_duplicates(df, "filter")
+
+
+def test_prepare_splits_basic():
+    """Test basic functionality of prepare_splits."""
+    # Create simple trades dataframe
+    trades_df = pd.DataFrame(
+        {
+            "symbol": ["SPX", "SPX", "SPX"],
+            "risk": [100.0, 200.0, 150.0],
+            "profit": [50.0, -100.0, 75.0],
+        },
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12"], name="date"
+        ),
+    )
+
+    # Create simple filters dataframe
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0], "filter_b": [10.0, 20.0, 30.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12"], name="date"
+        ),
+    )
+
+    spread_width = 20
+    device = torch.device("cpu")
+    dtype = torch.float32
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, spread_width, [], [], device, dtype
+    )
+
+    # Check X shape - should have 3 rows and 3 columns (2 filters + reward_per_risk)
+    assert X.shape == (3, 3)
+    assert X.device == device
+    assert X.dtype == dtype
+
+    # Check y shape and values
+    assert y.shape == (3,)
+    assert y.device == device
+    assert y.dtype == dtype
+    # RoR should be profit / risk
+    expected_y = torch.tensor([0.5, -0.5, 0.5], dtype=dtype, device=device)
+    assert torch.allclose(y, expected_y)
+
+    # Check reward_per_risk column (last column in X)
+    # reward_per_risk = (spread_width * 100 - risk) / risk
+    expected_rpr = [(20 * 100 - 100) / 100, (20 * 100 - 200) / 200, (20 * 100 - 150) / 150]
+    assert torch.allclose(X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device))
+
+    # Check splits - should have splits for all 3 columns (filter_a, filter_b, reward_per_risk)
+    # filter_a has values [1, 2, 3] -> thresholds at 1.5, 2.5 -> 4 splits (2 thresholds * 2 directions)
+    # filter_b has values [10, 20, 30] -> thresholds at 15, 25 -> 4 splits
+    # reward_per_risk has 3 unique values -> 2 thresholds -> 4 splits
+    # Total: 12 splits
+    assert len(splits) == 12
+
+    # Check split properties
+    for split in splits:
+        assert isinstance(split, Split)
+        assert split.filter_idx in [0, 1, 2]  # Three columns (2 filters + reward_per_risk)
+        assert split.direction in ["left", "right"]
+        assert split.mask.dtype == torch.bool
+        assert split.mask.shape == (3,)  # 3 samples
+
+    # Check exclusion mask shape
+    assert exclusion_mask.shape == (len(splits), len(splits))
+    assert exclusion_mask.dtype == torch.bool
+
+
+def test_prepare_splits_left_only_filters():
+    """Test that left_only_filters prevents right splits."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        left_only_filters=["filter_a"],
+        right_only_filters=[],
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    # Should have left splits for filter_a only (1 threshold * 1 direction = 1 split)
+    # Plus splits for reward_per_risk
+    filter_a_splits = [s for s in splits if s.filter_name == "filter_a"]
+    assert len(filter_a_splits) == 1
+    assert all(s.direction == "left" for s in filter_a_splits)
+
+
+def test_prepare_splits_right_only_filters():
+    """Test that right_only_filters prevents left splits."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        left_only_filters=[],
+        right_only_filters=["filter_a"],
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    # Should have right splits for filter_a only (1 threshold * 1 direction = 1 split)
+    # Plus splits for reward_per_risk
+    filter_a_splits = [s for s in splits if s.filter_name == "filter_a"]
+    assert len(filter_a_splits) == 1
+    assert all(s.direction == "right" for s in filter_a_splits)
+
+
+def test_prepare_splits_exclusion_mask_same_filter_direction():
+    """Test that splits from same filter and direction are mutually exclusive."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Should have splits for filter_a and reward_per_risk
+    # filter_a: 2 thresholds * 2 directions = 4 splits
+    # reward_per_risk: 2 thresholds * 2 directions = 4 splits
+    # Total: 8 splits
+    assert len(splits) == 8
+
+    # Find left splits for filter_a
+    left_splits = [i for i, s in enumerate(splits) if s.direction == "left" and s.filter_name == "filter_a"]
+    assert len(left_splits) == 2
+
+    # Left splits for filter_a should exclude each other
+    assert exclusion_mask[left_splits[0], left_splits[1]].item()
+    assert exclusion_mask[left_splits[1], left_splits[0]].item()
+
+    # Find right splits for filter_a
+    right_splits = [i for i, s in enumerate(splits) if s.direction == "right" and s.filter_name == "filter_a"]
+    assert len(right_splits) == 2
+
+    # Right splits for filter_a should exclude each other
+    assert exclusion_mask[right_splits[0], right_splits[1]].item()
+    assert exclusion_mask[right_splits[1], right_splits[0]].item()
+
+
+def test_prepare_splits_missing_dates_in_filters():
+    """Test that missing dates in trades raise an error."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    # Filters missing the 2022-01-11 date
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0]},
+        index=pd.DatetimeIndex(["2022-01-10"], name="date"),
+    )
+
+    with pytest.raises(ValueError, match="Trades dataframe contains dates not found"):
+        prepare_splits(
+            trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+        )
+
+
+def test_prepare_splits_extra_dates_in_filters():
+    """Test that extra dates in filters are removed."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    # Filters have an extra date
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # X should only have 2 rows (matching trades_df)
+    assert X.shape[0] == 2
+    assert y.shape[0] == 2
+
+
+def test_prepare_splits_single_value_filter():
+    """Test that filters with single unique value generate no splits."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    # filter_a has only one unique value
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 1.0, 1.0], "filter_b": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # filter_b should generate 4 splits (2 thresholds * 2 directions)
+    # reward_per_risk should also generate splits (it has 3 unique values)
+    # So total should be 8 splits
+    assert len(splits) >= 4
+    # Verify filter_a generates no splits
+    assert not any(s.filter_name == "filter_a" for s in splits)
+    # Verify filter_b generates splits
+    assert any(s.filter_name == "filter_b" for s in splits)
+
+
+def test_prepare_splits_mask_values():
+    """Test that split masks correctly identify rows."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Find the left split at threshold 1.5
+    left_split_1_5 = next(
+        s for s in splits if s.direction == "left" and abs(s.threshold - 1.5) < 0.01
+    )
+
+    # Should include only the first row (value 1.0 <= 1.5)
+    expected_mask = torch.tensor([True, False, False], dtype=torch.bool)
+    assert torch.equal(left_split_1_5.mask, expected_mask)
+
+    # Find the right split at threshold 2.5
+    right_split_2_5 = next(
+        s for s in splits if s.direction == "right" and abs(s.threshold - 2.5) < 0.01
+    )
+
+    # Should include only the last row (value 3.0 >= 2.5)
+    expected_mask = torch.tensor([False, False, True], dtype=torch.bool)
+    assert torch.equal(right_split_2_5.mask, expected_mask)
+
+
+def test_prepare_splits_exclusion_empty_intersection():
+    """Test that splits with empty intersection are mutually exclusive."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    # Two filters with non-overlapping splits
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 5.0, 10.0], "filter_b": [10.0, 5.0, 1.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Check for splits that have empty intersection
+    for i, split_i in enumerate(splits):
+        for j, split_j in enumerate(splits):
+            if i != j:
+                combined = split_i.mask & split_j.mask
+                if not combined.any():
+                    assert exclusion_mask[i, j].item(), (
+                        f"Splits {i} and {j} have empty intersection "
+                        f"but are not marked as exclusive"
+                    )
+
+
+def test_prepare_splits_device_dtype():
+    """Test that output tensors use the correct device and dtype."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    device = torch.device("cpu")
+    dtype = torch.float64
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], device, dtype
+    )
+
+    # Check device and dtype
+    assert X.device == device
+    assert X.dtype == dtype
+    assert y.device == device
+    assert y.dtype == dtype
+
+    # Masks should be bool
+    for split in splits:
+        assert split.mask.dtype == torch.bool
+        assert split.mask.device == device
+
+    assert exclusion_mask.dtype == torch.bool
+    assert exclusion_mask.device == device
