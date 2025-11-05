@@ -768,40 +768,62 @@ def prepare_splits(
                     )
                 )
 
-    # Step 4: Calculate splits_exclusion_mask
+    # Step 4: Calculate splits_exclusion_mask (vectorized)
     n_splits = len(splits)
     splits_exclusion_mask = torch.zeros(
         (n_splits, n_splits), dtype=torch.bool, device=device
     )
 
-    for i in range(n_splits):
-        for j in range(n_splits):
-            if i == j:
-                # A split doesn't exclude itself
-                continue
+    if n_splits == 0:
+        # No splits, return empty mask
+        pass
+    else:
+        # Stack all masks into a 2D tensor (n_splits x n_samples)
+        all_masks = torch.stack([split.mask for split in splits], dim=0)
 
-            split_i = splits[i]
-            split_j = splits[j]
+        # Create tensors for filter indices and directions
+        filter_indices = torch.tensor(
+            [split.filter_idx for split in splits], dtype=torch.long, device=device
+        )
+        # Map direction strings to integers: "left" -> 0, "right" -> 1
+        direction_codes = torch.tensor(
+            [0 if split.direction == "left" else 1 for split in splits],
+            dtype=torch.long,
+            device=device,
+        )
 
-            # Rule 1: Same filter and same direction are mutually exclusive
-            if (
-                split_i.filter_idx == split_j.filter_idx
-                and split_i.direction == split_j.direction
-            ):
-                splits_exclusion_mask[i, j] = True
-                continue
+        # Rule 1: Same filter and same direction are mutually exclusive
+        # Broadcasting: (n_splits, 1) == (1, n_splits) -> (n_splits, n_splits)
+        same_filter = filter_indices.unsqueeze(1) == filter_indices.unsqueeze(0)
+        same_direction = direction_codes.unsqueeze(1) == direction_codes.unsqueeze(0)
+        rule1_mask = same_filter & same_direction
 
-            # Rule 2: If applying both splits results in empty set
-            combined_mask = split_i.mask & split_j.mask
-            if not combined_mask.any():
-                splits_exclusion_mask[i, j] = True
-                continue
+        # Rule 2 & 3: Use matrix multiplication to avoid 3D tensors
+        # Convert masks to float for matrix operations
+        all_masks_float = all_masks.float()
 
-            # Rule 3: Split i excludes split j if i's rows are a subset of j's rows
-            # (meaning j is redundant after applying i)
-            # If all rows in i are also in j, then j doesn't change the result after i
-            if (split_i.mask & split_j.mask).sum() == split_i.mask.sum():
-                splits_exclusion_mask[i, j] = True
+        # Compute intersection counts: (n_splits, n_splits)
+        # intersection_counts[i, j] = number of samples where both mask[i] and mask[j] are True
+        intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
+
+        # Rule 2: If applying both splits results in empty set
+        # has_intersection[i, j] = True if intersection_counts[i, j] > 0
+        has_intersection = intersection_counts > 0
+        # Empty intersection means mutually exclusive
+        rule2_mask = ~has_intersection
+
+        # Rule 3: Split i excludes split j if i's rows are a subset of j's rows
+        # This means: all rows in i are also in j
+        # Equivalently: intersection_counts[i, j] == mask_sums[i]
+        mask_sums = all_masks_float.sum(dim=1)  # (n_splits,)
+        # Broadcasting: (n_splits, 1) == (n_splits, n_splits)
+        rule3_mask = intersection_counts == mask_sums.unsqueeze(1)
+
+        # Combine all rules with OR operation
+        splits_exclusion_mask = rule1_mask | rule2_mask | rule3_mask
+
+        # A split doesn't exclude itself, so set diagonal to False
+        splits_exclusion_mask.fill_diagonal_(False)
 
     # Step 5: Convert filters_df to torch tensor X
     X = torch.tensor(
