@@ -710,7 +710,8 @@ def prepare_splits(
         filters_df["open_minutes"] = 0
 
     # Append weekday filters to left_only_filters (they can only be excluded)
-    left_only_filters = left_only_filters + [
+    # Create a new list to avoid mutating the input parameter
+    left_only_filters = list(left_only_filters) + [
         "is_monday",
         "is_tuesday",
         "is_wednesday",
