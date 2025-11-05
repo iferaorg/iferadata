@@ -30,16 +30,15 @@ trade_grid = """
 df = ifera.parse_trade_log(trade_grid)
 df["RoR"] = df["profit"] / df["risk"]
 df["premium"] = 2000.0 - df["risk"]  # 20 wide credit spread
-df["is_monday"] = (df["date"].dt.weekday == 0).astype(int)
-df["is_tuesday"] = (df["date"].dt.weekday == 1).astype(int)
-df["is_wednesday"] = (df["date"].dt.weekday == 2).astype(int)
-df["is_thursday"] = (df["date"].dt.weekday == 3).astype(int)
-df["is_friday"] = (df["date"].dt.weekday == 4).astype(int)
+df["is_monday"] = (df.index.weekday == 0).astype(int)
+df["is_tuesday"] = (df.index.weekday == 1).astype(int)
+df["is_wednesday"] = (df.index.weekday == 2).astype(int)
+df["is_thursday"] = (df.index.weekday == 3).astype(int)
+df["is_friday"] = (df.index.weekday == 4).astype(int)
 df["open_minute"] = df["start_time"].apply(lambda t: t.hour * 60 + t.minute)
 
 df = df[
     [
-        "date",
         "RoR",
         "premium",
         "is_monday",
@@ -51,15 +50,14 @@ df = df[
     ]
 ]
 
-full_period = df["date"].max() - df["date"].min()
+full_period = df.index.max() - df.index.min()
 num_years = full_period.days / 365.25
 
 dff = ifera.get_filters("SPX-ORB-L")
-# Merge df and dff on date, only where date is in df
-df = pd.merge(df, dff, on="date", how="left")
+# Merge df and dff on date index
+df = pd.merge(df, dff, left_index=True, right_index=True, how="left")
 
 feature_names = df.columns.tolist()
-feature_names.remove("date")
 feature_names.remove("RoR")
 
 left_only = [
@@ -370,5 +368,7 @@ while max_cagr is None or max_cagr > base_cagr:
             print("Removed feature:", feature_names[feature])
             features_to_remove.append(feature)
 
-    feature_names = [name for i, name in enumerate(feature_names) if i not in features_to_remove]
+    feature_names = [
+        name for i, name in enumerate(feature_names) if i not in features_to_remove
+    ]
     X = X[:, [i for i in range(n_features) if i not in features_to_remove]]
