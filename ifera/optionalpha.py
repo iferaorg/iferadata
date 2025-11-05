@@ -495,6 +495,34 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
 
 
 def get_filters(prefix: str) -> pd.DataFrame:
+    """
+    Get and merge filter data for a given prefix.
+
+    This function reads various filter files (range width, skip filters, indicators)
+    for a given prefix, eliminates duplicate dates from each filter, and merges them
+    into a single DataFrame.
+
+    Parameters
+    ----------
+    prefix : str
+        The prefix for filter file names (e.g., "SPX-ORB-L")
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame with a DatetimeIndex (named 'date') and columns for each filter.
+        If no filter files are found, returns an empty DataFrame with a DatetimeIndex.
+        Missing values are filled with 0.
+
+    Notes
+    -----
+    - Duplicate dates in individual filters are eliminated. If duplicates have different
+      values, a ValueError is raised.
+    - Filter files are loaded from FILTERS_FOLDER.
+    - The function attempts to load: RANGE_WIDTH, FIRST_BO, SKIP_CPI, SKIP_EOM,
+      SKIP_EOQ, SKIP_FM, SKIP_FOMC, SKIP_FW, SKIP_ME, SKIP_PAY, SKIP_PCE,
+      SKIP_PPI, SKIP_TW, and ADX_14.
+    """
     dfs = []
 
     range_df = parse_range_with(prefix)
@@ -549,4 +577,5 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
         return df_merged
     else:
-        return pd.DataFrame()
+        # Return empty DataFrame with DatetimeIndex
+        return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
