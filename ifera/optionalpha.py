@@ -8,11 +8,33 @@ from Option Alpha and convert them into pandas DataFrames.
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import pandas as pd
 import torch
 from bs4 import BeautifulSoup
+
+
+class FilterInfo(NamedTuple):
+    """
+    Information about a filter that produces a split mask.
+
+    Attributes
+    ----------
+    filter_idx : int
+        Column index in the filters DataFrame
+    filter_name : str
+        Name of the filter column
+    threshold : float
+        Threshold value for the split
+    direction : str
+        Direction of the split: "left" (<= threshold) or "right" (>= threshold)
+    """
+
+    filter_idx: int
+    filter_name: str
+    threshold: float
+    direction: str
 
 
 def parse_trade_log(html_string: str) -> pd.DataFrame:
@@ -594,17 +616,13 @@ class Split:
     ----------
     mask : torch.Tensor
         1-D bool tensor representing the row-mask of the split
-    filters : list[tuple[int, str, float, str]]
-        List of filters that result in this mask. Each tuple contains:
-        (filter_idx, filter_name, threshold, direction)
-        - filter_idx: Column index in the filters DataFrame
-        - filter_name: Name of the filter column
-        - threshold: Threshold value for the split
-        - direction: Direction of the split ("left" or "right")
+    filters : list[FilterInfo]
+        List of filters that result in this mask. Each FilterInfo contains:
+        filter_idx, filter_name, threshold, and direction
     """
 
     mask: torch.Tensor
-    filters: list[tuple[int, str, float, str]]
+    filters: list[FilterInfo]
 
 
 def prepare_splits(
@@ -746,7 +764,9 @@ def prepare_splits(
                 splits.append(
                     Split(
                         mask=left_mask,
-                        filters=[(col_idx, col_name, threshold.item(), "left")],
+                        filters=[
+                            FilterInfo(col_idx, col_name, threshold.item(), "left")
+                        ],
                     )
                 )
 
@@ -756,7 +776,9 @@ def prepare_splits(
                 splits.append(
                     Split(
                         mask=right_mask,
-                        filters=[(col_idx, col_name, threshold.item(), "right")],
+                        filters=[
+                            FilterInfo(col_idx, col_name, threshold.item(), "right")
+                        ],
                     )
                 )
 
@@ -824,23 +846,24 @@ def prepare_splits(
         # Stack all masks into a 2D tensor (n_splits x n_samples)
         all_masks = torch.stack([split.mask for split in splits], dim=0)
 
-        # Create tensors for filter indices and directions from the first filter in each split
-        # (for compatibility with existing exclusion rules)
-        filter_indices = torch.tensor(
-            [split.filters[0][0] for split in splits], dtype=torch.long, device=device
-        )
-        # Map direction strings to integers: "left" -> 0, "right" -> 1
-        direction_codes = torch.tensor(
-            [0 if split.filters[0][3] == "left" else 1 for split in splits],
-            dtype=torch.long,
-            device=device,
-        )
-
-        # Rule 1: Same filter and same direction are mutually exclusive
-        # Broadcasting: (n_splits, 1) == (1, n_splits) -> (n_splits, n_splits)
-        same_filter = filter_indices.unsqueeze(1) == filter_indices.unsqueeze(0)
-        same_direction = direction_codes.unsqueeze(1) == direction_codes.unsqueeze(0)
-        rule1_mask = same_filter & same_direction
+        # Rule 1: Splits are mutually exclusive if they share any filter with same direction
+        # After merging, we need to check all filters in each split
+        rule1_mask = torch.zeros((n_splits, n_splits), dtype=torch.bool, device=device)
+        for i in range(n_splits):
+            for j in range(i + 1, n_splits):
+                # Check if any filter in split i matches any filter in split j
+                # (same filter_idx and same direction)
+                for filter_i in splits[i].filters:
+                    for filter_j in splits[j].filters:
+                        if (
+                            filter_i.filter_idx == filter_j.filter_idx
+                            and filter_i.direction == filter_j.direction
+                        ):
+                            rule1_mask[i, j] = True
+                            rule1_mask[j, i] = True
+                            break
+                    if rule1_mask[i, j]:
+                        break
 
         # Rule 2 & 3: Use matrix multiplication to avoid 3D tensors
         # Convert masks to float for matrix operations

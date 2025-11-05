@@ -8,12 +8,13 @@ import pytest
 import torch
 
 from ifera.optionalpha import (
-    parse_trade_log,
-    parse_filter_log,
+    FilterInfo,
+    Split,
     _extract_dollar_amount,
     _parse_time,
+    parse_filter_log,
+    parse_trade_log,
     prepare_splits,
-    Split,
 )
 from bs4 import BeautifulSoup
 
