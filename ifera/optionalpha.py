@@ -575,15 +575,21 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
+        indicator_df = parse_simple_indicator(
+            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
+        )
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
+            indicator_df = indicator_df.rename(
+                columns={"indicator": f"{indicator_name.lower()}"}
+            )
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
+        df_merged = reduce(
+            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
+        )
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -627,6 +633,7 @@ def prepare_splits(
     right_only_filters: list[str],
     device: torch.device,
     dtype: torch.dtype,
+    max_splits_per_filter: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split], torch.Tensor]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -653,6 +660,12 @@ def prepare_splits(
         PyTorch device to place tensors on (e.g., torch.device('cpu')).
     dtype : torch.dtype
         PyTorch dtype for tensors (e.g., torch.float32).
+    max_splits_per_filter : int | None, optional
+        Maximum number of splits per direction (left/right) to create for each filter.
+        If None (default), all possible splits are created. When set, splits are
+        selected to distribute samples as evenly as possible across buckets while
+        respecting the constraint that samples with equal filter values cannot be
+        separated. Default is None.
 
     Returns
     -------
@@ -699,7 +712,9 @@ def prepare_splits(
     filters_df = filters_df.reindex(trades_df.index)
 
     # Step 2: Add reward_per_risk column
-    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (
+        spread_width * 100 - trades_df["risk"]
+    ) / trades_df["risk"]
 
     # Add weekday filters based on date
     filters_df["is_monday"] = (filters_df.index.dayofweek == 0).astype(int)  # type: ignore
@@ -741,12 +756,64 @@ def prepare_splits(
             # No splits possible for this filter
             continue
 
-        # Find midpoint thresholds between consecutive unique values
-        for i in range(len(unique_vals) - 1):
-            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
+        # Convert filter column to tensor for masking
+        col_tensor = torch.tensor(
+            filters_df[col_name].values, dtype=dtype, device=device
+        )
 
-            # Convert filter column to tensor for masking
-            col_tensor = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
+        # Determine which split indices to use
+        n_possible_splits = len(unique_vals) - 1
+
+        # If max_splits_per_filter is set and we have more possible splits than allowed,
+        # select splits that distribute samples evenly
+        if (
+            max_splits_per_filter is not None
+            and n_possible_splits > max_splits_per_filter
+        ):
+            # Count samples for each unique value using vectorized operations
+            # torch.unique returns sorted values and their counts
+            _, sample_counts = torch.unique(col_tensor, return_counts=True)
+
+            # Calculate cumulative counts - this tells us how many samples are <= each unique value
+            cumsum = torch.cumsum(sample_counts, dim=0)
+            total_samples = cumsum[-1].item()
+
+            # For even distribution with max_splits_per_filter splits, we want to place
+            # splits so that we create max_splits_per_filter + 1 buckets of approximately
+            # equal size. Target size per bucket:
+            target_bucket_size = total_samples / (max_splits_per_filter + 1)
+
+            # Find the split indices that best achieve even distribution
+            # For each potential split position k, placing a threshold between unique_vals[k]
+            # and unique_vals[k+1] means cumsum[k] samples are on the left
+            selected_indices = []
+            for split_num in range(1, max_splits_per_filter + 1):
+                # Target cumulative count for this split
+                target_cumsum = split_num * target_bucket_size
+
+                # Find the index where cumsum is closest to target_cumsum
+                # We search among indices 0 to n_possible_splits-1
+                diffs = torch.abs(cumsum[:-1] - target_cumsum)
+                best_idx = int(torch.argmin(diffs).item())
+
+                # Avoid duplicate indices
+                while best_idx in selected_indices and best_idx < n_possible_splits - 1:
+                    diffs[best_idx] = float("inf")
+                    best_idx = int(torch.argmin(diffs).item())
+
+                if best_idx not in selected_indices:
+                    selected_indices.append(best_idx)
+
+            # Sort the selected indices
+            selected_indices = sorted(selected_indices)
+            split_indices_to_use = selected_indices
+        else:
+            # Use all possible splits
+            split_indices_to_use = list(range(n_possible_splits))
+
+        # Create splits for selected indices
+        for i in split_indices_to_use:
+            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
 
             # Create left split (values <= threshold) if not in right_only_filters
             if col_name not in right_only_filters:
@@ -754,7 +821,9 @@ def prepare_splits(
                 splits.append(
                     Split(
                         mask=left_mask,
-                        filters=[FilterInfo(col_idx, col_name, threshold.item(), "left")],
+                        filters=[
+                            FilterInfo(col_idx, col_name, threshold.item(), "left")
+                        ],
                     )
                 )
 
@@ -764,7 +833,9 @@ def prepare_splits(
                 splits.append(
                     Split(
                         mask=right_mask,
-                        filters=[FilterInfo(col_idx, col_name, threshold.item(), "right")],
+                        filters=[
+                            FilterInfo(col_idx, col_name, threshold.item(), "right")
+                        ],
                     )
                 )
 
@@ -821,7 +892,9 @@ def prepare_splits(
 
     # Step 4: Calculate splits_exclusion_mask (vectorized)
     n_splits = len(splits)
-    splits_exclusion_mask = torch.zeros((n_splits, n_splits), dtype=torch.bool, device=device)
+    splits_exclusion_mask = torch.zeros(
+        (n_splits, n_splits), dtype=torch.bool, device=device
+    )
 
     if n_splits == 0:
         # No splits, return empty mask
@@ -863,7 +936,9 @@ def prepare_splits(
         splits_exclusion_mask.fill_diagonal_(True)
 
     # Step 5: Convert filters_df to torch tensor X
-    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
+    X = torch.tensor(
+        filters_df.values, dtype=dtype, device=device
+    )  # pylint: disable=invalid-name
 
     # Step 6: Calculate RoR (y) as profit / risk
     y = torch.tensor(  # pylint: disable=invalid-name
