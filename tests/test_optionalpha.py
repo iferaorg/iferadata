@@ -1227,3 +1227,37 @@ def test_prepare_splits_merge_identical_masks():
             assert not torch.equal(
                 masks[i], masks[j]
             ), "All splits should have unique masks"
+
+
+def test_prepare_splits_reward_per_risk_right_only():
+    """Test that reward_per_risk filter only generates right splits (not left)."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    X, y, splits, exclusion_mask = prepare_splits(
+        trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
+    )
+
+    # Check that reward_per_risk exists and has only right direction splits
+    has_reward_per_risk_left = False
+    has_reward_per_risk_right = False
+
+    for split in splits:
+        for filter_idx, filter_name, threshold, direction in split.filters:
+            if filter_name == "reward_per_risk":
+                if direction == "left":
+                    has_reward_per_risk_left = True
+                elif direction == "right":
+                    has_reward_per_risk_right = True
+
+    assert not has_reward_per_risk_left, "reward_per_risk should not have left splits"
+    assert (
+        has_reward_per_risk_right
+    ), "reward_per_risk should have at least one right split"

@@ -625,6 +625,368 @@ class Split:
     filters: list[FilterInfo]
 
 
+def _align_filters_with_trades(
+    filters_df: pd.DataFrame, trades_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Align filters DataFrame with trades DataFrame.
+
+    Remove rows from filters_df that don't exist in trades_df and verify that
+    every row in trades_df has a matching row in filters_df.
+
+    Parameters
+    ----------
+    filters_df : pd.DataFrame
+        DataFrame with DatetimeIndex containing filter columns
+    trades_df : pd.DataFrame
+        DataFrame with DatetimeIndex containing trade data
+
+    Returns
+    -------
+    pd.DataFrame
+        Aligned filters DataFrame with the same index as trades_df
+
+    Raises
+    ------
+    ValueError
+        If there are dates in trades_df without corresponding dates in filters_df
+    """
+    # Remove rows from filters_df that don't exist in trades_df
+    filters_df = filters_df.loc[filters_df.index.isin(trades_df.index)].copy()
+
+    # Verify that every row in trades_df has a matching row in filters_df
+    missing_dates = trades_df.index.difference(filters_df.index)
+    if len(missing_dates) > 0:
+        raise ValueError(
+            f"Trades dataframe contains dates not found in filters dataframe: "
+            f"{missing_dates.tolist()}"
+        )
+
+    # Reindex filters to match trades exactly
+    return filters_df.reindex(trades_df.index)
+
+
+def _add_computed_columns(
+    filters_df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    spread_width: int,
+    left_only_filters: list[str],
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Add computed columns to filters DataFrame.
+
+    Adds reward_per_risk, weekday filters (is_monday, is_tuesday, etc.),
+    and open_minutes columns.
+
+    Parameters
+    ----------
+    filters_df : pd.DataFrame
+        DataFrame with DatetimeIndex containing filter columns
+    trades_df : pd.DataFrame
+        DataFrame with DatetimeIndex containing trade data (risk, profit, start_time)
+    spread_width : int
+        Width of the option spread in points
+    left_only_filters : list[str]
+        List of filter column names that should only generate left splits
+
+    Returns
+    -------
+    tuple[pd.DataFrame, list[str]]
+        Updated filters DataFrame and updated left_only_filters list
+    """
+    # Add reward_per_risk column
+    filters_df["reward_per_risk"] = (
+        spread_width * 100 - trades_df["risk"]
+    ) / trades_df["risk"]
+
+    # Add weekday filters based on date
+    filters_df["is_monday"] = (filters_df.index.dayofweek == 0).astype(int)  # type: ignore
+    filters_df["is_tuesday"] = (filters_df.index.dayofweek == 1).astype(int)  # type: ignore
+    filters_df["is_wednesday"] = (filters_df.index.dayofweek == 2).astype(int)  # type: ignore
+    filters_df["is_thursday"] = (filters_df.index.dayofweek == 3).astype(int)  # type: ignore
+    filters_df["is_friday"] = (filters_df.index.dayofweek == 4).astype(int)  # type: ignore
+
+    # Add open_minutes based on start_time (hours*60+minutes)
+    if "start_time" in trades_df.columns:
+        filters_df["open_minutes"] = trades_df["start_time"].apply(
+            lambda t: t.hour * 60 + t.minute if t is not None else 0
+        )
+    else:
+        # Default to 0 if start_time column doesn't exist
+        filters_df["open_minutes"] = 0
+
+    # Append weekday filters to left_only_filters (they can only be excluded)
+    # Create a new list to avoid mutating the input parameter
+    updated_left_only_filters = list(left_only_filters) + [
+        "is_monday",
+        "is_tuesday",
+        "is_wednesday",
+        "is_thursday",
+        "is_friday",
+    ]
+
+    return filters_df, updated_left_only_filters
+
+
+def _select_split_indices(
+    unique_vals: torch.Tensor,
+    col_tensor: torch.Tensor,
+    max_splits_per_filter: int | None,
+) -> list[int]:
+    """
+    Select split indices for a filter column.
+
+    If max_splits_per_filter is set and we have more possible splits than allowed,
+    select splits that distribute samples evenly. Otherwise, use all possible splits.
+
+    Parameters
+    ----------
+    unique_vals : torch.Tensor
+        Sorted unique values in the filter column
+    col_tensor : torch.Tensor
+        Tensor of all values in the filter column
+    max_splits_per_filter : int | None
+        Maximum number of splits per direction, or None for all splits
+
+    Returns
+    -------
+    list[int]
+        List of indices where splits should be created
+    """
+    n_possible_splits = len(unique_vals) - 1
+
+    if max_splits_per_filter is None or n_possible_splits <= max_splits_per_filter:
+        # Use all possible splits
+        return list(range(n_possible_splits))
+
+    # Count samples for each unique value using vectorized operations
+    _, sample_counts = torch.unique(col_tensor, return_counts=True)
+
+    # Calculate cumulative counts
+    cumsum = torch.cumsum(sample_counts, dim=0)
+    total_samples = cumsum[-1].item()
+
+    # Target size per bucket
+    target_bucket_size = total_samples / (max_splits_per_filter + 1)
+
+    # Find the split indices that best achieve even distribution
+    selected_indices = []
+    for split_num in range(1, max_splits_per_filter + 1):
+        target_cumsum = split_num * target_bucket_size
+        diffs = torch.abs(cumsum[:-1] - target_cumsum)
+        best_idx = int(torch.argmin(diffs).item())
+
+        # Avoid duplicate indices
+        while best_idx in selected_indices and best_idx < n_possible_splits - 1:
+            diffs[best_idx] = float("inf")
+            best_idx = int(torch.argmin(diffs).item())
+
+        if best_idx not in selected_indices:
+            selected_indices.append(best_idx)
+
+    return sorted(selected_indices)
+
+
+def _create_splits_for_filter(
+    col_idx: int,
+    col_name: str,
+    filters_df: pd.DataFrame,
+    left_only_filters: list[str],
+    right_only_filters: list[str],
+    device: torch.device,
+    dtype: torch.dtype,
+    max_splits_per_filter: int | None,
+) -> list[Split]:
+    """
+    Create splits for a single filter column.
+
+    Parameters
+    ----------
+    col_idx : int
+        Index of the column in the filters DataFrame
+    col_name : str
+        Name of the filter column
+    filters_df : pd.DataFrame
+        DataFrame containing filter data
+    left_only_filters : list[str]
+        Filter names that should only generate left splits
+    right_only_filters : list[str]
+        Filter names that should only generate right splits
+    device : torch.device
+        PyTorch device for tensors
+    dtype : torch.dtype
+        PyTorch dtype for tensors
+    max_splits_per_filter : int | None
+        Maximum number of splits per direction
+
+    Returns
+    -------
+    list[Split]
+        List of Split objects for this filter
+    """
+    # Get sorted unique values
+    unique_vals = torch.tensor(
+        sorted(filters_df[col_name].unique()), dtype=dtype, device=device
+    )
+
+    if len(unique_vals) <= 1:
+        # No splits possible for this filter
+        return []
+
+    # Convert filter column to tensor for masking
+    col_tensor = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
+
+    # Determine which split indices to use
+    split_indices_to_use = _select_split_indices(
+        unique_vals, col_tensor, max_splits_per_filter
+    )
+
+    # Create splits for selected indices
+    splits = []
+    for i in split_indices_to_use:
+        threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
+
+        # Create left split (values <= threshold) if not in right_only_filters
+        if col_name not in right_only_filters:
+            left_mask = col_tensor <= threshold
+            splits.append(
+                Split(
+                    mask=left_mask,
+                    filters=[FilterInfo(col_idx, col_name, threshold.item(), "left")],
+                )
+            )
+
+        # Create right split (values >= threshold) if not in left_only_filters
+        if col_name not in left_only_filters:
+            right_mask = col_tensor >= threshold
+            splits.append(
+                Split(
+                    mask=right_mask,
+                    filters=[FilterInfo(col_idx, col_name, threshold.item(), "right")],
+                )
+            )
+
+    return splits
+
+
+def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[Split]:
+    """
+    Merge splits with identical masks.
+
+    Parameters
+    ----------
+    splits : list[Split]
+        List of Split objects
+    device : torch.device
+        PyTorch device for tensors
+
+    Returns
+    -------
+    list[Split]
+        List of merged Split objects
+    """
+    if len(splits) == 0:
+        return splits
+
+    # Stack all masks into a 2D tensor (n_splits x n_samples)
+    all_masks = torch.stack([split.mask for split in splits], dim=0)
+
+    # Convert to float for matrix operations
+    all_masks_float = all_masks.float()
+
+    # Compute pairwise equality of masks
+    n_splits = len(splits)
+    n_samples = all_masks.shape[1]
+
+    # Create a matrix where entry (i,j) is the number of positions where masks match
+    match_counts = torch.matmul(all_masks_float, all_masks_float.T) + torch.matmul(
+        1 - all_masks_float, (1 - all_masks_float).T
+    )
+
+    # Two masks are identical if they match at all positions
+    mask_equality = match_counts == n_samples
+
+    # Find groups of identical masks
+    merged_splits: list[Split] = []
+    processed = torch.zeros(n_splits, dtype=torch.bool, device=device)
+
+    for i in range(n_splits):
+        if processed[i]:
+            continue
+
+        # Find all splits with identical masks to split i
+        identical_indices = mask_equality[i].nonzero(as_tuple=True)[0]
+
+        # Merge filters from all identical splits
+        merged_filters = []
+        for idx in identical_indices:
+            idx_int = int(idx.item())
+            merged_filters.extend(splits[idx_int].filters)
+            processed[idx] = True
+
+        # Create a merged split with all filters
+        merged_splits.append(Split(mask=splits[i].mask, filters=merged_filters))
+
+    return merged_splits
+
+
+def _calculate_exclusion_mask(
+    splits: list[Split], device: torch.device
+) -> torch.Tensor:
+    """
+    Calculate the splits exclusion mask.
+
+    Determines which splits are mutually exclusive with each other based on:
+    1. Empty intersection (no overlap)
+    2. Subset relationship (one split's rows are subset of another's)
+    3. Self-exclusion (split is exclusive with itself)
+
+    Parameters
+    ----------
+    splits : list[Split]
+        List of Split objects
+    device : torch.device
+        PyTorch device for tensors
+
+    Returns
+    -------
+    torch.Tensor
+        2-D bool tensor (n_splits x n_splits) indicating mutual exclusion
+    """
+    n_splits = len(splits)
+    splits_exclusion_mask = torch.zeros(
+        (n_splits, n_splits), dtype=torch.bool, device=device
+    )
+
+    if n_splits == 0:
+        return splits_exclusion_mask
+
+    # Stack all masks into a 2D tensor (n_splits x n_samples)
+    all_masks = torch.stack([split.mask for split in splits], dim=0)
+    all_masks_float = all_masks.float()
+
+    # Compute intersection counts
+    intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
+
+    # Rule 1: Empty intersection means mutually exclusive
+    has_intersection = intersection_counts > 0
+    rule1_mask = ~has_intersection
+
+    # Rule 2: Subset relationship means exclusive (prevents redundant masks)
+    mask_sums = all_masks_float.sum(dim=1)
+    i_subset_of_j = intersection_counts == mask_sums.unsqueeze(1)
+    j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
+    rule2_mask = i_subset_of_j | j_subset_of_i
+
+    # Combine all rules with OR operation
+    splits_exclusion_mask = rule1_mask | rule2_mask
+
+    # Splits are exclusive with themselves
+    splits_exclusion_mask.fill_diagonal_(True)
+
+    return splits_exclusion_mask
+
+
 def prepare_splits(
     trades_df: pd.DataFrame,
     filters_df: pd.DataFrame,
@@ -696,251 +1058,46 @@ def prepare_splits(
       2. One split's rows are a subset of the other's (redundant/overlapping masks)
       3. A split is also marked as exclusive with itself (no point applying same mask twice)
     """
-    # Step 1: Align filters_df with trades_df
-    # Remove rows from filters_df that don't exist in trades_df
-    filters_df = filters_df.loc[filters_df.index.isin(trades_df.index)].copy()
+    # Align filters_df with trades_df
+    filters_df = _align_filters_with_trades(filters_df, trades_df)
 
-    # Verify that every row in trades_df has a matching row in filters_df
-    missing_dates = trades_df.index.difference(filters_df.index)
-    if len(missing_dates) > 0:
-        raise ValueError(
-            f"Trades dataframe contains dates not found in filters dataframe: "
-            f"{missing_dates.tolist()}"
-        )
+    # Add computed columns and update left_only_filters
+    filters_df, left_only_filters = _add_computed_columns(
+        filters_df, trades_df, spread_width, left_only_filters
+    )
 
-    # Reindex filters to match trades exactly
-    filters_df = filters_df.reindex(trades_df.index)
+    # Add reward_per_risk to right_only_filters
+    right_only_filters = list(right_only_filters) + ["reward_per_risk"]
 
-    # Step 2: Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
-
-    # Add weekday filters based on date
-    filters_df["is_monday"] = (filters_df.index.dayofweek == 0).astype(int)  # type: ignore
-    filters_df["is_tuesday"] = (filters_df.index.dayofweek == 1).astype(int)  # type: ignore
-    filters_df["is_wednesday"] = (filters_df.index.dayofweek == 2).astype(int)  # type: ignore
-    filters_df["is_thursday"] = (filters_df.index.dayofweek == 3).astype(int)  # type: ignore
-    filters_df["is_friday"] = (filters_df.index.dayofweek == 4).astype(int)  # type: ignore
-
-    # Add open_minutes based on start_time (hours*60+minutes)
-    if "start_time" in trades_df.columns:
-        filters_df["open_minutes"] = trades_df["start_time"].apply(
-            lambda t: t.hour * 60 + t.minute if t is not None else 0
-        )
-    else:
-        # Default to 0 if start_time column doesn't exist
-        filters_df["open_minutes"] = 0
-
-    # Append weekday filters to left_only_filters (they can only be excluded)
-    # Create a new list to avoid mutating the input parameter
-    left_only_filters = list(left_only_filters) + [
-        "is_monday",
-        "is_tuesday",
-        "is_wednesday",
-        "is_thursday",
-        "is_friday",
-    ]
-
-    # Step 3: Find all splits
+    # Find all splits
     splits: list[Split] = []
     filter_names = filters_df.columns.tolist()
 
     for col_idx, col_name in enumerate(filter_names):
-        # Get sorted unique values
-        unique_vals = torch.tensor(
-            sorted(filters_df[col_name].unique()), dtype=dtype, device=device
+        filter_splits = _create_splits_for_filter(
+            col_idx,
+            col_name,
+            filters_df,
+            left_only_filters,
+            right_only_filters,
+            device,
+            dtype,
+            max_splits_per_filter,
         )
+        splits.extend(filter_splits)
 
-        if len(unique_vals) <= 1:
-            # No splits possible for this filter
-            continue
+    # Merge splits with identical masks
+    splits = _merge_identical_splits(splits, device)
 
-        # Convert filter column to tensor for masking
-        col_tensor = torch.tensor(
-            filters_df[col_name].values, dtype=dtype, device=device
-        )
+    # Calculate splits_exclusion_mask
+    splits_exclusion_mask = _calculate_exclusion_mask(splits, device)
 
-        # Determine which split indices to use
-        n_possible_splits = len(unique_vals) - 1
-
-        # If max_splits_per_filter is set and we have more possible splits than allowed,
-        # select splits that distribute samples evenly
-        if (
-            max_splits_per_filter is not None
-            and n_possible_splits > max_splits_per_filter
-        ):
-            # Count samples for each unique value using vectorized operations
-            # torch.unique returns sorted values and their counts
-            _, sample_counts = torch.unique(col_tensor, return_counts=True)
-
-            # Calculate cumulative counts - this tells us how many samples are <= each unique value
-            cumsum = torch.cumsum(sample_counts, dim=0)
-            total_samples = cumsum[-1].item()
-
-            # For even distribution with max_splits_per_filter splits, we want to place
-            # splits so that we create max_splits_per_filter + 1 buckets of approximately
-            # equal size. Target size per bucket:
-            target_bucket_size = total_samples / (max_splits_per_filter + 1)
-
-            # Find the split indices that best achieve even distribution
-            # For each potential split position k, placing a threshold between unique_vals[k]
-            # and unique_vals[k+1] means cumsum[k] samples are on the left
-            selected_indices = []
-            for split_num in range(1, max_splits_per_filter + 1):
-                # Target cumulative count for this split
-                target_cumsum = split_num * target_bucket_size
-
-                # Find the index where cumsum is closest to target_cumsum
-                # We search among indices 0 to n_possible_splits-1
-                diffs = torch.abs(cumsum[:-1] - target_cumsum)
-                best_idx = int(torch.argmin(diffs).item())
-
-                # Avoid duplicate indices
-                while best_idx in selected_indices and best_idx < n_possible_splits - 1:
-                    diffs[best_idx] = float("inf")
-                    best_idx = int(torch.argmin(diffs).item())
-
-                if best_idx not in selected_indices:
-                    selected_indices.append(best_idx)
-
-            # Sort the selected indices
-            selected_indices = sorted(selected_indices)
-            split_indices_to_use = selected_indices
-        else:
-            # Use all possible splits
-            split_indices_to_use = list(range(n_possible_splits))
-
-        # Create splits for selected indices
-        for i in split_indices_to_use:
-            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
-
-            # Create left split (values <= threshold) if not in right_only_filters
-            if col_name not in right_only_filters:
-                left_mask = col_tensor <= threshold
-                splits.append(
-                    Split(
-                        mask=left_mask,
-                        filters=[
-                            FilterInfo(col_idx, col_name, threshold.item(), "left")
-                        ],
-                    )
-                )
-
-            # Create right split (values >= threshold) if not in left_only_filters
-            if col_name not in left_only_filters:
-                right_mask = col_tensor >= threshold
-                splits.append(
-                    Split(
-                        mask=right_mask,
-                        filters=[
-                            FilterInfo(col_idx, col_name, threshold.item(), "right")
-                        ],
-                    )
-                )
-
-    # Step 3.5: Merge splits with identical masks
-    if len(splits) > 0:
-        # Stack all masks into a 2D tensor (n_splits x n_samples)
-        all_masks = torch.stack([split.mask for split in splits], dim=0)
-
-        # Convert to float for matrix operations
-        all_masks_float = all_masks.float()
-
-        # Compute pairwise equality of masks using matrix multiplication
-        # Two masks are equal if they have the same True values everywhere
-        n_splits = len(splits)
-        n_samples = all_masks.shape[1]
-
-        # Create a matrix where entry (i,j) is the number of positions where masks i and j match
-        # Matching means both True or both False
-        match_counts = torch.matmul(all_masks_float, all_masks_float.T) + torch.matmul(
-            1 - all_masks_float, (1 - all_masks_float).T
-        )
-
-        # Two masks are identical if they match at all positions
-        mask_equality = match_counts == n_samples
-
-        # Find groups of identical masks
-        # Use a simple algorithm: for each mask, find all identical masks
-        merged_splits: list[Split] = []
-        processed = torch.zeros(n_splits, dtype=torch.bool, device=device)
-
-        for i in range(n_splits):
-            if processed[i]:
-                continue
-
-            # Find all splits with identical masks to split i
-            identical_indices = mask_equality[i].nonzero(as_tuple=True)[0]
-
-            # Merge filters from all identical splits
-            merged_filters = []
-            for idx in identical_indices:
-                idx_int = int(idx.item())
-                merged_filters.extend(splits[idx_int].filters)
-                processed[idx] = True
-
-            # Create a merged split with all filters
-            merged_splits.append(
-                Split(
-                    mask=splits[i].mask,
-                    filters=merged_filters,
-                )
-            )
-
-        splits = merged_splits
-
-    # Step 4: Calculate splits_exclusion_mask (vectorized)
-    n_splits = len(splits)
-    splits_exclusion_mask = torch.zeros(
-        (n_splits, n_splits), dtype=torch.bool, device=device
-    )
-
-    if n_splits == 0:
-        # No splits, return empty mask
-        pass
-    else:
-        # Stack all masks into a 2D tensor (n_splits x n_samples)
-        all_masks = torch.stack([split.mask for split in splits], dim=0)
-
-        # Use matrix multiplication for all rules
-        # Convert masks to float for matrix operations
-        all_masks_float = all_masks.float()
-
-        # Compute intersection counts: (n_splits, n_splits)
-        # intersection_counts[i, j] = number of samples where both mask[i] and mask[j] are True
-        intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
-
-        # Rule 1: If applying both splits results in empty set
-        # has_intersection[i, j] = True if intersection_counts[i, j] > 0
-        has_intersection = intersection_counts > 0
-        # Empty intersection means mutually exclusive
-        rule1_mask = ~has_intersection
-
-        # Rule 2: Splits are exclusive if one's rows are a subset of the other's (redundant)
-        # This means: all rows in i are also in j OR all rows in j are also in i
-        # Split i is subset of j if: intersection_counts[i, j] == mask_sums[i]
-        # Split j is subset of i if: intersection_counts[i, j] == mask_sums[j]
-        mask_sums = all_masks_float.sum(dim=1)  # (n_splits,)
-        # Broadcasting: (n_splits, 1) == (n_splits, n_splits)
-        i_subset_of_j = intersection_counts == mask_sums.unsqueeze(1)
-        # Broadcasting: (n_splits, n_splits) == (1, n_splits)
-        j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
-        # Mark as exclusive if either is a subset of the other (prevents redundant masks)
-        rule2_mask = i_subset_of_j | j_subset_of_i
-
-        # Combine all rules with OR operation
-        splits_exclusion_mask = rule1_mask | rule2_mask
-
-        # Splits are exclusive with themselves (no point applying same mask twice)
-        splits_exclusion_mask.fill_diagonal_(True)
-
-    # Step 5: Convert filters_df to torch tensor X
+    # Convert filters_df to torch tensor X
     X = torch.tensor(
         filters_df.values, dtype=dtype, device=device
     )  # pylint: disable=invalid-name
 
-    # Step 6: Calculate RoR (y) as profit / risk
+    # Calculate RoR (y) as profit / risk
     y = torch.tensor(  # pylint: disable=invalid-name
         (trades_df["profit"] / trades_df["risk"]).values, dtype=dtype, device=device
     )
