@@ -771,12 +771,8 @@ def prepare_splits(
             and n_possible_splits > max_splits_per_filter
         ):
             # Count samples for each unique value using vectorized operations
-            # This creates a histogram of how many samples have each unique value
-            sample_counts = torch.zeros(
-                len(unique_vals), dtype=torch.long, device=device
-            )
-            for idx, val in enumerate(unique_vals):
-                sample_counts[idx] = (col_tensor == val).sum()
+            # torch.unique returns sorted values and their counts
+            _, sample_counts = torch.unique(col_tensor, return_counts=True)
 
             # Calculate cumulative counts - this tells us how many samples are <= each unique value
             cumsum = torch.cumsum(sample_counts, dim=0)
