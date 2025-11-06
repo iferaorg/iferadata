@@ -700,11 +700,9 @@ def _add_computed_columns(
     ) / trades_df["risk"]
 
     # Add weekday filters based on date
-    filters_df["is_monday"] = (filters_df.index.dayofweek == 0).astype(int)  # type: ignore
-    filters_df["is_tuesday"] = (filters_df.index.dayofweek == 1).astype(int)  # type: ignore
-    filters_df["is_wednesday"] = (filters_df.index.dayofweek == 2).astype(int)  # type: ignore
-    filters_df["is_thursday"] = (filters_df.index.dayofweek == 3).astype(int)  # type: ignore
-    filters_df["is_friday"] = (filters_df.index.dayofweek == 4).astype(int)  # type: ignore
+    weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
+    for i, day in enumerate(weekday_names):
+        filters_df[f"is_{day}"] = (filters_df.index.dayofweek == i).astype(int)  # type: ignore
 
     # Add open_minutes based on start_time (hours*60+minutes)
     if "start_time" in trades_df.columns:
@@ -717,13 +715,8 @@ def _add_computed_columns(
 
     # Append weekday filters to left_only_filters (they can only be excluded)
     # Create a new list to avoid mutating the input parameter
-    updated_left_only_filters = list(left_only_filters) + [
-        "is_monday",
-        "is_tuesday",
-        "is_wednesday",
-        "is_thursday",
-        "is_friday",
-    ]
+    weekday_filter_names = [f"is_{day}" for day in weekday_names]
+    updated_left_only_filters = list(left_only_filters) + weekday_filter_names
 
     return filters_df, updated_left_only_filters
 
@@ -1067,6 +1060,7 @@ def prepare_splits(
     )
 
     # Add reward_per_risk to right_only_filters
+    # Create a new list to avoid mutating the input parameter
     right_only_filters = list(right_only_filters) + ["reward_per_risk"]
 
     # Find all splits
