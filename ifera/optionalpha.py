@@ -977,11 +977,6 @@ def _calculate_exclusion_mask(splits: list[Split], device: torch.device) -> torc
     # Splits are exclusive with themselves
     splits_exclusion_mask.fill_diagonal_(True)
 
-    # Mark lower triangle as exclusive to avoid duplicate child split pairs
-    # (since order of parents doesn't matter)
-    lower_triangle = torch.tril(torch.ones_like(splits_exclusion_mask), diagonal=-1)
-    splits_exclusion_mask = splits_exclusion_mask | lower_triangle.bool()
-
     return splits_exclusion_mask
 
 
