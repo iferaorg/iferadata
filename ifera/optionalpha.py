@@ -671,7 +671,8 @@ def _add_computed_columns(
     trades_df: pd.DataFrame,
     spread_width: int,
     left_only_filters: list[str],
-) -> tuple[pd.DataFrame, list[str]]:
+    right_only_filters: list[str],
+) -> tuple[pd.DataFrame, list[str], list[str]]:
     """
     Add computed columns to filters DataFrame.
 
@@ -717,8 +718,9 @@ def _add_computed_columns(
     # Create a new list to avoid mutating the input parameter
     weekday_filter_names = [f"is_{day}" for day in weekday_names]
     updated_left_only_filters = list(left_only_filters) + weekday_filter_names
+    updated_right_only_filters = list(right_only_filters) + ["reward_per_risk"]
 
-    return filters_df, updated_left_only_filters
+    return filters_df, updated_left_only_filters, updated_right_only_filters
 
 
 def _select_split_indices(
@@ -1055,13 +1057,9 @@ def prepare_splits(
     filters_df = _align_filters_with_trades(filters_df, trades_df)
 
     # Add computed columns and update left_only_filters
-    filters_df, left_only_filters = _add_computed_columns(
-        filters_df, trades_df, spread_width, left_only_filters
+    filters_df, left_only_filters, right_only_filters = _add_computed_columns(
+        filters_df, trades_df, spread_width, left_only_filters, right_only_filters
     )
-
-    # Add reward_per_risk to right_only_filters
-    # Create a new list to avoid mutating the input parameter
-    right_only_filters = list(right_only_filters) + ["reward_per_risk"]
 
     # Find all splits
     splits: list[Split] = []
