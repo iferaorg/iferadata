@@ -781,9 +781,9 @@ def _select_split_indices(
         # Use all valid splits
         return valid_indices
 
-    # Select splits to distribute samples evenly in the valid range
-    # Both left and right directions use the same approach: distribute samples
-    # from min_samples to total_samples to create even buckets
+    # Select splits to evenly distribute the valid sample range into buckets
+    # We aim to create max_splits_per_filter+1 buckets of roughly equal size
+    # in the range [min_samples, total_samples]
     start_count = min_samples
     end_count = total_samples
 
@@ -1034,12 +1034,12 @@ def _calculate_exclusion_mask(
     j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
     rule2_mask = i_subset_of_j | j_subset_of_i
 
-    # Rule 3: Insufficient samples means exclusive
+    # Rule 3: Splits with fewer than min_samples are exclusive with all others
     has_min_samples = mask_sums >= min_samples
-    insufficient_samples_mask = ~has_min_samples.unsqueeze(1) | ~has_min_samples.unsqueeze(0)
+    min_samples_exclusion_mask = ~has_min_samples.unsqueeze(1) | ~has_min_samples.unsqueeze(0)
 
     # Combine all rules with OR operation
-    splits_exclusion_mask = rule1_mask | rule2_mask | insufficient_samples_mask
+    splits_exclusion_mask = rule1_mask | rule2_mask | min_samples_exclusion_mask
 
     # Splits are exclusive with themselves
     splits_exclusion_mask.fill_diagonal_(True)
@@ -1195,13 +1195,13 @@ def _calculate_incremental_exclusion_mask(
         new_subset_of_old = intersection_counts == new_mask_sums.unsqueeze(0)
         rule2_mask = old_subset_of_new | new_subset_of_old
 
-        # Rule 3: Insufficient samples
+        # Rule 3: Splits with fewer than min_samples are exclusive with all others
         old_has_min = old_mask_sums >= min_samples
         new_has_min = new_mask_sums >= min_samples
-        insufficient_samples_mask = ~old_has_min.unsqueeze(1) | ~new_has_min.unsqueeze(0)
+        min_samples_exclusion_mask = ~old_has_min.unsqueeze(1) | ~new_has_min.unsqueeze(0)
 
         # Combine rules
-        old_new_exclusion = rule1_mask | rule2_mask | insufficient_samples_mask
+        old_new_exclusion = rule1_mask | rule2_mask | min_samples_exclusion_mask
 
         # Set both quadrants (symmetric)
         combined_mask[:n_old, n_old:] = old_new_exclusion
