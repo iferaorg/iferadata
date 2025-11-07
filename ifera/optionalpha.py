@@ -575,21 +575,15 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(
-            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
-        )
+        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
-            )
+            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -611,6 +605,7 @@ class Split:
     Represents a split condition for filtering data.
 
     A single split can now represent multiple filters that result in the same mask.
+    Splits can be either tier 1 (original) or child splits created from parent combinations.
 
     Attributes
     ----------
@@ -618,16 +613,20 @@ class Split:
         1-D bool tensor representing the row-mask of the split
     filters : list[FilterInfo]
         List of filters that result in this mask. Each FilterInfo contains:
-        filter_idx, filter_name, threshold, and direction
+        filter_idx, filter_name, threshold, and direction.
+        Empty for child splits.
+    parents : list[tuple[int, int]]
+        List of pairs of parent split indices. Each pair represents the two parent
+        splits that were combined with logical AND to create this child split.
+        Empty for tier 1 (original) splits.
     """
 
     mask: torch.Tensor
     filters: list[FilterInfo]
+    parents: list[tuple[int, int]]
 
 
-def _align_filters_with_trades(
-    filters_df: pd.DataFrame, trades_df: pd.DataFrame
-) -> pd.DataFrame:
+def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -696,9 +695,7 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
 
     # Add weekday filters based on date
     weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
@@ -820,9 +817,7 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Get sorted unique values
-    unique_vals = torch.tensor(
-        sorted(filters_df[col_name].unique()), dtype=dtype, device=device
-    )
+    unique_vals = torch.tensor(sorted(filters_df[col_name].unique()), dtype=dtype, device=device)
 
     if len(unique_vals) <= 1:
         # No splits possible for this filter
@@ -832,9 +827,7 @@ def _create_splits_for_filter(
     col_tensor = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
     # Determine which split indices to use
-    split_indices_to_use = _select_split_indices(
-        unique_vals, col_tensor, max_splits_per_filter
-    )
+    split_indices_to_use = _select_split_indices(unique_vals, col_tensor, max_splits_per_filter)
 
     # Create splits for selected indices
     splits = []
@@ -848,6 +841,7 @@ def _create_splits_for_filter(
                 Split(
                     mask=left_mask,
                     filters=[FilterInfo(col_idx, col_name, threshold.item(), "left")],
+                    parents=[],
                 )
             )
 
@@ -858,6 +852,7 @@ def _create_splits_for_filter(
                 Split(
                     mask=right_mask,
                     filters=[FilterInfo(col_idx, col_name, threshold.item(), "right")],
+                    parents=[],
                 )
             )
 
@@ -912,22 +907,24 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
         # Find all splits with identical masks to split i
         identical_indices = mask_equality[i].nonzero(as_tuple=True)[0]
 
-        # Merge filters from all identical splits
+        # Merge filters and parents from all identical splits
         merged_filters = []
+        merged_parents = []
         for idx in identical_indices:
             idx_int = int(idx.item())
             merged_filters.extend(splits[idx_int].filters)
+            merged_parents.extend(splits[idx_int].parents)
             processed[idx] = True
 
-        # Create a merged split with all filters
-        merged_splits.append(Split(mask=splits[i].mask, filters=merged_filters))
+        # Create a merged split with all filters and parents
+        merged_splits.append(
+            Split(mask=splits[i].mask, filters=merged_filters, parents=merged_parents)
+        )
 
     return merged_splits
 
 
-def _calculate_exclusion_mask(
-    splits: list[Split], device: torch.device
-) -> torch.Tensor:
+def _calculate_exclusion_mask(splits: list[Split], device: torch.device) -> torch.Tensor:
     """
     Calculate the splits exclusion mask.
 
@@ -935,6 +932,9 @@ def _calculate_exclusion_mask(
     1. Empty intersection (no overlap)
     2. Subset relationship (one split's rows are subset of another's)
     3. Self-exclusion (split is exclusive with itself)
+
+    Additionally, the lower triangle is marked as exclusive to prevent duplicate
+    child split generation (since order of parents doesn't matter).
 
     Parameters
     ----------
@@ -949,9 +949,7 @@ def _calculate_exclusion_mask(
         2-D bool tensor (n_splits x n_splits) indicating mutual exclusion
     """
     n_splits = len(splits)
-    splits_exclusion_mask = torch.zeros(
-        (n_splits, n_splits), dtype=torch.bool, device=device
-    )
+    splits_exclusion_mask = torch.zeros((n_splits, n_splits), dtype=torch.bool, device=device)
 
     if n_splits == 0:
         return splits_exclusion_mask
@@ -982,6 +980,161 @@ def _calculate_exclusion_mask(
     return splits_exclusion_mask
 
 
+def _generate_child_splits(
+    old_splits: list[Split],
+    exclusion_mask: torch.Tensor,
+) -> list[Split]:
+    """
+    Generate child splits from pairs of non-exclusive parent splits.
+
+    Parameters
+    ----------
+    old_splits : list[Split]
+        List of existing Split objects
+    exclusion_mask : torch.Tensor
+        2-D bool tensor indicating which splits are mutually exclusive
+
+    Returns
+    -------
+    list[Split]
+        List of newly created child Split objects
+    """
+    n_splits = len(old_splits)
+    child_splits = []
+
+    # Generate child splits from non-exclusive pairs
+    # We only check upper triangle since lower triangle is marked as exclusive
+    for i in range(n_splits):
+        for j in range(i + 1, n_splits):
+            if not exclusion_mask[i, j]:
+                # Create child split by combining masks with logical AND
+                child_mask = old_splits[i].mask & old_splits[j].mask
+                # Child splits have empty filters list and parent indices
+                child_splits.append(Split(mask=child_mask, filters=[], parents=[(i, j)]))
+
+    return child_splits
+
+
+def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
+    """
+    Remove new splits that have identical masks to old splits.
+
+    Parameters
+    ----------
+    new_splits : list[Split]
+        List of newly created Split objects
+    old_splits : list[Split]
+        List of existing Split objects
+
+    Returns
+    -------
+    list[Split]
+        List of new splits with redundant ones removed
+    """
+    if len(new_splits) == 0 or len(old_splits) == 0:
+        return new_splits
+
+    # Stack masks for vectorized comparison
+    new_masks = torch.stack([split.mask for split in new_splits], dim=0)
+    old_masks = torch.stack([split.mask for split in old_splits], dim=0)
+
+    # Convert to float for matrix operations
+    new_masks_float = new_masks.float()
+    old_masks_float = old_masks.float()
+
+    n_samples = new_masks.shape[1]
+
+    # Compute pairwise equality: new_masks[i] == old_masks[j]
+    # Two masks are equal if they match at all positions
+    match_counts = torch.matmul(new_masks_float, old_masks_float.T) + torch.matmul(
+        1 - new_masks_float, (1 - old_masks_float).T
+    )
+    mask_equality = match_counts == n_samples
+
+    # Find new splits that have no matching old split
+    has_match = mask_equality.any(dim=1)
+    keep_indices = (~has_match).nonzero(as_tuple=True)[0]
+
+    # Return only new splits that don't match any old split
+    return [new_splits[i] for i in keep_indices.tolist()]
+
+
+def _calculate_incremental_exclusion_mask(
+    old_splits: list[Split],
+    new_splits: list[Split],
+    old_exclusion_mask: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    """
+    Calculate exclusion mask including both old and new splits.
+
+    Optimizes by reusing the old exclusion mask for old-old comparisons.
+
+    Parameters
+    ----------
+    old_splits : list[Split]
+        List of existing Split objects
+    new_splits : list[Split]
+        List of newly created Split objects
+    old_exclusion_mask : torch.Tensor
+        Exclusion mask for old splits only
+    device : torch.device
+        PyTorch device for tensors
+
+    Returns
+    -------
+    torch.Tensor
+        Combined exclusion mask for old and new splits
+    """
+    n_old = len(old_splits)
+    n_new = len(new_splits)
+    n_total = n_old + n_new
+
+    if n_new == 0:
+        return old_exclusion_mask
+
+    # Create combined exclusion mask
+    combined_mask = torch.zeros((n_total, n_total), dtype=torch.bool, device=device)
+
+    # Copy old exclusion mask to top-left quadrant
+    combined_mask[:n_old, :n_old] = old_exclusion_mask
+
+    # Calculate new-new exclusions (bottom-right quadrant)
+    new_new_mask = _calculate_exclusion_mask(new_splits, device)
+    combined_mask[n_old:, n_old:] = new_new_mask
+
+    # Calculate old-new exclusions (top-right and bottom-left quadrants)
+    if n_old > 0 and n_new > 0:
+        old_masks = torch.stack([split.mask for split in old_splits], dim=0)
+        new_masks = torch.stack([split.mask for split in new_splits], dim=0)
+
+        old_masks_float = old_masks.float()
+        new_masks_float = new_masks.float()
+
+        # Compute intersection counts between old and new
+        intersection_counts = torch.matmul(old_masks_float, new_masks_float.T)
+
+        # Rule 1: Empty intersection
+        has_intersection = intersection_counts > 0
+        rule1_mask = ~has_intersection
+
+        # Rule 2: Subset relationships
+        old_mask_sums = old_masks_float.sum(dim=1)
+        new_mask_sums = new_masks_float.sum(dim=1)
+        old_subset_of_new = intersection_counts == old_mask_sums.unsqueeze(1)
+        new_subset_of_old = intersection_counts == new_mask_sums.unsqueeze(0)
+        rule2_mask = old_subset_of_new | new_subset_of_old
+
+        # Combine rules
+        old_new_exclusion = rule1_mask | rule2_mask
+
+        # Set both quadrants (symmetric)
+        combined_mask[:n_old, n_old:] = old_new_exclusion
+        combined_mask[n_old:, :n_old] = old_new_exclusion.T
+
+    return combined_mask
+
+
 def prepare_splits(
     trades_df: pd.DataFrame,
     filters_df: pd.DataFrame,
@@ -991,13 +1144,15 @@ def prepare_splits(
     device: torch.device,
     dtype: torch.dtype,
     max_splits_per_filter: int | None = None,
+    max_depth: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split], torch.Tensor]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
 
     This function aligns trade and filter data, calculates reward-per-risk metrics,
     identifies potential split points in the data, and converts everything to
-    PyTorch tensors for further analysis.
+    PyTorch tensors for further analysis. Optionally generates child splits up to
+    max_depth by combining parent splits with logical AND.
 
     Parameters
     ----------
@@ -1023,6 +1178,11 @@ def prepare_splits(
         selected to distribute samples as evenly as possible across buckets while
         respecting the constraint that samples with equal filter values cannot be
         separated. Default is None.
+    max_depth : int, optional
+        Maximum depth for generating child splits. Default is 1 (only tier 1 splits).
+        If greater than 1, child splits are generated by combining parent splits
+        with logical AND up to the specified depth. Each depth level combines
+        non-exclusive split pairs from the previous level.
 
     Returns
     -------
@@ -1084,10 +1244,32 @@ def prepare_splits(
     # Calculate splits_exclusion_mask
     splits_exclusion_mask = _calculate_exclusion_mask(splits, device)
 
+    # Generate child splits if max_depth > 1
+    if max_depth > 1:
+        for _ in range(2, max_depth + 1):
+            # Generate child splits from non-exclusive parent pairs
+            new_splits = _generate_child_splits(splits, splits_exclusion_mask)
+
+            # Remove new splits that have identical masks to old splits
+            new_splits = _remove_redundant_splits(new_splits, splits)
+
+            # Exit early if no new splits remain
+            if len(new_splits) == 0:
+                break
+
+            # Merge identical splits among new splits
+            new_splits = _merge_identical_splits(new_splits, device)
+
+            # Calculate new exclusion mask including both old and new splits
+            splits_exclusion_mask = _calculate_incremental_exclusion_mask(
+                splits, new_splits, splits_exclusion_mask, device
+            )
+
+            # Append new splits to splits list
+            splits.extend(new_splits)
+
     # Convert filters_df to torch tensor X
-    X = torch.tensor(
-        filters_df.values, dtype=dtype, device=device
-    )  # pylint: disable=invalid-name
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     # Calculate RoR (y) as profit / risk
     y = torch.tensor(  # pylint: disable=invalid-name
