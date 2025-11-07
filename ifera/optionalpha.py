@@ -724,12 +724,15 @@ def _select_split_indices(
     unique_vals: torch.Tensor,
     col_tensor: torch.Tensor,
     max_splits_per_filter: int | None,
+    min_samples: int,
+    direction: str,
 ) -> list[int]:
     """
-    Select split indices for a filter column.
+    Select split indices for a filter column in a specific direction.
 
     If max_splits_per_filter is set and we have more possible splits than allowed,
     select splits that distribute samples evenly. Otherwise, use all possible splits.
+    Only creates splits where the selected side has at least min_samples samples.
 
     Parameters
     ----------
@@ -739,18 +742,16 @@ def _select_split_indices(
         Tensor of all values in the filter column
     max_splits_per_filter : int | None
         Maximum number of splits per direction, or None for all splits
+    min_samples : int
+        Minimum number of samples required on the selected side of the split
+    direction : str
+        Direction of the split: "left" or "right"
 
     Returns
     -------
     list[int]
         List of indices where splits should be created
     """
-    n_possible_splits = len(unique_vals) - 1
-
-    if max_splits_per_filter is None or n_possible_splits <= max_splits_per_filter:
-        # Use all possible splits
-        return list(range(n_possible_splits))
-
     # Count samples for each unique value using vectorized operations
     _, sample_counts = torch.unique(col_tensor, return_counts=True)
 
@@ -758,22 +759,72 @@ def _select_split_indices(
     cumsum = torch.cumsum(sample_counts, dim=0)
     total_samples = cumsum[-1].item()
 
+    # Determine valid split indices based on min_samples and direction
+    n_possible_splits = len(unique_vals) - 1
+    valid_indices = []
+
+    for i in range(n_possible_splits):
+        # cumsum[i] is the count of samples <= unique_vals[i]
+        # cumsum[-1] - cumsum[i] is the count of samples > unique_vals[i]
+        left_count = cumsum[i].item()
+        right_count = total_samples - left_count
+
+        if direction == "left" and left_count >= min_samples:
+            valid_indices.append(i)
+        elif direction == "right" and right_count >= min_samples:
+            valid_indices.append(i)
+
+    if len(valid_indices) == 0:
+        return []
+
+    if max_splits_per_filter is None or len(valid_indices) <= max_splits_per_filter:
+        # Use all valid splits
+        return valid_indices
+
+    # Select splits to evenly distribute the valid sample range into buckets
+    # We aim to create max_splits_per_filter+1 buckets of roughly equal size
+    # in the range [min_samples, total_samples]
+    start_count = min_samples
+    end_count = total_samples
+
     # Target size per bucket
-    target_bucket_size = total_samples / (max_splits_per_filter + 1)
+    range_size = end_count - start_count
+    target_bucket_size = range_size / (max_splits_per_filter + 1)
 
     # Find the split indices that best achieve even distribution
     selected_indices = []
     for split_num in range(1, max_splits_per_filter + 1):
-        target_cumsum = split_num * target_bucket_size
-        diffs = torch.abs(cumsum[:-1] - target_cumsum)
+        target_cumsum = start_count + split_num * target_bucket_size
+
+        # Only consider valid indices
+        diffs = torch.full((n_possible_splits,), float("inf"))
+        for idx in valid_indices:
+            if direction == "left":
+                # For left splits, compare cumulative count to target
+                diffs[idx] = abs(cumsum[idx].item() - target_cumsum)
+            else:
+                # For right splits, compare remaining count to target
+                # remaining_count = total_samples - cumsum[idx]
+                # target_remaining = total_samples - target_cumsum
+                remaining_count = total_samples - cumsum[idx].item()
+                target_remaining = total_samples - target_cumsum
+                diffs[idx] = abs(remaining_count - target_remaining)
+
         best_idx = int(torch.argmin(diffs).item())
 
-        # Avoid duplicate indices
-        while best_idx in selected_indices and best_idx < n_possible_splits - 1:
+        # Avoid duplicate indices and ensure we have valid candidates
+        attempts = 0
+        max_attempts = len(valid_indices)
+        while (
+            best_idx in selected_indices
+            and diffs[best_idx] < float("inf")
+            and attempts < max_attempts
+        ):
             diffs[best_idx] = float("inf")
             best_idx = int(torch.argmin(diffs).item())
+            attempts += 1
 
-        if best_idx not in selected_indices:
+        if best_idx not in selected_indices and best_idx in valid_indices:
             selected_indices.append(best_idx)
 
     return sorted(selected_indices)
@@ -788,6 +839,7 @@ def _create_splits_for_filter(
     device: torch.device,
     dtype: torch.dtype,
     max_splits_per_filter: int | None,
+    min_samples: int,
 ) -> list[Split]:
     """
     Create splits for a single filter column.
@@ -810,6 +862,8 @@ def _create_splits_for_filter(
         PyTorch dtype for tensors
     max_splits_per_filter : int | None
         Maximum number of splits per direction
+    min_samples : int
+        Minimum number of samples required on each side of the split
 
     Returns
     -------
@@ -826,16 +880,15 @@ def _create_splits_for_filter(
     # Convert filter column to tensor for masking
     col_tensor = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
-    # Determine which split indices to use
-    split_indices_to_use = _select_split_indices(unique_vals, col_tensor, max_splits_per_filter)
-
-    # Create splits for selected indices
     splits = []
-    for i in split_indices_to_use:
-        threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
 
-        # Create left split (values <= threshold) if not in right_only_filters
-        if col_name not in right_only_filters:
+    # Create left splits if not in right_only_filters
+    if col_name not in right_only_filters:
+        left_split_indices = _select_split_indices(
+            unique_vals, col_tensor, max_splits_per_filter, min_samples, "left"
+        )
+        for i in left_split_indices:
+            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
             left_mask = col_tensor <= threshold
             splits.append(
                 Split(
@@ -845,8 +898,13 @@ def _create_splits_for_filter(
                 )
             )
 
-        # Create right split (values >= threshold) if not in left_only_filters
-        if col_name not in left_only_filters:
+    # Create right splits if not in left_only_filters
+    if col_name not in left_only_filters:
+        right_split_indices = _select_split_indices(
+            unique_vals, col_tensor, max_splits_per_filter, min_samples, "right"
+        )
+        for i in right_split_indices:
+            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
             right_mask = col_tensor >= threshold
             splits.append(
                 Split(
@@ -924,12 +982,14 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
     return merged_splits
 
 
-def _calculate_exclusion_mask(splits: list[Split], device: torch.device) -> torch.Tensor:
+def _calculate_exclusion_mask(
+    splits: list[Split], device: torch.device, min_samples: int
+) -> torch.Tensor:
     """
     Calculate the splits exclusion mask.
 
     Determines which splits are mutually exclusive with each other based on:
-    1. Empty intersection (no overlap)
+    1. Insufficient intersection (overlap has fewer than min_samples samples)
     2. Subset relationship (one split's rows are subset of another's)
     3. Self-exclusion (split is exclusive with itself)
 
@@ -942,6 +1002,8 @@ def _calculate_exclusion_mask(splits: list[Split], device: torch.device) -> torc
         List of Split objects
     device : torch.device
         PyTorch device for tensors
+    min_samples : int
+        Minimum number of samples required in the intersection for a valid combination
 
     Returns
     -------
@@ -961,9 +1023,10 @@ def _calculate_exclusion_mask(splits: list[Split], device: torch.device) -> torc
     # Compute intersection counts
     intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
 
-    # Rule 1: Empty intersection means mutually exclusive
-    has_intersection = intersection_counts > 0
-    rule1_mask = ~has_intersection
+    # Rule 1: Insufficient intersection means mutually exclusive
+    # Combinations must have at least min_samples samples in their intersection
+    has_sufficient_intersection = intersection_counts >= min_samples
+    rule1_mask = ~has_sufficient_intersection
 
     # Rule 2: Subset relationship means exclusive (prevents redundant masks)
     mask_sums = all_masks_float.sum(dim=1)
@@ -1064,6 +1127,7 @@ def _calculate_incremental_exclusion_mask(
     new_splits: list[Split],
     old_exclusion_mask: torch.Tensor,
     device: torch.device,
+    min_samples: int,
 ) -> torch.Tensor:
     """
     Calculate exclusion mask including both old and new splits.
@@ -1080,6 +1144,8 @@ def _calculate_incremental_exclusion_mask(
         Exclusion mask for old splits only
     device : torch.device
         PyTorch device for tensors
+    min_samples : int
+        Minimum number of samples required for a valid split
 
     Returns
     -------
@@ -1100,7 +1166,7 @@ def _calculate_incremental_exclusion_mask(
     combined_mask[:n_old, :n_old] = old_exclusion_mask
 
     # Calculate new-new exclusions (bottom-right quadrant)
-    new_new_mask = _calculate_exclusion_mask(new_splits, device)
+    new_new_mask = _calculate_exclusion_mask(new_splits, device, min_samples)
     combined_mask[n_old:, n_old:] = new_new_mask
 
     # Calculate old-new exclusions (top-right and bottom-left quadrants)
@@ -1114,9 +1180,10 @@ def _calculate_incremental_exclusion_mask(
         # Compute intersection counts between old and new
         intersection_counts = torch.matmul(old_masks_float, new_masks_float.T)
 
-        # Rule 1: Empty intersection
-        has_intersection = intersection_counts > 0
-        rule1_mask = ~has_intersection
+        # Rule 1: Insufficient intersection means mutually exclusive
+        # Combinations must have at least min_samples samples in their intersection
+        has_sufficient_intersection = intersection_counts >= min_samples
+        rule1_mask = ~has_sufficient_intersection
 
         # Rule 2: Subset relationships
         old_mask_sums = old_masks_float.sum(dim=1)
@@ -1145,6 +1212,7 @@ def prepare_splits(
     dtype: torch.dtype,
     max_splits_per_filter: int | None = None,
     max_depth: int = 1,
+    min_samples: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split], torch.Tensor]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -1183,6 +1251,11 @@ def prepare_splits(
         If greater than 1, child splits are generated by combining parent splits
         with logical AND up to the specified depth. Each depth level combines
         non-exclusive split pairs from the previous level.
+    min_samples : int, optional
+        Minimum number of samples required on each side of a split. Default is 1.
+        Only splits with at least min_samples samples on the selected side will be
+        created. This applies to both left and right splits independently, so they
+        may have different thresholds. Also affects exclusion mask calculation.
 
     Returns
     -------
@@ -1209,7 +1282,7 @@ def prepare_splits(
       consecutive unique values.
     - Left splits include values <= threshold, right splits include values >= threshold.
     - Splits are mutually exclusive if they:
-      1. Would result in an empty set when both are applied
+      1. Their combination would have fewer than min_samples samples
       2. One split's rows are a subset of the other's (redundant/overlapping masks)
       3. A split is also marked as exclusive with itself (no point applying same mask twice)
     """
@@ -1235,6 +1308,7 @@ def prepare_splits(
             device,
             dtype,
             max_splits_per_filter,
+            min_samples,
         )
         splits.extend(filter_splits)
 
@@ -1242,7 +1316,7 @@ def prepare_splits(
     splits = _merge_identical_splits(splits, device)
 
     # Calculate splits_exclusion_mask
-    splits_exclusion_mask = _calculate_exclusion_mask(splits, device)
+    splits_exclusion_mask = _calculate_exclusion_mask(splits, device, min_samples)
 
     # Generate child splits if max_depth > 1
     if max_depth > 1:
@@ -1260,9 +1334,16 @@ def prepare_splits(
             # Merge identical splits among new splits
             new_splits = _merge_identical_splits(new_splits, device)
 
+            # Filter out splits with fewer than min_samples
+            new_splits = [split for split in new_splits if split.mask.sum().item() >= min_samples]
+
+            # Exit early if no new splits remain after filtering
+            if len(new_splits) == 0:
+                break
+
             # Calculate new exclusion mask including both old and new splits
             splits_exclusion_mask = _calculate_incremental_exclusion_mask(
-                splits, new_splits, splits_exclusion_mask, device
+                splits, new_splits, splits_exclusion_mask, device, min_samples
             )
 
             # Append new splits to splits list
