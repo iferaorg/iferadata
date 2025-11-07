@@ -989,10 +989,9 @@ def _calculate_exclusion_mask(
     Calculate the splits exclusion mask.
 
     Determines which splits are mutually exclusive with each other based on:
-    1. Empty intersection (no overlap)
+    1. Insufficient intersection (overlap has fewer than min_samples samples)
     2. Subset relationship (one split's rows are subset of another's)
     3. Self-exclusion (split is exclusive with itself)
-    4. Insufficient samples (split has fewer than min_samples samples)
 
     Additionally, the lower triangle is marked as exclusive to prevent duplicate
     child split generation (since order of parents doesn't matter).
@@ -1004,7 +1003,7 @@ def _calculate_exclusion_mask(
     device : torch.device
         PyTorch device for tensors
     min_samples : int
-        Minimum number of samples required for a valid split
+        Minimum number of samples required in the intersection for a valid combination
 
     Returns
     -------
@@ -1024,9 +1023,10 @@ def _calculate_exclusion_mask(
     # Compute intersection counts
     intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
 
-    # Rule 1: Empty intersection means mutually exclusive
-    has_intersection = intersection_counts > 0
-    rule1_mask = ~has_intersection
+    # Rule 1: Insufficient intersection means mutually exclusive
+    # Combinations must have at least min_samples samples in their intersection
+    has_sufficient_intersection = intersection_counts >= min_samples
+    rule1_mask = ~has_sufficient_intersection
 
     # Rule 2: Subset relationship means exclusive (prevents redundant masks)
     mask_sums = all_masks_float.sum(dim=1)
@@ -1034,12 +1034,8 @@ def _calculate_exclusion_mask(
     j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
     rule2_mask = i_subset_of_j | j_subset_of_i
 
-    # Rule 3: Splits with fewer than min_samples are exclusive with all others
-    has_min_samples = mask_sums >= min_samples
-    min_samples_exclusion_mask = ~has_min_samples.unsqueeze(1) | ~has_min_samples.unsqueeze(0)
-
     # Combine all rules with OR operation
-    splits_exclusion_mask = rule1_mask | rule2_mask | min_samples_exclusion_mask
+    splits_exclusion_mask = rule1_mask | rule2_mask
 
     # Splits are exclusive with themselves
     splits_exclusion_mask.fill_diagonal_(True)
@@ -1184,9 +1180,10 @@ def _calculate_incremental_exclusion_mask(
         # Compute intersection counts between old and new
         intersection_counts = torch.matmul(old_masks_float, new_masks_float.T)
 
-        # Rule 1: Empty intersection
-        has_intersection = intersection_counts > 0
-        rule1_mask = ~has_intersection
+        # Rule 1: Insufficient intersection means mutually exclusive
+        # Combinations must have at least min_samples samples in their intersection
+        has_sufficient_intersection = intersection_counts >= min_samples
+        rule1_mask = ~has_sufficient_intersection
 
         # Rule 2: Subset relationships
         old_mask_sums = old_masks_float.sum(dim=1)
@@ -1195,13 +1192,8 @@ def _calculate_incremental_exclusion_mask(
         new_subset_of_old = intersection_counts == new_mask_sums.unsqueeze(0)
         rule2_mask = old_subset_of_new | new_subset_of_old
 
-        # Rule 3: Splits with fewer than min_samples are exclusive with all others
-        old_has_min = old_mask_sums >= min_samples
-        new_has_min = new_mask_sums >= min_samples
-        min_samples_exclusion_mask = ~old_has_min.unsqueeze(1) | ~new_has_min.unsqueeze(0)
-
         # Combine rules
-        old_new_exclusion = rule1_mask | rule2_mask | min_samples_exclusion_mask
+        old_new_exclusion = rule1_mask | rule2_mask
 
         # Set both quadrants (symmetric)
         combined_mask[:n_old, n_old:] = old_new_exclusion
@@ -1290,10 +1282,9 @@ def prepare_splits(
       consecutive unique values.
     - Left splits include values <= threshold, right splits include values >= threshold.
     - Splits are mutually exclusive if they:
-      1. Would result in an empty set when both are applied
+      1. Their combination would have fewer than min_samples samples
       2. One split's rows are a subset of the other's (redundant/overlapping masks)
       3. A split is also marked as exclusive with itself (no point applying same mask twice)
-      4. Either split has fewer than min_samples samples
     """
     # Align filters_df with trades_df
     filters_df = _align_filters_with_trades(filters_df, trades_df)
