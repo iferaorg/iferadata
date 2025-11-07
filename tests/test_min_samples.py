@@ -138,8 +138,8 @@ def test_min_samples_asymmetric_thresholds():
                     right_thresholds.append(threshold)
 
     # Left splits need at least 3 samples on left
-    # Valid splits: 2.5 (3 left), 3.5 (4 left), ..., 9.5 (9 left)
-    # Invalid: 1.5 (1 left), (actually we'd get splits starting from min_samples)
+    # Valid splits: 3.5 (3 left), 4.5 (4 left), ..., 9.5 (9 left) = 7 splits
+    # Invalid: 1.5 (1 left), 2.5 (2 left) - both have fewer than 3 samples
     assert len(left_thresholds) == 7  # splits from 3.5 to 9.5
 
     # Right splits need at least 3 samples on right

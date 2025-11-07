@@ -782,15 +782,10 @@ def _select_split_indices(
         return valid_indices
 
     # Select splits to distribute samples evenly in the valid range
-    if direction == "left":
-        # For left splits, distribute samples from min_samples to total_samples
-        start_count = min_samples
-        end_count = total_samples
-    else:
-        # For right splits, distribute samples from total_samples - min_samples to 0
-        # which means the cumsum range is from min_samples to total_samples
-        start_count = min_samples
-        end_count = total_samples
+    # Both left and right directions use the same approach: distribute samples
+    # from min_samples to total_samples to create even buckets
+    start_count = min_samples
+    end_count = total_samples
 
     # Target size per bucket
     range_size = end_count - start_count
@@ -805,20 +800,29 @@ def _select_split_indices(
         diffs = torch.full((n_possible_splits,), float("inf"))
         for idx in valid_indices:
             if direction == "left":
+                # For left splits, compare cumulative count to target
                 diffs[idx] = abs(cumsum[idx].item() - target_cumsum)
             else:
-                # For right direction, use remaining count
-                diffs[idx] = abs(
-                    (total_samples - cumsum[idx].item())
-                    - (end_count - (target_cumsum - start_count))
-                )
+                # For right splits, compare remaining count to target
+                # remaining_count = total_samples - cumsum[idx]
+                # target_remaining = total_samples - target_cumsum
+                remaining_count = total_samples - cumsum[idx].item()
+                target_remaining = total_samples - target_cumsum
+                diffs[idx] = abs(remaining_count - target_remaining)
 
         best_idx = int(torch.argmin(diffs).item())
 
-        # Avoid duplicate indices
-        while best_idx in selected_indices and diffs[best_idx] < float("inf"):
+        # Avoid duplicate indices and ensure we have valid candidates
+        attempts = 0
+        max_attempts = len(valid_indices)
+        while (
+            best_idx in selected_indices
+            and diffs[best_idx] < float("inf")
+            and attempts < max_attempts
+        ):
             diffs[best_idx] = float("inf")
             best_idx = int(torch.argmin(diffs).item())
+            attempts += 1
 
         if best_idx not in selected_indices and best_idx in valid_indices:
             selected_indices.append(best_idx)
