@@ -6,7 +6,6 @@ from Option Alpha and convert them into pandas DataFrames.
 """
 
 import re
-from dataclasses import dataclass
 from datetime import datetime, time
 from typing import NamedTuple, Optional
 
@@ -605,7 +604,6 @@ def get_filters(prefix: str) -> pd.DataFrame:
         return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
 
 
-@dataclass
 class Split:
     """
     Represents a split condition for filtering data.
@@ -621,15 +619,104 @@ class Split:
         List of filters that result in this mask. Each FilterInfo contains:
         filter_idx, filter_name, threshold, and direction.
         Empty for child splits.
-    parents : list[tuple[int, int]]
-        List of pairs of parent split indices. Each pair represents the two parent
+    parents : list[tuple[Split, Split]]
+        List of pairs of parent Split objects. Each pair represents the two parent
         splits that were combined with logical AND to create this child split.
         Empty for depth 1 (original) splits.
     """
 
-    mask: torch.Tensor
-    filters: list[FilterInfo]
-    parents: list[tuple[int, int]]
+    def __init__(
+        self,
+        mask: torch.Tensor,
+        filters: list[FilterInfo],
+        parents: list[tuple["Split", "Split"]],
+    ):
+        """
+        Initialize a Split object.
+
+        Parameters
+        ----------
+        mask : torch.Tensor
+            1-D bool tensor representing the row-mask of the split
+        filters : list[FilterInfo]
+            List of filters that result in this mask
+        parents : list[tuple[Split, Split]]
+            List of pairs of parent Split objects
+        """
+        self.mask = mask
+        self.filters = filters
+        self.parents = parents
+
+    def _get_dnf_terms(self) -> list[list[tuple[str, str, float]]]:
+        """
+        Get the disjunctive normal form (DNF) representation of this split.
+
+        Returns a list of conjunctions, where each conjunction is a list of
+        (filter_name, operator, threshold) tuples.
+
+        Returns
+        -------
+        list[list[tuple[str, str, float]]]
+            List of conjunctions in DNF
+        """
+        # Base case: depth 1 split with filters
+        if len(self.filters) > 0:
+            # Multiple filters in the same split represent OR relationship
+            result = []
+            for filter_info in self.filters:
+                operator = "<" if filter_info.direction == "left" else ">"
+                result.append(
+                    [(filter_info.filter_name, operator, filter_info.threshold)]
+                )
+            return result
+
+        # Recursive case: child split with parents
+        if len(self.parents) > 0:
+            all_conjunctions = []
+            # Multiple parent pairs represent OR relationship
+            for parent_a, parent_b in self.parents:
+                # Get DNF from each parent
+                dnf_a = parent_a._get_dnf_terms()  # pylint: disable=protected-access
+                dnf_b = parent_b._get_dnf_terms()  # pylint: disable=protected-access
+
+                # Combine with AND: (A OR B) AND (C OR D) = (A AND C) OR (A AND D) OR (B AND C) OR (B AND D)
+                for term_a in dnf_a:
+                    for term_b in dnf_b:
+                        # Combine the two terms (both are lists of filter conditions)
+                        combined = term_a + term_b
+                        all_conjunctions.append(combined)
+
+            return all_conjunctions
+
+        # Empty split (shouldn't happen, but handle gracefully)
+        return []
+
+    def __str__(self) -> str:
+        """
+        Return a string representation of the split in DNF.
+
+        Returns
+        -------
+        str
+            String representation with filters in disjunctive normal form
+        """
+        dnf_terms = self._get_dnf_terms()
+
+        if not dnf_terms:
+            return "Split filters:\n - (empty)"
+
+        lines = ["Split filters:"]
+        for conjunction in dnf_terms:
+            # Format each filter in the conjunction
+            filter_strs = []
+            for filter_name, operator, threshold in conjunction:
+                filter_strs.append(f"({filter_name} {operator} {threshold})")
+
+            # Join with " and "
+            conjunction_str = " and ".join(filter_strs)
+            lines.append(f" - {conjunction_str}")
+
+        return "\n".join(lines)
 
 
 def _align_filters_with_trades(
@@ -1061,8 +1148,6 @@ def _generate_child_splits(
     parent_set_a: list[Split],
     parent_set_b: list[Split],
     exclusion_mask: torch.Tensor,
-    parent_set_a_offset: int = 0,
-    parent_set_b_offset: int = 0,
 ) -> list[Split]:
     """
     Generate child splits from pairs of non-exclusive parent splits from two sets.
@@ -1080,12 +1165,6 @@ def _generate_child_splits(
     exclusion_mask : torch.Tensor
         2-D bool tensor (len(parent_set_a) x len(parent_set_b)) indicating which
         pairs are mutually exclusive
-    parent_set_a_offset : int, optional
-        Offset to add to parent_set_a indices when recording parent pairs.
-        Default is 0.
-    parent_set_b_offset : int, optional
-        Offset to add to parent_set_b indices when recording parent pairs.
-        Default is 0.
 
     Returns
     -------
@@ -1106,14 +1185,12 @@ def _generate_child_splits(
                 if not exclusion_mask[i, j]:
                     # Create child split by combining masks with logical AND
                     child_mask = parent_set_a[i].mask & parent_set_b[j].mask
-                    # Child splits have empty filters list and parent indices
+                    # Child splits have empty filters list and parent Split references
                     child_splits.append(
                         Split(
                             mask=child_mask,
                             filters=[],
-                            parents=[
-                                (i + parent_set_a_offset, j + parent_set_b_offset)
-                            ],
+                            parents=[(parent_set_a[i], parent_set_b[j])],
                         )
                     )
     else:
@@ -1123,14 +1200,12 @@ def _generate_child_splits(
                 if not exclusion_mask[i, j]:
                     # Create child split by combining masks with logical AND
                     child_mask = parent_set_a[i].mask & parent_set_b[j].mask
-                    # Child splits have empty filters list and parent indices
+                    # Child splits have empty filters list and parent Split references
                     child_splits.append(
                         Split(
                             mask=child_mask,
                             filters=[],
-                            parents=[
-                                (i + parent_set_a_offset, j + parent_set_b_offset)
-                            ],
+                            parents=[(parent_set_a[i], parent_set_b[j])],
                         )
                     )
 
@@ -1308,15 +1383,11 @@ def prepare_splits(
                 previous_depth_splits, depth_1_splits, device, min_samples
             )
 
-            previous_depth_offset = len(all_splits) - len(previous_depth_splits)
-
             # Generate child splits from non-exclusive parent pairs
             new_splits = _generate_child_splits(
                 previous_depth_splits,
                 depth_1_splits,
                 exclusion_mask,
-                previous_depth_offset,
-                0,
             )
 
             # Remove new splits that have identical masks to any existing splits

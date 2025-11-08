@@ -33,7 +33,9 @@ def test_max_depth_1_no_child_splits():
     # All splits should have empty parents list (tier 1 splits)
     for split in splits:
         assert len(split.parents) == 0, "Tier 1 splits should have empty parents list"
-        assert len(split.filters) > 0, "Tier 1 splits should have non-empty filters list"
+        assert (
+            len(split.filters) > 0
+        ), "Tier 1 splits should have non-empty filters list"
 
 
 def test_max_depth_2_generates_child_splits():
@@ -107,9 +109,6 @@ def test_child_split_mask_is_and_of_parents():
         max_depth=2,
     )
 
-    # Find tier 1 splits
-    tier1_splits = [s for s in splits if len(s.parents) == 0]
-
     # Find child splits
     child_splits = [s for s in splits if len(s.parents) > 0]
 
@@ -118,9 +117,9 @@ def test_child_split_mask_is_and_of_parents():
 
     # Verify child masks are AND of parent masks
     for child in child_splits:
-        for parent_i, parent_j in child.parents:
+        for parent_a, parent_b in child.parents:
             # The child mask should be the AND of the two parent masks
-            expected_mask = tier1_splits[parent_i].mask & tier1_splits[parent_j].mask
+            expected_mask = parent_a.mask & parent_b.mask
             assert torch.equal(
                 child.mask, expected_mask
             ), "Child mask should be AND of parent masks"
@@ -158,9 +157,10 @@ def test_no_duplicate_parent_pairs():
     # Check that no two child splits have the same parent pair (in any order)
     seen_pairs = set()
     for child in child_splits:
-        for parent_i, parent_j in child.parents:
-            # Normalize pair order (smaller index first)
-            pair = tuple(sorted([parent_i, parent_j]))
+        for parent_a, parent_b in child.parents:
+            # Use id() to create unique identifiers for Split objects
+            # Normalize pair order (smaller id first)
+            pair = tuple(sorted([id(parent_a), id(parent_b)]))
             # Each pair should be unique
             assert pair not in seen_pairs, f"Duplicate parent pair found: {pair}"
             seen_pairs.add(pair)
@@ -264,7 +264,10 @@ def test_max_depth_3_generates_depth_3_splits():
     )
 
     filters_df = pd.DataFrame(
-        {"filter_a": [1.0, 2.0, 3.0, 4.0, 5.0], "filter_b": [10.0, 20.0, 30.0, 40.0, 50.0]},
+        {
+            "filter_a": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "filter_b": [10.0, 20.0, 30.0, 40.0, 50.0],
+        },
         index=pd.DatetimeIndex(
             ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13", "2022-01-14"],
             name="date",
@@ -398,13 +401,15 @@ def test_child_splits_respect_exclusion_mask():
     for child in child_splits:
         # Child mask should have at least one True value
         assert child.mask.any(), "Child split should have at least one True value"
-        # Verify parent indices are valid
-        for parent_i, parent_j in child.parents:
-            assert 0 <= parent_i < len(depth_1_splits), "Parent index should be valid"
-            assert 0 <= parent_j < len(depth_1_splits), "Parent index should be valid"
+        # Verify parents are Split objects
+        for parent_a, parent_b in child.parents:
+            assert isinstance(parent_a, Split), "Parent should be a Split object"
+            assert isinstance(parent_b, Split), "Parent should be a Split object"
             # Verify the child mask is the AND of parent masks
-            expected_mask = depth_1_splits[parent_i].mask & depth_1_splits[parent_j].mask
-            assert torch.equal(child.mask, expected_mask), "Child mask should be AND of parents"
+            expected_mask = parent_a.mask & parent_b.mask
+            assert torch.equal(
+                child.mask, expected_mask
+            ), "Child mask should be AND of parents"
 
 
 def test_max_depth_with_max_splits_per_filter():
@@ -437,8 +442,12 @@ def test_max_depth_with_max_splits_per_filter():
     child_splits = [s for s in splits if len(s.parents) > 0]
 
     # Each filter should have at most 3 splits per direction
-    filter_a_tier1 = sum(1 for s in tier1_splits for f in s.filters if f.filter_name == "filter_a")
-    assert filter_a_tier1 <= 6, "filter_a should have at most 6 tier1 splits (3 left + 3 right)"
+    filter_a_tier1 = sum(
+        1 for s in tier1_splits for f in s.filters if f.filter_name == "filter_a"
+    )
+    assert (
+        filter_a_tier1 <= 6
+    ), "filter_a should have at most 6 tier1 splits (3 left + 3 right)"
 
     # Should have some child splits
     assert len(child_splits) > 0, "Should generate child splits"
@@ -471,16 +480,17 @@ def test_parent_indices_valid():
         max_depth=2,
     )
 
-    tier1_count = sum(1 for s in splits if len(s.parents) == 0)
+    tier1_splits = [s for s in splits if len(s.parents) == 0]
     child_splits = [s for s in splits if len(s.parents) > 0]
 
-    # All parent indices should be valid (< tier1_count)
+    # All parents should be Split objects from tier 1
     for child in child_splits:
-        for parent_i, parent_j in child.parents:
-            assert (
-                0 <= parent_i < tier1_count
-            ), f"Parent index {parent_i} out of range [0, {tier1_count})"
-            assert (
-                0 <= parent_j < tier1_count
-            ), f"Parent index {parent_j} out of range [0, {tier1_count})"
-            assert parent_i < parent_j, "Parent indices should be ordered (i < j)"
+        for parent_a, parent_b in child.parents:
+            assert isinstance(parent_a, Split), "Parent should be a Split object"
+            assert isinstance(parent_b, Split), "Parent should be a Split object"
+            # Verify parents are tier 1 splits (have no parents themselves)
+            assert len(parent_a.parents) == 0, "Parents should be tier 1 splits"
+            assert len(parent_b.parents) == 0, "Parents should be tier 1 splits"
+            # Verify parents exist in tier1_splits list
+            assert parent_a in tier1_splits, "Parent should be in tier 1 splits"
+            assert parent_b in tier1_splits, "Parent should be in tier 1 splits"
