@@ -575,15 +575,21 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
+        indicator_df = parse_simple_indicator(
+            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
+        )
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
+            indicator_df = indicator_df.rename(
+                columns={"indicator": f"{indicator_name.lower()}"}
+            )
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
+        df_merged = reduce(
+            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
+        )
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -605,7 +611,7 @@ class Split:
     Represents a split condition for filtering data.
 
     A single split can now represent multiple filters that result in the same mask.
-    Splits can be either tier 1 (original) or child splits created from parent combinations.
+    Splits can be either depth 1 (original) or child splits created from parent combinations.
 
     Attributes
     ----------
@@ -618,7 +624,7 @@ class Split:
     parents : list[tuple[int, int]]
         List of pairs of parent split indices. Each pair represents the two parent
         splits that were combined with logical AND to create this child split.
-        Empty for tier 1 (original) splits.
+        Empty for depth 1 (original) splits.
     """
 
     mask: torch.Tensor
@@ -626,7 +632,9 @@ class Split:
     parents: list[tuple[int, int]]
 
 
-def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
+def _align_filters_with_trades(
+    filters_df: pd.DataFrame, trades_df: pd.DataFrame
+) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -695,7 +703,9 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (
+        spread_width * 100 - trades_df["risk"]
+    ) / trades_df["risk"]
 
     # Add weekday filters based on date
     weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
@@ -871,7 +881,9 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Get sorted unique values
-    unique_vals = torch.tensor(sorted(filters_df[col_name].unique()), dtype=dtype, device=device)
+    unique_vals = torch.tensor(
+        sorted(filters_df[col_name].unique()), dtype=dtype, device=device
+    )
 
     if len(unique_vals) <= 1:
         # No splits possible for this filter
@@ -1011,7 +1023,9 @@ def _calculate_exclusion_mask(
         2-D bool tensor (n_splits x n_splits) indicating mutual exclusion
     """
     n_splits = len(splits)
-    splits_exclusion_mask = torch.zeros((n_splits, n_splits), dtype=torch.bool, device=device)
+    splits_exclusion_mask = torch.zeros(
+        (n_splits, n_splits), dtype=torch.bool, device=device
+    )
 
     if n_splits == 0:
         return splits_exclusion_mask
@@ -1043,42 +1057,152 @@ def _calculate_exclusion_mask(
     return splits_exclusion_mask
 
 
-def _generate_child_splits(
-    old_splits: list[Split],
-    exclusion_mask: torch.Tensor,
-) -> list[Split]:
+def _calculate_exclusion_mask_between_sets(
+    parent_set_a: list[Split],
+    parent_set_b: list[Split],
+    device: torch.device,
+    min_samples: int,
+) -> torch.Tensor:
     """
-    Generate child splits from pairs of non-exclusive parent splits.
+    Calculate exclusion mask between two separate parent sets.
+
+    Determines which pairs of splits (one from each set) are mutually exclusive
+    based on:
+    1. Insufficient intersection (overlap has fewer than min_samples samples)
+    2. Subset relationship (one split's rows are subset of another's)
 
     Parameters
     ----------
-    old_splits : list[Split]
-        List of existing Split objects
+    parent_set_a : list[Split]
+        First set of parent splits
+    parent_set_b : list[Split]
+        Second set of parent splits
+    device : torch.device
+        PyTorch device for tensors
+    min_samples : int
+        Minimum number of samples required in the intersection for a valid combination
+
+    Returns
+    -------
+    torch.Tensor
+        2-D bool tensor (n_set_a x n_set_b) indicating mutual exclusion
+    """
+    n_set_a = len(parent_set_a)
+    n_set_b = len(parent_set_b)
+
+    if n_set_a == 0 or n_set_b == 0:
+        return torch.zeros((n_set_a, n_set_b), dtype=torch.bool, device=device)
+
+    # Stack masks
+    masks_a = torch.stack([split.mask for split in parent_set_a], dim=0)
+    masks_b = torch.stack([split.mask for split in parent_set_b], dim=0)
+
+    masks_a_float = masks_a.float()
+    masks_b_float = masks_b.float()
+
+    # Compute intersection counts between the two sets
+    intersection_counts = torch.matmul(masks_a_float, masks_b_float.T)
+
+    # Rule 1: Insufficient intersection means mutually exclusive
+    has_sufficient_intersection = intersection_counts >= min_samples
+    rule1_mask = ~has_sufficient_intersection
+
+    # Rule 2: Subset relationships
+    mask_sums_a = masks_a_float.sum(dim=1)
+    mask_sums_b = masks_b_float.sum(dim=1)
+    a_subset_of_b = intersection_counts == mask_sums_a.unsqueeze(1)
+    b_subset_of_a = intersection_counts == mask_sums_b.unsqueeze(0)
+    rule2_mask = a_subset_of_b | b_subset_of_a
+
+    # Combine rules
+    exclusion_mask = rule1_mask | rule2_mask
+
+    return exclusion_mask
+
+
+def _generate_child_splits(
+    parent_set_a: list[Split],
+    parent_set_b: list[Split],
+    exclusion_mask: torch.Tensor,
+    parent_set_a_offset: int = 0,
+    parent_set_b_offset: int = 0,
+) -> list[Split]:
+    """
+    Generate child splits from pairs of non-exclusive parent splits from two sets.
+
+    When the two parent sets are the same (depth 2), we only check the upper triangle
+    (j > i) to avoid duplicates. When the sets are different (depth > 2), we check
+    all combinations.
+
+    Parameters
+    ----------
+    parent_set_a : list[Split]
+        First set of parent splits
+    parent_set_b : list[Split]
+        Second set of parent splits
     exclusion_mask : torch.Tensor
-        2-D bool tensor indicating which splits are mutually exclusive
+        2-D bool tensor (len(parent_set_a) x len(parent_set_b)) indicating which
+        pairs are mutually exclusive
+    parent_set_a_offset : int, optional
+        Offset to add to parent_set_a indices when recording parent pairs.
+        Default is 0.
+    parent_set_b_offset : int, optional
+        Offset to add to parent_set_b indices when recording parent pairs.
+        Default is 0.
 
     Returns
     -------
     list[Split]
         List of newly created child Split objects
     """
-    n_splits = len(old_splits)
+    n_set_a = len(parent_set_a)
+    n_set_b = len(parent_set_b)
     child_splits = []
 
-    # Generate child splits from non-exclusive pairs
-    # We only check upper triangle since lower triangle is marked as exclusive
-    for i in range(n_splits):
-        for j in range(i + 1, n_splits):
-            if not exclusion_mask[i, j]:
-                # Create child split by combining masks with logical AND
-                child_mask = old_splits[i].mask & old_splits[j].mask
-                # Child splits have empty filters list and parent indices
-                child_splits.append(Split(mask=child_mask, filters=[], parents=[(i, j)]))
+    # Check if the two sets are the same (by object identity)
+    sets_are_same = parent_set_a is parent_set_b
+
+    if sets_are_same:
+        # Same parent sets: only check upper triangle to avoid duplicates
+        for i in range(n_set_a):
+            for j in range(i + 1, n_set_b):
+                if not exclusion_mask[i, j]:
+                    # Create child split by combining masks with logical AND
+                    child_mask = parent_set_a[i].mask & parent_set_b[j].mask
+                    # Child splits have empty filters list and parent indices
+                    child_splits.append(
+                        Split(
+                            mask=child_mask,
+                            filters=[],
+                            parents=[
+                                (i + parent_set_a_offset, j + parent_set_b_offset)
+                            ],
+                        )
+                    )
+    else:
+        # Different parent sets: check all combinations
+        for i in range(n_set_a):
+            for j in range(n_set_b):
+                if not exclusion_mask[i, j]:
+                    # Create child split by combining masks with logical AND
+                    child_mask = parent_set_a[i].mask & parent_set_b[j].mask
+                    # Child splits have empty filters list and parent indices
+                    child_splits.append(
+                        Split(
+                            mask=child_mask,
+                            filters=[],
+                            parents=[
+                                (i + parent_set_a_offset, j + parent_set_b_offset)
+                            ],
+                        )
+                    )
 
     return child_splits
 
 
-def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
+def _remove_redundant_splits(
+    new_splits: list[Split], old_splits: list[Split]
+) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -1122,86 +1246,6 @@ def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -
     return [new_splits[i] for i in keep_indices.tolist()]
 
 
-def _calculate_incremental_exclusion_mask(
-    old_splits: list[Split],
-    new_splits: list[Split],
-    old_exclusion_mask: torch.Tensor,
-    device: torch.device,
-    min_samples: int,
-) -> torch.Tensor:
-    """
-    Calculate exclusion mask including both old and new splits.
-
-    Optimizes by reusing the old exclusion mask for old-old comparisons.
-
-    Parameters
-    ----------
-    old_splits : list[Split]
-        List of existing Split objects
-    new_splits : list[Split]
-        List of newly created Split objects
-    old_exclusion_mask : torch.Tensor
-        Exclusion mask for old splits only
-    device : torch.device
-        PyTorch device for tensors
-    min_samples : int
-        Minimum number of samples required for a valid split
-
-    Returns
-    -------
-    torch.Tensor
-        Combined exclusion mask for old and new splits
-    """
-    n_old = len(old_splits)
-    n_new = len(new_splits)
-    n_total = n_old + n_new
-
-    if n_new == 0:
-        return old_exclusion_mask
-
-    # Create combined exclusion mask
-    combined_mask = torch.zeros((n_total, n_total), dtype=torch.bool, device=device)
-
-    # Copy old exclusion mask to top-left quadrant
-    combined_mask[:n_old, :n_old] = old_exclusion_mask
-
-    # Calculate new-new exclusions (bottom-right quadrant)
-    new_new_mask = _calculate_exclusion_mask(new_splits, device, min_samples)
-    combined_mask[n_old:, n_old:] = new_new_mask
-
-    # Calculate old-new exclusions (top-right and bottom-left quadrants)
-    if n_old > 0 and n_new > 0:
-        old_masks = torch.stack([split.mask for split in old_splits], dim=0)
-        new_masks = torch.stack([split.mask for split in new_splits], dim=0)
-
-        old_masks_float = old_masks.float()
-        new_masks_float = new_masks.float()
-
-        # Compute intersection counts between old and new
-        intersection_counts = torch.matmul(old_masks_float, new_masks_float.T)
-
-        # Rule 1: Insufficient intersection means mutually exclusive
-        # Combinations must have at least min_samples samples in their intersection
-        has_sufficient_intersection = intersection_counts >= min_samples
-        rule1_mask = ~has_sufficient_intersection
-
-        # Rule 2: Subset relationships
-        old_mask_sums = old_masks_float.sum(dim=1)
-        new_mask_sums = new_masks_float.sum(dim=1)
-        old_subset_of_new = intersection_counts == old_mask_sums.unsqueeze(1)
-        new_subset_of_old = intersection_counts == new_mask_sums.unsqueeze(0)
-        rule2_mask = old_subset_of_new | new_subset_of_old
-
-        # Combine rules
-        old_new_exclusion = rule1_mask | rule2_mask
-
-        # Set both quadrants (symmetric)
-        combined_mask[:n_old, n_old:] = old_new_exclusion
-        combined_mask[n_old:, :n_old] = old_new_exclusion.T
-
-    return combined_mask
-
-
 def prepare_splits(
     trades_df: pd.DataFrame,
     filters_df: pd.DataFrame,
@@ -1213,7 +1257,7 @@ def prepare_splits(
     max_splits_per_filter: int | None = None,
     max_depth: int = 1,
     min_samples: int = 1,
-) -> tuple[torch.Tensor, torch.Tensor, list[Split], torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
 
@@ -1247,10 +1291,11 @@ def prepare_splits(
         respecting the constraint that samples with equal filter values cannot be
         separated. Default is None.
     max_depth : int, optional
-        Maximum depth for generating child splits. Default is 1 (only tier 1 splits).
+        Maximum depth for generating child splits. Default is 1 (only depth 1 splits).
         If greater than 1, child splits are generated by combining parent splits
-        with logical AND up to the specified depth. Each depth level combines
-        non-exclusive split pairs from the previous level.
+        with logical AND up to the specified depth. At depth 2, combines depth 1
+        splits with each other. At depths > 2, combines previous depth's new splits
+        with depth 1 splits.
     min_samples : int, optional
         Minimum number of samples required on each side of a split. Default is 1.
         Only splits with at least min_samples samples on the selected side will be
@@ -1266,9 +1311,6 @@ def prepare_splits(
         1-D tensor of return on risk (RoR) values calculated as profit / risk.
     splits : list[Split]
         List of Split objects, each representing a potential split condition.
-    splits_exclusion_mask : torch.Tensor
-        2-D bool tensor (n_splits x n_splits) indicating which splits are
-        mutually exclusive with each other.
 
     Raises
     ------
@@ -1281,10 +1323,10 @@ def prepare_splits(
     - For each filter column, splits are created at the midpoint between
       consecutive unique values.
     - Left splits include values <= threshold, right splits include values >= threshold.
-    - Splits are mutually exclusive if they:
-      1. Their combination would have fewer than min_samples samples
-      2. One split's rows are a subset of the other's (redundant/overlapping masks)
-      3. A split is also marked as exclusive with itself (no point applying same mask twice)
+    - At depth 2, child splits are created by combining depth 1 splits with each other
+      (avoiding duplicates using j > i).
+    - At depths > 2, child splits are created by combining the previous depth's new
+      splits with the original depth 1 splits.
     """
     # Align filters_df with trades_df
     filters_df = _align_filters_with_trades(filters_df, trades_df)
@@ -1294,8 +1336,8 @@ def prepare_splits(
         filters_df, trades_df, spread_width, left_only_filters, right_only_filters
     )
 
-    # Find all splits
-    splits: list[Split] = []
+    # Find all depth 1 splits
+    depth_1_splits: list[Split] = []
     filter_names = filters_df.columns.tolist()
 
     for col_idx, col_name in enumerate(filter_names):
@@ -1310,22 +1352,52 @@ def prepare_splits(
             max_splits_per_filter,
             min_samples,
         )
-        splits.extend(filter_splits)
+        depth_1_splits.extend(filter_splits)
 
     # Merge splits with identical masks
-    splits = _merge_identical_splits(splits, device)
+    depth_1_splits = _merge_identical_splits(depth_1_splits, device)
 
-    # Calculate splits_exclusion_mask
-    splits_exclusion_mask = _calculate_exclusion_mask(splits, device, min_samples)
+    # Start with depth 1 splits
+    all_splits = depth_1_splits.copy()
 
     # Generate child splits if max_depth > 1
     if max_depth > 1:
-        for _ in range(2, max_depth + 1):
-            # Generate child splits from non-exclusive parent pairs
-            new_splits = _generate_child_splits(splits, splits_exclusion_mask)
+        # Track the previous depth's new splits
+        previous_depth_splits = depth_1_splits
 
-            # Remove new splits that have identical masks to old splits
-            new_splits = _remove_redundant_splits(new_splits, splits)
+        for current_depth in range(2, max_depth + 1):
+            # At depth 2, both parent sets are depth_1_splits
+            # At depth > 2, one parent set is previous_depth_splits, the other is depth_1_splits
+            if current_depth == 2:
+                parent_set_a = depth_1_splits
+                parent_set_b = depth_1_splits
+                parent_set_a_offset = 0
+                parent_set_b_offset = 0
+            else:
+                parent_set_a = previous_depth_splits
+                parent_set_b = depth_1_splits
+                # Parent indices should refer to positions in all_splits
+                # parent_set_a starts after all the splits added in previous iterations
+                parent_set_a_offset = len(all_splits) - len(previous_depth_splits)
+                # parent_set_b (depth_1_splits) is at the beginning
+                parent_set_b_offset = 0
+
+            # Calculate exclusion mask between the two parent sets
+            exclusion_mask = _calculate_exclusion_mask_between_sets(
+                parent_set_a, parent_set_b, device, min_samples
+            )
+
+            # Generate child splits from non-exclusive parent pairs
+            new_splits = _generate_child_splits(
+                parent_set_a,
+                parent_set_b,
+                exclusion_mask,
+                parent_set_a_offset,
+                parent_set_b_offset,
+            )
+
+            # Remove new splits that have identical masks to any existing splits
+            new_splits = _remove_redundant_splits(new_splits, all_splits)
 
             # Exit early if no new splits remain
             if len(new_splits) == 0:
@@ -1335,26 +1407,28 @@ def prepare_splits(
             new_splits = _merge_identical_splits(new_splits, device)
 
             # Filter out splits with fewer than min_samples
-            new_splits = [split for split in new_splits if split.mask.sum().item() >= min_samples]
+            new_splits = [
+                split for split in new_splits if split.mask.sum().item() >= min_samples
+            ]
 
             # Exit early if no new splits remain after filtering
             if len(new_splits) == 0:
                 break
 
-            # Calculate new exclusion mask including both old and new splits
-            splits_exclusion_mask = _calculate_incremental_exclusion_mask(
-                splits, new_splits, splits_exclusion_mask, device, min_samples
-            )
+            # Add new splits to all_splits
+            all_splits.extend(new_splits)
 
-            # Append new splits to splits list
-            splits.extend(new_splits)
+            # Update previous_depth_splits for the next iteration
+            previous_depth_splits = new_splits
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
+    X = torch.tensor(
+        filters_df.values, dtype=dtype, device=device
+    )  # pylint: disable=invalid-name
 
     # Calculate RoR (y) as profit / risk
     y = torch.tensor(  # pylint: disable=invalid-name
         (trades_df["profit"] / trades_df["risk"]).values, dtype=dtype, device=device
     )
 
-    return X, y, splits, splits_exclusion_mask
+    return X, y, all_splits

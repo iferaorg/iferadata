@@ -19,7 +19,7 @@ def test_max_depth_1_no_child_splits():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -53,7 +53,7 @@ def test_max_depth_2_generates_child_splits():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -96,7 +96,7 @@ def test_child_split_mask_is_and_of_parents():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -142,7 +142,7 @@ def test_no_duplicate_parent_pairs():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -183,7 +183,7 @@ def test_child_splits_dont_duplicate_tier1_masks():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -232,7 +232,7 @@ def test_child_splits_merge_identical_masks():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -271,7 +271,7 @@ def test_max_depth_3_generates_depth_3_splits():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -283,7 +283,7 @@ def test_max_depth_3_generates_depth_3_splits():
     )
 
     # With max_depth=3, we should have more splits than max_depth=2
-    X2, y2, splits2, exclusion_mask2 = prepare_splits(
+    X2, y2, splits2 = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -300,7 +300,7 @@ def test_max_depth_3_generates_depth_3_splits():
 
 
 def test_exclusion_mask_updated_for_child_splits():
-    """Test that exclusion mask is properly updated to include child splits."""
+    """Test that child splits are properly generated and have valid structure."""
     trades_df = pd.DataFrame(
         {"risk": [100.0] * 4, "profit": [50.0] * 4},
         index=pd.DatetimeIndex(
@@ -315,7 +315,7 @@ def test_exclusion_mask_updated_for_child_splits():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -326,24 +326,12 @@ def test_exclusion_mask_updated_for_child_splits():
         max_depth=2,
     )
 
-    # Exclusion mask should be square with dimensions matching total splits
-    assert exclusion_mask.shape == (
-        len(splits),
-        len(splits),
-    ), "Exclusion mask should cover all splits"
+    # Check that we have both depth 1 and child splits
+    depth_1_count = sum(1 for s in splits if len(s.parents) == 0)
+    child_count = len(splits) - depth_1_count
 
-    # Diagonal should be all True (self-exclusion)
-    assert exclusion_mask.diagonal().all(), "Diagonal should be all True"
-
-    # Check that child splits have proper exclusion relationships
-    tier1_count = sum(1 for s in splits if len(s.parents) == 0)
-    child_count = len(splits) - tier1_count
-
-    if child_count > 0:
-        # At least some entries in the extended region should be non-zero
-        # (exclusion mask beyond tier1 splits)
-        extended_region = exclusion_mask[tier1_count:, tier1_count:]
-        assert extended_region.any(), "Child splits should have some exclusion relationships"
+    assert depth_1_count > 0, "Should have depth 1 splits"
+    assert child_count > 0, "Should have child splits"
 
 
 def test_early_exit_when_no_new_splits():
@@ -360,7 +348,7 @@ def test_early_exit_when_no_new_splits():
     )
 
     # Even with high max_depth, should exit early
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -392,7 +380,7 @@ def test_child_splits_respect_exclusion_mask():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -403,18 +391,20 @@ def test_child_splits_respect_exclusion_mask():
         max_depth=2,
     )
 
-    tier1_splits = [s for s in splits if len(s.parents) == 0]
+    depth_1_splits = [s for s in splits if len(s.parents) == 0]
     child_splits = [s for s in splits if len(s.parents) > 0]
 
-    # Verify that no child split was created from exclusive parent pairs
+    # Verify that child splits were created where valid, and check they have non-empty masks
     for child in child_splits:
+        # Child mask should have at least one True value
+        assert child.mask.any(), "Child split should have at least one True value"
+        # Verify parent indices are valid
         for parent_i, parent_j in child.parents:
-            # These parents should not be marked as exclusive in the tier1 exclusion mask
-            # (within the tier1 portion of the full exclusion mask)
-            tier1_exclusion = exclusion_mask[: len(tier1_splits), : len(tier1_splits)]
-            assert not tier1_exclusion[
-                parent_i, parent_j
-            ].item(), "Child should not be created from exclusive parents"
+            assert 0 <= parent_i < len(depth_1_splits), "Parent index should be valid"
+            assert 0 <= parent_j < len(depth_1_splits), "Parent index should be valid"
+            # Verify the child mask is the AND of parent masks
+            expected_mask = depth_1_splits[parent_i].mask & depth_1_splits[parent_j].mask
+            assert torch.equal(child.mask, expected_mask), "Child mask should be AND of parents"
 
 
 def test_max_depth_with_max_splits_per_filter():
@@ -429,7 +419,7 @@ def test_max_depth_with_max_splits_per_filter():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 11)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -470,7 +460,7 @@ def test_parent_indices_valid():
         ),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,

@@ -20,7 +20,7 @@ def test_max_splits_per_filter_none():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 11)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -62,7 +62,7 @@ def test_max_splits_per_filter_basic():
     )
 
     max_splits = 3
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -104,7 +104,7 @@ def test_max_splits_per_filter_even_distribution():
     )
 
     max_splits = 3
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -166,7 +166,7 @@ def test_max_splits_per_filter_respects_equal_values():
     )
 
     max_splits = 1
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -235,7 +235,7 @@ def test_max_splits_per_filter_multiple_filters():
     )
 
     max_splits = 2
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -277,7 +277,7 @@ def test_max_splits_per_filter_less_than_possible():
     )
 
     max_splits = 2
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -312,7 +312,7 @@ def test_max_splits_per_filter_more_than_possible():
     )
 
     max_splits = 5  # More than the 2 possible splits
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -347,7 +347,7 @@ def test_max_splits_per_filter_with_left_only():
     )
 
     max_splits = 3
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -387,7 +387,7 @@ def test_max_splits_per_filter_with_right_only():
     )
 
     max_splits = 3
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -429,7 +429,7 @@ def test_max_splits_per_filter_uneven_value_distribution():
     )
 
     max_splits = 3
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
