@@ -20,7 +20,7 @@ def test_min_samples_default():
         index=pd.DatetimeIndex([f"2022-01-0{i}" for i in range(1, 6)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -62,7 +62,7 @@ def test_min_samples_2():
         index=pd.DatetimeIndex([f"2022-01-0{i}" for i in range(1, 6)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -115,7 +115,7 @@ def test_min_samples_asymmetric_thresholds():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 11)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -165,7 +165,7 @@ def test_min_samples_with_repeated_values():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 16)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -214,7 +214,7 @@ def test_min_samples_exclusion_mask():
     )
 
     # With min_samples=1, all splits should be valid
-    X1, y1, splits1, exclusion_mask1 = prepare_splits(
+    X1, y1, splits1 = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -226,7 +226,7 @@ def test_min_samples_exclusion_mask():
     )
 
     # With min_samples=3, some splits should be excluded
-    X2, y2, splits2, exclusion_mask2 = prepare_splits(
+    X2, y2, splits2 = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -258,7 +258,7 @@ def test_min_samples_with_max_splits_per_filter():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 21)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -306,7 +306,7 @@ def test_min_samples_with_child_splits():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 11)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -337,7 +337,7 @@ def test_min_samples_zero():
     )
 
     # min_samples=0 should still create all splits (like min_samples=1)
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -372,7 +372,7 @@ def test_min_samples_larger_than_half():
         index=pd.DatetimeIndex([f"2022-01-{i:02d}" for i in range(1, 11)], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -419,7 +419,7 @@ def test_min_samples_all_splits_excluded():
     )
 
     # min_samples=10 is larger than total samples, so no splits should be created
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
