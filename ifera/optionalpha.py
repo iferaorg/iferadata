@@ -1445,7 +1445,8 @@ def prepare_splits(
     # Generate child splits if max_depth > 1
     if max_depth > 1:
         # Track the previous depth's new splits
-        previous_depth_splits = depth_1_splits
+        # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
+        previous_depth_splits = all_splits
 
         for _ in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
