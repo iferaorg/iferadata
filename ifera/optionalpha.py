@@ -995,69 +995,6 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
 
 
 def _calculate_exclusion_mask(
-    splits: list[Split], device: torch.device, min_samples: int
-) -> torch.Tensor:
-    """
-    Calculate the splits exclusion mask.
-
-    Determines which splits are mutually exclusive with each other based on:
-    1. Insufficient intersection (overlap has fewer than min_samples samples)
-    2. Subset relationship (one split's rows are subset of another's)
-    3. Self-exclusion (split is exclusive with itself)
-
-    Additionally, the lower triangle is marked as exclusive to prevent duplicate
-    child split generation (since order of parents doesn't matter).
-
-    Parameters
-    ----------
-    splits : list[Split]
-        List of Split objects
-    device : torch.device
-        PyTorch device for tensors
-    min_samples : int
-        Minimum number of samples required in the intersection for a valid combination
-
-    Returns
-    -------
-    torch.Tensor
-        2-D bool tensor (n_splits x n_splits) indicating mutual exclusion
-    """
-    n_splits = len(splits)
-    splits_exclusion_mask = torch.zeros(
-        (n_splits, n_splits), dtype=torch.bool, device=device
-    )
-
-    if n_splits == 0:
-        return splits_exclusion_mask
-
-    # Stack all masks into a 2D tensor (n_splits x n_samples)
-    all_masks = torch.stack([split.mask for split in splits], dim=0)
-    all_masks_float = all_masks.float()
-
-    # Compute intersection counts
-    intersection_counts = torch.matmul(all_masks_float, all_masks_float.T)
-
-    # Rule 1: Insufficient intersection means mutually exclusive
-    # Combinations must have at least min_samples samples in their intersection
-    has_sufficient_intersection = intersection_counts >= min_samples
-    rule1_mask = ~has_sufficient_intersection
-
-    # Rule 2: Subset relationship means exclusive (prevents redundant masks)
-    mask_sums = all_masks_float.sum(dim=1)
-    i_subset_of_j = intersection_counts == mask_sums.unsqueeze(1)
-    j_subset_of_i = intersection_counts == mask_sums.unsqueeze(0)
-    rule2_mask = i_subset_of_j | j_subset_of_i
-
-    # Combine all rules with OR operation
-    splits_exclusion_mask = rule1_mask | rule2_mask
-
-    # Splits are exclusive with themselves
-    splits_exclusion_mask.fill_diagonal_(True)
-
-    return splits_exclusion_mask
-
-
-def _calculate_exclusion_mask_between_sets(
     parent_set_a: list[Split],
     parent_set_b: list[Split],
     device: torch.device,
@@ -1365,35 +1302,21 @@ def prepare_splits(
         # Track the previous depth's new splits
         previous_depth_splits = depth_1_splits
 
-        for current_depth in range(2, max_depth + 1):
-            # At depth 2, both parent sets are depth_1_splits
-            # At depth > 2, one parent set is previous_depth_splits, the other is depth_1_splits
-            if current_depth == 2:
-                parent_set_a = depth_1_splits
-                parent_set_b = depth_1_splits
-                parent_set_a_offset = 0
-                parent_set_b_offset = 0
-            else:
-                parent_set_a = previous_depth_splits
-                parent_set_b = depth_1_splits
-                # Parent indices should refer to positions in all_splits
-                # parent_set_a starts after all the splits added in previous iterations
-                parent_set_a_offset = len(all_splits) - len(previous_depth_splits)
-                # parent_set_b (depth_1_splits) is at the beginning
-                parent_set_b_offset = 0
-
+        for _ in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
-            exclusion_mask = _calculate_exclusion_mask_between_sets(
-                parent_set_a, parent_set_b, device, min_samples
+            exclusion_mask = _calculate_exclusion_mask(
+                previous_depth_splits, depth_1_splits, device, min_samples
             )
+
+            previous_depth_offset = len(all_splits) - len(previous_depth_splits)
 
             # Generate child splits from non-exclusive parent pairs
             new_splits = _generate_child_splits(
-                parent_set_a,
-                parent_set_b,
+                previous_depth_splits,
+                depth_1_splits,
                 exclusion_mask,
-                parent_set_a_offset,
-                parent_set_b_offset,
+                previous_depth_offset,
+                0,
             )
 
             # Remove new splits that have identical masks to any existing splits
