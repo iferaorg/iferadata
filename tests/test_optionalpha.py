@@ -597,7 +597,7 @@ def test_prepare_splits_basic():
     device = torch.device("cpu")
     dtype = torch.float32
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, spread_width, [], [], device, dtype
     )
 
@@ -648,10 +648,6 @@ def test_prepare_splits_basic():
         assert split.mask.dtype == torch.bool
         assert split.mask.shape == (3,)  # 3 samples
 
-    # Check exclusion mask shape
-    assert exclusion_mask.shape == (len(splits), len(splits))
-    assert exclusion_mask.dtype == torch.bool
-
 
 def test_prepare_splits_left_only_filters():
     """Test that left_only_filters prevents right splits."""
@@ -665,7 +661,7 @@ def test_prepare_splits_left_only_filters():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -703,7 +699,7 @@ def test_prepare_splits_right_only_filters():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df,
         filters_df,
         20,
@@ -730,7 +726,7 @@ def test_prepare_splits_right_only_filters():
 
 
 def test_prepare_splits_exclusion_mask_same_filter_direction():
-    """Test that splits from same filter and direction are mutually exclusive."""
+    """Test that splits from same filter and direction are properly created."""
     trades_df = pd.DataFrame(
         {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
@@ -741,7 +737,7 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -750,38 +746,50 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
     assert len(splits) > 0
 
     # Find splits containing filter_a with left direction
-    left_splits_indices = []
-    for i, split in enumerate(splits):
+    left_splits = []
+    for split in splits:
         for filter_idx, filter_name, threshold, direction in split.filters:
             if filter_name == "filter_a" and direction == "left":
-                left_splits_indices.append(i)
+                left_splits.append(split)
                 break
 
-    # If there are multiple left splits, they should exclude each other
-    if len(left_splits_indices) >= 2:
-        for i in range(len(left_splits_indices)):
-            for j in range(i + 1, len(left_splits_indices)):
-                idx_i = left_splits_indices[i]
-                idx_j = left_splits_indices[j]
-                assert exclusion_mask[idx_i, idx_j].item()
-                assert exclusion_mask[idx_j, idx_i].item()
+    # Verify left splits have different masks (subset relationship should exist)
+    if len(left_splits) >= 2:
+        for i in range(len(left_splits)):
+            for j in range(i + 1, len(left_splits)):
+                # One should be a subset of the other
+                mask_i = left_splits[i].mask
+                mask_j = left_splits[j].mask
+                intersection = (mask_i & mask_j).sum().item()
+                sum_i = mask_i.sum().item()
+                sum_j = mask_j.sum().item()
+                # At least one should be a proper subset
+                assert intersection == sum_i or intersection == sum_j, (
+                    "Left splits should have subset relationship"
+                )
 
     # Find splits containing filter_a with right direction
-    right_splits_indices = []
-    for i, split in enumerate(splits):
+    right_splits = []
+    for split in splits:
         for filter_idx, filter_name, threshold, direction in split.filters:
             if filter_name == "filter_a" and direction == "right":
-                right_splits_indices.append(i)
+                right_splits.append(split)
                 break
 
-    # If there are multiple right splits, they should exclude each other
-    if len(right_splits_indices) >= 2:
-        for i in range(len(right_splits_indices)):
-            for j in range(i + 1, len(right_splits_indices)):
-                idx_i = right_splits_indices[i]
-                idx_j = right_splits_indices[j]
-                assert exclusion_mask[idx_i, idx_j].item()
-                assert exclusion_mask[idx_j, idx_i].item()
+    # Verify right splits have different masks (subset relationship should exist)
+    if len(right_splits) >= 2:
+        for i in range(len(right_splits)):
+            for j in range(i + 1, len(right_splits)):
+                # One should be a subset of the other
+                mask_i = right_splits[i].mask
+                mask_j = right_splits[j].mask
+                intersection = (mask_i & mask_j).sum().item()
+                sum_i = mask_i.sum().item()
+                sum_j = mask_j.sum().item()
+                # At least one should be a proper subset
+                assert intersection == sum_i or intersection == sum_j, (
+                    "Right splits should have subset relationship"
+                )
 
 
 def test_prepare_splits_missing_dates_in_filters():
@@ -816,7 +824,7 @@ def test_prepare_splits_extra_dates_in_filters():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -838,7 +846,7 @@ def test_prepare_splits_single_value_filter():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -878,7 +886,7 @@ def test_prepare_splits_mask_values():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -936,20 +944,14 @@ def test_prepare_splits_exclusion_empty_intersection():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
-    # Check for splits that have empty intersection
-    for i, split_i in enumerate(splits):
-        for j, split_j in enumerate(splits):
-            if i != j:
-                combined = split_i.mask & split_j.mask
-                if not combined.any():
-                    assert exclusion_mask[i, j].item(), (
-                        f"Splits {i} and {j} have empty intersection "
-                        f"but are not marked as exclusive"
-                    )
+    # Check that splits with empty intersection don't appear as child splits at depth 2
+    # Since we're at max_depth=1, we should only have depth 1 splits
+    for split in splits:
+        assert len(split.parents) == 0, "Should only have depth 1 splits"
 
 
 def test_prepare_splits_device_dtype():
@@ -967,7 +969,7 @@ def test_prepare_splits_device_dtype():
     device = torch.device("cpu")
     dtype = torch.float64
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], device, dtype
     )
 
@@ -981,9 +983,6 @@ def test_prepare_splits_device_dtype():
     for split in splits:
         assert split.mask.dtype == torch.bool
         assert split.mask.device == device
-
-    assert exclusion_mask.dtype == torch.bool
-    assert exclusion_mask.device == device
 
 
 def test_prepare_splits_weekday_filters():
@@ -1023,7 +1022,7 @@ def test_prepare_splits_weekday_filters():
     device = torch.device("cpu")
     dtype = torch.float32
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], device, dtype
     )
 
@@ -1092,7 +1091,7 @@ def test_prepare_splits_open_minutes():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -1132,7 +1131,7 @@ def test_prepare_splits_open_minutes_missing_start_time():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -1172,7 +1171,7 @@ def test_prepare_splits_open_minutes_with_none():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -1196,7 +1195,7 @@ def test_prepare_splits_merge_identical_masks():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
@@ -1241,7 +1240,7 @@ def test_prepare_splits_reward_per_risk_right_only():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    X, y, splits, exclusion_mask = prepare_splits(
+    X, y, splits = prepare_splits(
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
