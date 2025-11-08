@@ -605,7 +605,7 @@ class Split:
     Represents a split condition for filtering data.
 
     A single split can now represent multiple filters that result in the same mask.
-    Splits can be either depth 1 (original filter-based) or child splits created 
+    Splits can be either depth 1 (original filter-based) or child splits created
     from parent combinations.
 
     Attributes
@@ -1176,14 +1176,14 @@ def _calculate_exclusion_mask_between_sets(
     """
     n_set_1 = len(parent_set_1)
     n_set_2 = len(parent_set_2)
-    
+
     if n_set_1 == 0 or n_set_2 == 0:
         return torch.zeros((n_set_1, n_set_2), dtype=torch.bool, device=device)
 
     # Stack masks for vectorized operations
     masks_1 = torch.stack([split.mask for split in parent_set_1], dim=0)
     masks_2 = torch.stack([split.mask for split in parent_set_2], dim=0)
-    
+
     masks_1_float = masks_1.float()
     masks_2_float = masks_2.float()
 
@@ -1341,7 +1341,7 @@ def prepare_splits(
     if max_depth > 1:
         # Track the previous depth's new splits
         previous_depth_splits = depth_1_splits
-        
+
         for current_depth in range(2, max_depth + 1):
             # Determine which sets to combine
             if current_depth == 2:
@@ -1384,7 +1384,7 @@ def prepare_splits(
 
             # Append new splits to all_splits list
             all_splits.extend(new_splits)
-            
+
             # Update previous_depth_splits for next iteration
             previous_depth_splits = new_splits
 
