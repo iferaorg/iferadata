@@ -362,9 +362,7 @@ def test_parse_filter_log_simple(simple_filter_html):
     # Check first row (with description)
     assert df.iloc[0]["date"] == pd.Timestamp("2022-01-03")
     assert df.iloc[0]["filter_type"] == "Min opening range"
-    assert (
-        df.iloc[0]["description"] == "Opening Range: 4,758.17 - 4,795.86, Width: 0.79%"
-    )
+    assert df.iloc[0]["description"] == "Opening Range: 4,758.17 - 4,795.86, Width: 0.79%"
 
     # Check second row (without description)
     assert df.iloc[1]["date"] == pd.Timestamp("2022-01-26")
@@ -569,9 +567,7 @@ def test_check_and_eliminate_duplicates_different_values():
         }
     )
 
-    with pytest.raises(
-        ValueError, match="Duplicate date .* found with different values"
-    ):
+    with pytest.raises(ValueError, match="Duplicate date .* found with different values"):
         _check_and_eliminate_duplicates(df, "filter")
 
 
@@ -597,9 +593,7 @@ def test_prepare_splits_basic():
     device = torch.device("cpu")
     dtype = torch.float32
 
-    X, y, splits = prepare_splits(
-        trades_df, filters_df, spread_width, [], [], device, dtype
-    )
+    X, y, splits = prepare_splits(trades_df, filters_df, spread_width, [], [], device, dtype)
 
     # Check X shape - should have 3 rows and 10 columns
     # (2 filters + reward_per_risk + premium + 5 weekday filters + open_minutes)
@@ -622,9 +616,7 @@ def test_prepare_splits_basic():
         (20 * 100 - 200) / 200,
         (20 * 100 - 150) / 150,
     ]
-    assert torch.allclose(
-        X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device)
-    )
+    assert torch.allclose(X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device))
 
     # Check premium column (column index 3 in X)
     # premium = spread_width * 100 - risk
@@ -633,9 +625,7 @@ def test_prepare_splits_basic():
         20 * 100 - 200,
         20 * 100 - 150,
     ]
-    assert torch.allclose(
-        X[:, 3], torch.tensor(expected_premium, dtype=dtype, device=device)
-    )
+    assert torch.allclose(X[:, 3], torch.tensor(expected_premium, dtype=dtype, device=device))
 
     # Check splits - with the new merging logic, splits with identical masks are merged
     # We should have at least a few unique splits
@@ -817,9 +807,7 @@ def test_prepare_splits_missing_dates_in_filters():
     )
 
     with pytest.raises(ValueError, match="Trades dataframe contains dates not found"):
-        prepare_splits(
-            trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
-        )
+        prepare_splits(trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32)
 
 
 def test_prepare_splits_extra_dates_in_filters():
@@ -905,11 +893,7 @@ def test_prepare_splits_mask_values():
     found_left_1_5 = None
     for split in splits:
         for filter_idx, filter_name, threshold, direction in split.filters:
-            if (
-                filter_name == "filter_a"
-                and direction == "left"
-                and abs(threshold - 1.5) < 0.01
-            ):
+            if filter_name == "filter_a" and direction == "left" and abs(threshold - 1.5) < 0.01:
                 found_left_1_5 = split
                 break
         if found_left_1_5:
@@ -925,11 +909,7 @@ def test_prepare_splits_mask_values():
     found_right_2_5 = None
     for split in splits:
         for filter_idx, filter_name, threshold, direction in split.filters:
-            if (
-                filter_name == "filter_a"
-                and direction == "right"
-                and abs(threshold - 2.5) < 0.01
-            ):
+            if filter_name == "filter_a" and direction == "right" and abs(threshold - 2.5) < 0.01:
                 found_right_2_5 = split
                 break
         if found_right_2_5:
@@ -1155,9 +1135,7 @@ def test_prepare_splits_open_minutes_missing_start_time():
                 has_open_minutes = True
                 break
 
-    assert (
-        not has_open_minutes
-    ), "open_minutes should not generate splits when all values are 0"
+    assert not has_open_minutes, "open_minutes should not generate splits when all values are 0"
 
 
 def test_prepare_splits_open_minutes_with_none():
@@ -1231,9 +1209,7 @@ def test_prepare_splits_merge_identical_masks():
     masks = [split.mask for split in splits]
     for i in range(len(masks)):
         for j in range(i + 1, len(masks)):
-            assert not torch.equal(
-                masks[i], masks[j]
-            ), "All splits should have unique masks"
+            assert not torch.equal(masks[i], masks[j]), "All splits should have unique masks"
 
 
 def test_prepare_splits_reward_per_risk_right_only():
@@ -1265,6 +1241,125 @@ def test_prepare_splits_reward_per_risk_right_only():
                     has_reward_per_risk_right = True
 
     assert not has_reward_per_risk_left, "reward_per_risk should not have left splits"
-    assert (
-        has_reward_per_risk_right
-    ), "reward_per_risk should have at least one right split"
+    assert has_reward_per_risk_right, "reward_per_risk should have at least one right split"
+
+
+def test_prepare_splits_depth_2_uses_cached_masks():
+    """Test that depth 2 splits are generated correctly with cached masks."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0, 120.0], "profit": [50.0, 100.0, 75.0, 60.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13"], name="date"
+        ),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0, 4.0], "filter_b": [10.0, 20.0, 30.0, 40.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13"], name="date"
+        ),
+    )
+
+    # Generate depth 2 splits
+    X, y, splits = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        [],
+        [],
+        torch.device("cpu"),
+        torch.float32,
+        max_depth=2,
+        min_samples=1,
+    )
+
+    # Should have depth 1 and depth 2 splits
+    depth_1_splits = [s for s in splits if len(s.parents) == 0]
+    depth_2_splits = [s for s in splits if len(s.parents) > 0]
+
+    # Verify we have both depth 1 and depth 2 splits
+    assert len(depth_1_splits) > 0, "Should have depth 1 splits"
+    assert len(depth_2_splits) > 0, "Should have depth 2 splits"
+
+    # Verify depth 2 splits have parents
+    for split in depth_2_splits:
+        assert len(split.parents) > 0, "Depth 2 splits should have parents"
+        # Each parent pair should be from depth 1
+        for parent_a, parent_b in split.parents:
+            assert parent_a in depth_1_splits or parent_b in depth_1_splits
+
+
+def test_merge_identical_splits_large_dataset():
+    """Test that _merge_identical_splits works efficiently with many splits."""
+    from ifera.optionalpha import _merge_identical_splits
+
+    # Create a scenario with many identical masks
+    n_samples = 100
+    n_splits = 500  # Simulate many splits
+
+    device = torch.device("cpu")
+    splits = []
+
+    # Create splits with some identical masks
+    for i in range(n_splits):
+        # Create masks that repeat every 5 splits
+        mask = torch.rand(n_samples, device=device) > (0.5 + (i % 5) * 0.05)
+        split = Split(
+            mask=mask,
+            filters=[FilterInfo(0, f"filter_{i}", float(i), "left")],
+            parents=[],
+        )
+        splits.append(split)
+
+    # Merge identical splits
+    merged = _merge_identical_splits(splits, device)
+
+    # Verify that identical masks were merged
+    # Each unique mask should appear only once
+    masks = [split.mask for split in merged]
+    for i in range(len(masks)):
+        for j in range(i + 1, len(masks)):
+            assert not torch.equal(masks[i], masks[j]), "Merged splits should have unique masks"
+
+    # Verify that merging preserved all filters
+    total_filters_before = sum(len(s.filters) for s in splits)
+    total_filters_after = sum(len(s.filters) for s in merged)
+    assert total_filters_before == total_filters_after, "Merging should preserve all filters"
+
+
+def test_prepare_splits_min_samples_exclusion():
+    """Test that min_samples correctly excludes splits with insufficient samples."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0, 120.0, 180.0], "profit": [50.0, 100.0, 75.0, 60.0, 90.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13", "2022-01-14"],
+            name="date",
+        ),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0, 4.0, 5.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13", "2022-01-14"],
+            name="date",
+        ),
+    )
+
+    # Request min_samples=2
+    X, y, splits = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        [],
+        [],
+        torch.device("cpu"),
+        torch.float32,
+        min_samples=2,
+        max_depth=2,
+    )
+
+    # All splits should have at least 2 samples
+    for split in splits:
+        assert (
+            split.mask.sum().item() >= 2
+        ), f"All splits should have at least 2 samples, got {split.mask.sum().item()}"
