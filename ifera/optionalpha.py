@@ -644,6 +644,33 @@ class Split:
         self.parents = parents
         self.score = float("-inf")
 
+    def __eq__(self, other):
+        """
+        Compare Split objects by object identity.
+
+        Parameters
+        ----------
+        other : Split
+            Another Split object to compare with
+
+        Returns
+        -------
+        bool
+            True if the objects are the same instance
+        """
+        return self is other
+
+    def __hash__(self):
+        """
+        Return hash of the Split object based on object identity.
+
+        Returns
+        -------
+        int
+            Hash value based on object id
+        """
+        return id(self)
+
     def _get_dnf_terms(self) -> list[list[tuple[str, str, float]]]:
         """
         Get the disjunctive normal form (DNF) representation of this split.
@@ -1143,7 +1170,8 @@ def _generate_child_splits(
 
     When the two parent sets are the same (depth 2), we only check the upper triangle
     (j > i) to avoid duplicates. When the sets are different (depth > 2), we check
-    all combinations.
+    all combinations but track parent pairs to avoid generating duplicates when
+    parent_set_a is a subset of parent_set_b.
 
     Parameters
     ----------
@@ -1167,6 +1195,10 @@ def _generate_child_splits(
     # Check if the two sets are the same (by object identity)
     sets_are_same = parent_set_a is parent_set_b
 
+    # Track parent pairs that have been used to avoid duplicates
+    # Use frozenset of Split objects (which now have __eq__ and __hash__ based on id)
+    used_pairs: set[frozenset[Split]] = set()
+
     if sets_are_same:
         # Same parent sets: only check upper triangle to avoid duplicates
         for i in range(n_set_a):
@@ -1184,17 +1216,30 @@ def _generate_child_splits(
                     )
     else:
         # Different parent sets: check all combinations
+        # Track pairs to avoid generating both (a, b) and (b, a) when both are in sets
         for i in range(n_set_a):
             for j in range(n_set_b):
                 if not exclusion_mask[i, j]:
+                    parent_a = parent_set_a[i]
+                    parent_b = parent_set_b[j]
+
+                    # Create a pair identifier using frozenset
+                    pair = frozenset([parent_a, parent_b])
+
+                    # Skip if this pair was already used
+                    if pair in used_pairs:
+                        continue
+
+                    used_pairs.add(pair)
+
                     # Create child split by combining masks with logical AND
-                    child_mask = parent_set_a[i].mask & parent_set_b[j].mask
+                    child_mask = parent_a.mask & parent_b.mask
                     # Child splits have empty filters list and parent Split references
                     child_splits.append(
                         Split(
                             mask=child_mask,
                             filters=[],
-                            parents=[(parent_set_a[i], parent_set_b[j])],
+                            parents=[(parent_a, parent_b)],
                         )
                     )
 
@@ -1444,32 +1489,19 @@ def prepare_splits(
 
     # Generate child splits if max_depth > 1
     if max_depth > 1:
-        # At depth 2, we want to combine depth_1_splits with themselves (or a filtered subset)
-        # At depth 3+, we combine previous depth's new_splits with depth_1_splits
+        # Track the previous depth's new splits
+        # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
+        previous_depth_splits = all_splits
 
-        # For depth 2, determine if we should use the optimized "same sets" path
-        # This happens when all_splits contains the same splits as depth_1_splits
-        # (i.e., when keep_best_n is None or didn't filter anything)
-        if keep_best_n is None or len(all_splits) >= len(depth_1_splits):
-            # Use depth_1_splits for both to trigger the "same sets" optimization
-            previous_depth_splits = depth_1_splits
-        else:
-            # Use the filtered all_splits (subset of depth_1_splits)
-            previous_depth_splits = all_splits
-
-        for depth in range(2, max_depth + 1):
-            # At depth 2, use the initial previous_depth_splits
-            # At depth 3+, use the updated previous_depth_splits from the previous iteration
-            parent_set_a = previous_depth_splits
-
+        for _ in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
             exclusion_mask = _calculate_exclusion_mask(
-                parent_set_a, depth_1_splits, device, min_samples
+                previous_depth_splits, depth_1_splits, device, min_samples
             )
 
             # Generate child splits from non-exclusive parent pairs
             new_splits = _generate_child_splits(
-                parent_set_a,
+                previous_depth_splits,
                 depth_1_splits,
                 exclusion_mask,
             )
