@@ -574,21 +574,15 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(
-            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
-        )
+        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
-            )
+            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -623,6 +617,8 @@ class Split:
         List of pairs of parent Split objects. Each pair represents the two parent
         splits that were combined with logical AND to create this child split.
         Empty for depth 1 (original) splits.
+    score : float
+        Score assigned to the split by the score_func. Initialized to -inf.
     """
 
     def __init__(
@@ -646,6 +642,34 @@ class Split:
         self.mask = mask
         self.filters = filters
         self.parents = parents
+        self.score = float("-inf")
+
+    def __eq__(self, other):
+        """
+        Compare Split objects by object identity.
+
+        Parameters
+        ----------
+        other : Split
+            Another Split object to compare with
+
+        Returns
+        -------
+        bool
+            True if the objects are the same instance
+        """
+        return self is other
+
+    def __hash__(self):
+        """
+        Return hash of the Split object based on object identity.
+
+        Returns
+        -------
+        int
+            Hash value based on object id
+        """
+        return id(self)
 
     def _get_dnf_terms(self) -> list[list[tuple[str, str, float]]]:
         """
@@ -665,9 +689,7 @@ class Split:
             result = []
             for filter_info in self.filters:
                 operator = "<" if filter_info.direction == "left" else ">"
-                result.append(
-                    [(filter_info.filter_name, operator, filter_info.threshold)]
-                )
+                result.append([(filter_info.filter_name, operator, filter_info.threshold)])
             return result
 
         # Recursive case: child split with parents
@@ -719,9 +741,7 @@ class Split:
         return "\n".join(lines)
 
 
-def _align_filters_with_trades(
-    filters_df: pd.DataFrame, trades_df: pd.DataFrame
-) -> pd.DataFrame:
+def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -790,9 +810,7 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
 
     # Add weekday filters based on date
     weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
@@ -968,9 +986,7 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Get sorted unique values
-    unique_vals = torch.tensor(
-        sorted(filters_df[col_name].unique()), dtype=dtype, device=device
-    )
+    unique_vals = torch.tensor(sorted(filters_df[col_name].unique()), dtype=dtype, device=device)
 
     if len(unique_vals) <= 1:
         # No splits possible for this filter
@@ -1154,7 +1170,8 @@ def _generate_child_splits(
 
     When the two parent sets are the same (depth 2), we only check the upper triangle
     (j > i) to avoid duplicates. When the sets are different (depth > 2), we check
-    all combinations.
+    all combinations but track parent pairs to avoid generating duplicates when
+    parent_set_a is a subset of parent_set_b.
 
     Parameters
     ----------
@@ -1178,6 +1195,10 @@ def _generate_child_splits(
     # Check if the two sets are the same (by object identity)
     sets_are_same = parent_set_a is parent_set_b
 
+    # Track parent pairs that have been used to avoid duplicates
+    # Use frozenset of Split objects (which now have __eq__ and __hash__ based on id)
+    used_pairs: set[frozenset[Split]] = set()
+
     if sets_are_same:
         # Same parent sets: only check upper triangle to avoid duplicates
         for i in range(n_set_a):
@@ -1195,26 +1216,37 @@ def _generate_child_splits(
                     )
     else:
         # Different parent sets: check all combinations
+        # Track pairs to avoid generating both (a, b) and (b, a) when both are in sets
         for i in range(n_set_a):
             for j in range(n_set_b):
                 if not exclusion_mask[i, j]:
+                    parent_a = parent_set_a[i]
+                    parent_b = parent_set_b[j]
+
+                    # Create a pair identifier using frozenset
+                    pair = frozenset([parent_a, parent_b])
+
+                    # Skip if this pair was already used
+                    if pair in used_pairs:
+                        continue
+
+                    used_pairs.add(pair)
+
                     # Create child split by combining masks with logical AND
-                    child_mask = parent_set_a[i].mask & parent_set_b[j].mask
+                    child_mask = parent_a.mask & parent_b.mask
                     # Child splits have empty filters list and parent Split references
                     child_splits.append(
                         Split(
                             mask=child_mask,
                             filters=[],
-                            parents=[(parent_set_a[i], parent_set_b[j])],
+                            parents=[(parent_a, parent_b)],
                         )
                     )
 
     return child_splits
 
 
-def _remove_redundant_splits(
-    new_splits: list[Split], old_splits: list[Split]
-) -> list[Split]:
+def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -1258,6 +1290,62 @@ def _remove_redundant_splits(
     return [new_splits[i] for i in keep_indices.tolist()]
 
 
+def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
+    """
+    Score splits using the provided score function.
+
+    Updates the score attribute of each split in place.
+
+    Parameters
+    ----------
+    splits : list[Split]
+        List of Split objects to score
+    y : torch.Tensor
+        1-D tensor of target values (n_samples)
+    score_func : callable
+        Function that takes y (n_samples) and masks (batch_size, n_samples)
+        and returns a float tensor of scores (batch_size)
+    """
+    if len(splits) == 0:
+        return
+
+    # Stack all masks into a 2D tensor (batch_size x n_samples)
+    masks = torch.stack([split.mask for split in splits], dim=0)
+
+    # Call score_func to get scores for all splits
+    scores = score_func(y, masks)
+
+    # Assign scores to splits
+    for i, split in enumerate(splits):
+        split.score = float(scores[i].item())
+
+
+def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
+    """
+    Keep only the top n splits based on their scores.
+
+    Parameters
+    ----------
+    splits : list[Split]
+        List of Split objects with scores assigned
+    keep_best_n : int
+        Number of top-scoring splits to keep
+
+    Returns
+    -------
+    list[Split]
+        List of the top n splits sorted by score (descending)
+    """
+    if len(splits) <= keep_best_n:
+        return splits
+
+    # Sort splits by score in descending order
+    sorted_splits = sorted(splits, key=lambda s: s.score, reverse=True)
+
+    # Return the top n
+    return sorted_splits[:keep_best_n]
+
+
 def prepare_splits(
     trades_df: pd.DataFrame,
     filters_df: pd.DataFrame,
@@ -1269,6 +1357,8 @@ def prepare_splits(
     max_splits_per_filter: int | None = None,
     max_depth: int = 1,
     min_samples: int = 1,
+    score_func=None,
+    keep_best_n: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -1313,6 +1403,12 @@ def prepare_splits(
         Only splits with at least min_samples samples on the selected side will be
         created. This applies to both left and right splits independently, so they
         may have different thresholds. Also affects exclusion mask calculation.
+    score_func : callable, optional
+        Function that takes y (n_samples) and masks (batch_size, n_samples) and
+        returns a float tensor containing a score for each batch. Default is None.
+    keep_best_n : int | None, optional
+        If not None, keep only the top n splits based on their scores. If set,
+        score_func must also be provided. Default is None.
 
     Returns
     -------
@@ -1340,12 +1436,22 @@ def prepare_splits(
     - At depths > 2, child splits are created by combining the previous depth's new
       splits with the original depth 1 splits.
     """
+    # Validate parameters
+    if keep_best_n is not None and score_func is None:
+        raise ValueError("score_func must be provided when keep_best_n is not None")
+
     # Align filters_df with trades_df
     filters_df = _align_filters_with_trades(filters_df, trades_df)
 
     # Add computed columns and update left_only_filters
     filters_df, left_only_filters, right_only_filters = _add_computed_columns(
         filters_df, trades_df, spread_width, left_only_filters, right_only_filters
+    )
+
+    # Calculate RoR (y) as profit / risk
+    # Done early so it can be used for scoring
+    y = torch.tensor(  # pylint: disable=invalid-name
+        (trades_df["profit"] / trades_df["risk"]).values, dtype=dtype, device=device
     )
 
     # Find all depth 1 splits
@@ -1369,13 +1475,23 @@ def prepare_splits(
     # Merge splits with identical masks
     depth_1_splits = _merge_identical_splits(depth_1_splits, device)
 
+    # Score depth_1_splits if score_func is provided
+    if score_func is not None:
+        _score_splits(depth_1_splits, y, score_func)
+
     # Start with depth 1 splits
-    all_splits = depth_1_splits.copy()
+    # If keep_best_n is specified, only keep top n in all_splits
+    # but keep all depth_1_splits for generating child splits
+    if keep_best_n is not None:
+        all_splits = _keep_top_n_splits(depth_1_splits, keep_best_n)
+    else:
+        all_splits = depth_1_splits.copy()
 
     # Generate child splits if max_depth > 1
     if max_depth > 1:
         # Track the previous depth's new splits
-        previous_depth_splits = depth_1_splits
+        # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
+        previous_depth_splits = all_splits
 
         for _ in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
@@ -1401,28 +1517,38 @@ def prepare_splits(
             new_splits = _merge_identical_splits(new_splits, device)
 
             # Filter out splits with fewer than min_samples
-            new_splits = [
-                split for split in new_splits if split.mask.sum().item() >= min_samples
-            ]
+            new_splits = [split for split in new_splits if split.mask.sum().item() >= min_samples]
 
             # Exit early if no new splits remain after filtering
             if len(new_splits) == 0:
                 break
 
+            # Score new_splits if score_func is provided
+            if score_func is not None:
+                _score_splits(new_splits, y, score_func)
+
             # Add new splits to all_splits
             all_splits.extend(new_splits)
 
-            # Update previous_depth_splits for the next iteration
-            previous_depth_splits = new_splits
+            # Keep only top n all_splits if keep_best_n is specified
+            if keep_best_n is not None:
+                all_splits = _keep_top_n_splits(all_splits, keep_best_n)
+
+                # Update previous_depth_splits to only contain kept splits from new_splits
+                # Convert all_splits to a set for efficient lookup
+                all_splits_set = set(id(s) for s in all_splits)
+                previous_depth_splits = [
+                    split for split in new_splits if id(split) in all_splits_set
+                ]
+
+                # Exit early if no new splits were kept
+                if len(previous_depth_splits) == 0:
+                    break
+            else:
+                # Update previous_depth_splits for the next iteration
+                previous_depth_splits = new_splits
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(
-        filters_df.values, dtype=dtype, device=device
-    )  # pylint: disable=invalid-name
-
-    # Calculate RoR (y) as profit / risk
-    y = torch.tensor(  # pylint: disable=invalid-name
-        (trades_df["profit"] / trades_df["risk"]).values, dtype=dtype, device=device
-    )
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     return X, y, all_splits
