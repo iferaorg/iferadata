@@ -601,9 +601,9 @@ def test_prepare_splits_basic():
         trades_df, filters_df, spread_width, [], [], device, dtype
     )
 
-    # Check X shape - should have 3 rows and 9 columns
-    # (2 filters + reward_per_risk + 5 weekday filters + open_minutes)
-    assert X.shape == (3, 9)
+    # Check X shape - should have 3 rows and 10 columns
+    # (2 filters + reward_per_risk + premium + 5 weekday filters + open_minutes)
+    assert X.shape == (3, 10)
     assert X.device == device
     assert X.dtype == dtype
 
@@ -626,6 +626,17 @@ def test_prepare_splits_basic():
         X[:, 2], torch.tensor(expected_rpr, dtype=dtype, device=device)
     )
 
+    # Check premium column (column index 3 in X)
+    # premium = spread_width * 100 - risk
+    expected_premium = [
+        20 * 100 - 100,
+        20 * 100 - 200,
+        20 * 100 - 150,
+    ]
+    assert torch.allclose(
+        X[:, 3], torch.tensor(expected_premium, dtype=dtype, device=device)
+    )
+
     # Check splits - with the new merging logic, splits with identical masks are merged
     # We should have at least a few unique splits
     assert len(splits) > 0
@@ -641,9 +652,9 @@ def test_prepare_splits_basic():
         for filter_tuple in split.filters:
             assert len(filter_tuple) == 4
             filter_idx, filter_name, threshold, direction = filter_tuple
-            assert filter_idx in range(9)  # 9 columns now
+            assert filter_idx in range(10)  # 10 columns now
             assert isinstance(filter_name, str)
-            assert isinstance(threshold, float)
+            assert isinstance(threshold, (int, float))  # Can be int or float
             assert direction in ["left", "right"]
         assert split.mask.dtype == torch.bool
         assert split.mask.shape == (3,)  # 3 samples
@@ -764,9 +775,9 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
                 sum_i = mask_i.sum().item()
                 sum_j = mask_j.sum().item()
                 # At least one should be a proper subset
-                assert intersection == sum_i or intersection == sum_j, (
-                    "Left splits should have subset relationship"
-                )
+                assert (
+                    intersection == sum_i or intersection == sum_j
+                ), "Left splits should have subset relationship"
 
     # Find splits containing filter_a with right direction
     right_splits = []
@@ -787,9 +798,9 @@ def test_prepare_splits_exclusion_mask_same_filter_direction():
                 sum_i = mask_i.sum().item()
                 sum_j = mask_j.sum().item()
                 # At least one should be a proper subset
-                assert intersection == sum_i or intersection == sum_j, (
-                    "Right splits should have subset relationship"
-                )
+                assert (
+                    intersection == sum_i or intersection == sum_j
+                ), "Right splits should have subset relationship"
 
 
 def test_prepare_splits_missing_dates_in_filters():
@@ -969,9 +980,7 @@ def test_prepare_splits_device_dtype():
     device = torch.device("cpu")
     dtype = torch.float64
 
-    X, y, splits = prepare_splits(
-        trades_df, filters_df, 20, [], [], device, dtype
-    )
+    X, y, splits = prepare_splits(trades_df, filters_df, 20, [], [], device, dtype)
 
     # Check device and dtype
     assert X.device == device
@@ -1022,35 +1031,33 @@ def test_prepare_splits_weekday_filters():
     device = torch.device("cpu")
     dtype = torch.float32
 
-    X, y, splits = prepare_splits(
-        trades_df, filters_df, 20, [], [], device, dtype
-    )
+    X, y, splits = prepare_splits(trades_df, filters_df, 20, [], [], device, dtype)
 
     # Check that weekday columns were added
-    # X should have: filter_a, reward_per_risk, is_monday, is_tuesday, is_wednesday,
+    # X should have: filter_a, reward_per_risk, premium, is_monday, is_tuesday, is_wednesday,
     # is_thursday, is_friday, open_minutes
-    assert X.shape == (5, 8)
+    assert X.shape == (5, 9)
 
-    # Check weekday values (column indices 2-6)
+    # Check weekday values (column indices 3-7)
     # 2022-01-10 = Monday
-    assert X[0, 2].item() == 1  # is_monday
-    assert X[0, 3].item() == 0  # is_tuesday
-    assert X[0, 4].item() == 0  # is_wednesday
-    assert X[0, 5].item() == 0  # is_thursday
-    assert X[0, 6].item() == 0  # is_friday
+    assert X[0, 3].item() == 1  # is_monday
+    assert X[0, 4].item() == 0  # is_tuesday
+    assert X[0, 5].item() == 0  # is_wednesday
+    assert X[0, 6].item() == 0  # is_thursday
+    assert X[0, 7].item() == 0  # is_friday
 
     # 2022-01-11 = Tuesday
-    assert X[1, 2].item() == 0  # is_monday
-    assert X[1, 3].item() == 1  # is_tuesday
+    assert X[1, 3].item() == 0  # is_monday
+    assert X[1, 4].item() == 1  # is_tuesday
 
     # 2022-01-12 = Wednesday
-    assert X[2, 4].item() == 1  # is_wednesday
+    assert X[2, 5].item() == 1  # is_wednesday
 
     # 2022-01-13 = Thursday
-    assert X[3, 5].item() == 1  # is_thursday
+    assert X[3, 6].item() == 1  # is_thursday
 
     # 2022-01-14 = Friday
-    assert X[4, 6].item() == 1  # is_friday
+    assert X[4, 7].item() == 1  # is_friday
 
     # Check that weekday filters generate only left splits (not right)
     weekday_names = [
@@ -1096,13 +1103,13 @@ def test_prepare_splits_open_minutes():
     )
 
     # Check that open_minutes column was added (last column)
-    # X should have 8 columns: filter_a, reward_per_risk, 5 weekday filters, open_minutes
-    assert X.shape == (3, 8)
+    # X should have 9 columns: filter_a, reward_per_risk, premium, 5 weekday filters, open_minutes
+    assert X.shape == (3, 9)
 
-    # Check open_minutes values (last column, index 7)
-    assert X[0, 7].item() == 930  # 15:30
-    assert X[1, 7].item() == 885  # 14:45
-    assert X[2, 7].item() == 960  # 16:00
+    # Check open_minutes values (last column, index 8)
+    assert X[0, 8].item() == 930  # 15:30
+    assert X[1, 8].item() == 885  # 14:45
+    assert X[2, 8].item() == 960  # 16:00
 
     # Check that open_minutes generates splits
     has_open_minutes = False
@@ -1135,10 +1142,10 @@ def test_prepare_splits_open_minutes_missing_start_time():
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
-    # Check that open_minutes column was added (last column, index 7) with default value 0
-    assert X.shape == (2, 8)
-    assert X[0, 7].item() == 0
-    assert X[1, 7].item() == 0
+    # Check that open_minutes column was added (last column, index 8) with default value 0
+    assert X.shape == (2, 9)
+    assert X[0, 8].item() == 0
+    assert X[1, 8].item() == 0
 
     # With only one unique value (0), open_minutes should generate no splits
     has_open_minutes = False
@@ -1176,9 +1183,10 @@ def test_prepare_splits_open_minutes_with_none():
     )
 
     # Check that open_minutes handles None (should default to 0)
-    assert X[0, 7].item() == 930  # 15:30
-    assert X[1, 7].item() == 0  # None -> 0
-    assert X[2, 7].item() == 960  # 16:00
+    # open_minutes is now at index 8 (after premium column)
+    assert X[0, 8].item() == 930  # 15:30
+    assert X[1, 8].item() == 0  # None -> 0
+    assert X[2, 8].item() == 960  # 16:00
 
 
 def test_prepare_splits_merge_identical_masks():
