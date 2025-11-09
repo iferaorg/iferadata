@@ -577,21 +577,15 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(
-            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
-        )
+        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
-            )
+            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -682,16 +676,16 @@ class Split:
         """
         return id(self)
 
-    def _get_dnf_terms(self) -> list[list[tuple[str, str, float]]]:
+    def _get_dnf_terms(self) -> list[list[tuple[int, str, str, float]]]:
         """
         Get the disjunctive normal form (DNF) representation of this split.
 
         Returns a list of conjunctions, where each conjunction is a list of
-        (filter_name, operator, threshold) tuples.
+        (filter_idx, filter_name, operator, threshold) tuples.
 
         Returns
         -------
-        list[list[tuple[str, str, float]]]
+        list[list[tuple[int, str, str, float]]]
             List of conjunctions in DNF
         """
         # Base case: depth 1 split with filters
@@ -701,7 +695,14 @@ class Split:
             for filter_info in self.filters:
                 operator = "<=" if filter_info.direction == "left" else ">="
                 result.append(
-                    [(filter_info.filter_name, operator, filter_info.threshold)]
+                    [
+                        (
+                            filter_info.filter_idx,
+                            filter_info.filter_name,
+                            operator,
+                            filter_info.threshold,
+                        )
+                    ]
                 )
             return result
 
@@ -714,7 +715,8 @@ class Split:
                 dnf_a = parent_a._get_dnf_terms()  # pylint: disable=protected-access
                 dnf_b = parent_b._get_dnf_terms()  # pylint: disable=protected-access
 
-                # Combine with AND: (A OR B) AND (C OR D) = (A AND C) OR (A AND D) OR (B AND C) OR (B AND D)
+                # Combine with AND:
+                # (A OR B) AND (C OR D) = (A AND C) OR (A AND D) OR (B AND C) OR (B AND D)
                 for term_a in dnf_a:
                     for term_b in dnf_b:
                         # Combine the two terms (both are lists of filter conditions)
@@ -727,8 +729,8 @@ class Split:
         return []
 
     def _merge_conjunction_terms(
-        self, conjunction: list[tuple[str, str, float]]
-    ) -> list[tuple[str, str, float]]:
+        self, conjunction: list[tuple[int, str, str, float]]
+    ) -> list[tuple[int, str, str, float]]:
         """
         Merge terms with the same filter and direction within a conjunction.
 
@@ -737,36 +739,36 @@ class Split:
 
         Parameters
         ----------
-        conjunction : list[tuple[str, str, float]]
-            List of (filter_name, operator, threshold) tuples
+        conjunction : list[tuple[int, str, str, float]]
+            List of (filter_idx, filter_name, operator, threshold) tuples
 
         Returns
         -------
-        list[tuple[str, str, float]]
+        list[tuple[int, str, str, float]]
             Merged list of filter terms
         """
         if len(conjunction) <= 1:
             return conjunction
 
-        # Group terms by (filter_name, operator)
-        # Key: (filter_name, operator), Value: list of thresholds
-        groups: dict[tuple[str, str], list[float]] = {}
-        for filter_name, operator, threshold in conjunction:
-            key = (filter_name, operator)
+        # Group terms by (filter_idx, filter_name, operator)
+        # Key: (filter_idx, filter_name, operator), Value: list of thresholds
+        groups: dict[tuple[int, str, str], list[float]] = {}
+        for filter_idx, filter_name, operator, threshold in conjunction:
+            key = (filter_idx, filter_name, operator)
             if key not in groups:
                 groups[key] = []
             groups[key].append(threshold)
 
         # Merge terms: for each group, select the appropriate threshold
         merged = []
-        for (filter_name, operator), thresholds in groups.items():
+        for (filter_idx, filter_name, operator), thresholds in groups.items():
             if operator == "<=":
                 # For left direction, use the minimum (most restrictive for <=)
                 selected_threshold = min(thresholds)
             else:  # operator == ">="
                 # For right direction, use the maximum (most restrictive for >=)
                 selected_threshold = max(thresholds)
-            merged.append((filter_name, operator, selected_threshold))
+            merged.append((filter_idx, filter_name, operator, selected_threshold))
 
         return merged
 
@@ -799,25 +801,36 @@ class Split:
             return f"{header}\n - (empty)"
 
         lines = [header]
+        seen_conjunctions = set()
+
         for conjunction in dnf_terms:
             # Merge terms with the same filter and direction
             merged_conjunction = self._merge_conjunction_terms(conjunction)
 
+            # Sort terms by filter_idx to create canonical ordering
+            sorted_conjunction = sorted(merged_conjunction, key=lambda x: x[0])
+
+            # Create a hashable representation for deduplication
+            conjunction_tuple = tuple(sorted_conjunction)
+
+            # Skip if we've already seen this conjunction
+            if conjunction_tuple in seen_conjunctions:
+                continue
+            seen_conjunctions.add(conjunction_tuple)
+
             # Format each filter in the conjunction
             filter_strs = []
-            for filter_name, operator, threshold in merged_conjunction:
+            for _, filter_name, operator, threshold in sorted_conjunction:
                 filter_strs.append(f"({filter_name} {operator} {threshold})")
 
-            # Join with " and "
-            conjunction_str = " and ".join(filter_strs)
+            # Join with " & " for compactness
+            conjunction_str = " & ".join(filter_strs)
             lines.append(f" - {conjunction_str}")
 
         return "\n".join(lines)
 
 
-def _align_filters_with_trades(
-    filters_df: pd.DataFrame, trades_df: pd.DataFrame
-) -> pd.DataFrame:
+def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -886,9 +899,7 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
 
     # Add premium column
     filters_df["premium"] = spread_width * 100 - trades_df["risk"]
@@ -1070,9 +1081,7 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Convert filter column to tensor for masking (original values)
-    col_tensor_original = torch.tensor(
-        filters_df[col_name].values, dtype=dtype, device=device
-    )
+    col_tensor_original = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
     # Check if this filter has a granularity
     granularity = filter_granularities.get(col_name)
@@ -1083,12 +1092,8 @@ def _create_splits_for_filter(
     if col_name not in right_only_filters:
         if granularity is not None:
             # Round values UP to nearest granularity multiple for left direction
-            rounded_vals = [
-                math.ceil(v / granularity) * granularity for v in filters_df[col_name]
-            ]
-            unique_vals_left = torch.tensor(
-                sorted(set(rounded_vals)), dtype=dtype, device=device
-            )
+            rounded_vals = [math.ceil(v / granularity) * granularity for v in filters_df[col_name]]
+            unique_vals_left = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
             col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
         else:
             # Use original unique values
@@ -1111,9 +1116,7 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold DOWN (opposite of left rounding) to nearest granularity
-                    threshold = (
-                        math.floor(threshold_avg.item() / granularity) * granularity
-                    )
+                    threshold = math.floor(threshold_avg.item() / granularity) * granularity
                 else:
                     threshold = threshold_avg.item()
 
@@ -1131,12 +1134,8 @@ def _create_splits_for_filter(
     if col_name not in left_only_filters:
         if granularity is not None:
             # Round values DOWN to nearest granularity multiple for right direction
-            rounded_vals = [
-                math.floor(v / granularity) * granularity for v in filters_df[col_name]
-            ]
-            unique_vals_right = torch.tensor(
-                sorted(set(rounded_vals)), dtype=dtype, device=device
-            )
+            rounded_vals = [math.floor(v / granularity) * granularity for v in filters_df[col_name]]
+            unique_vals_right = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
             col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
         else:
             # Use original unique values
@@ -1159,9 +1158,7 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold UP (opposite of right rounding) to nearest granularity
-                    threshold = (
-                        math.ceil(threshold_avg.item() / granularity) * granularity
-                    )
+                    threshold = math.ceil(threshold_avg.item() / granularity) * granularity
                 else:
                     threshold = threshold_avg.item()
 
@@ -1394,9 +1391,7 @@ def _generate_child_splits(
     return child_splits
 
 
-def _remove_redundant_splits(
-    new_splits: list[Split], old_splits: list[Split]
-) -> list[Split]:
+def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -1651,9 +1646,7 @@ def prepare_splits(
         raise ValueError("score_func must be provided when keep_best_n is not None")
 
     if verbose not in ["no", "best", "all"]:
-        raise ValueError(
-            f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'"
-        )
+        raise ValueError(f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'")
 
     if verbose == "best" and score_func is None:
         raise ValueError("verbose='best' requires score_func to be not None")
@@ -1766,9 +1759,7 @@ def prepare_splits(
             new_splits = _merge_identical_splits(new_splits, device)
 
             # Filter out splits with fewer than min_samples
-            new_splits = [
-                split for split in new_splits if split.mask.sum().item() >= min_samples
-            ]
+            new_splits = [split for split in new_splits if split.mask.sum().item() >= min_samples]
 
             # Exit early if no new splits remain after filtering
             if len(new_splits) == 0:
@@ -1811,8 +1802,6 @@ def prepare_splits(
                 _print_splits_for_depth(depth, all_splits, score_func)
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(
-        filters_df.values, dtype=dtype, device=device
-    )  # pylint: disable=invalid-name
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     return X, y, all_splits
