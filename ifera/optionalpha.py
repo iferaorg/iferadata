@@ -12,6 +12,8 @@ from typing import NamedTuple, Optional
 import pandas as pd
 import torch
 from bs4 import BeautifulSoup
+from rich.console import Console
+from rich.panel import Panel
 
 
 class FilterInfo(NamedTuple):
@@ -617,9 +619,11 @@ class Split:
         List of pairs of parent Split objects. Each pair represents the two parent
         splits that were combined with logical AND to create this child split.
         Empty for depth 1 (original) splits.
-    score : float
-        Score assigned to the split by the score_func. Initialized to -inf.
+    score : float | None
+        Score assigned to the split by the score_func. Initialized to None.
     """
+
+    score: float | None
 
     def __init__(
         self,
@@ -642,7 +646,7 @@ class Split:
         self.mask = mask
         self.filters = filters
         self.parents = parents
-        self.score = float("-inf")
+        self.score = None
 
     def __eq__(self, other):
         """
@@ -725,9 +729,23 @@ class Split:
         dnf_terms = self._get_dnf_terms()
 
         if not dnf_terms:
-            return "Split filters:\n - (empty)"
+            header = "Split filters:"
+        else:
+            header = "Split filters:"
 
-        lines = ["Split filters:"]
+        # Add score and sample count to header if available
+        sample_count = int(self.mask.sum().item())
+        header_parts = [header]
+        if self.score is not None:
+            header_parts.append(f" (score: {self.score:.4f}, samples: {sample_count})")
+        else:
+            header_parts.append(f" (samples: {sample_count})")
+        header = "".join(header_parts)
+
+        if not dnf_terms:
+            return f"{header}\n - (empty)"
+
+        lines = [header]
         for conjunction in dnf_terms:
             # Format each filter in the conjunction
             filter_strs = []
@@ -1339,11 +1357,51 @@ def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
     if len(splits) <= keep_best_n:
         return splits
 
-    # Sort splits by score in descending order
-    sorted_splits = sorted(splits, key=lambda s: s.score, reverse=True)
+    # Sort splits by score in descending order (None values are treated as -inf)
+    sorted_splits = sorted(
+        splits, key=lambda s: s.score if s.score is not None else float("-inf"), reverse=True
+    )
 
     # Return the top n
     return sorted_splits[:keep_best_n]
+
+
+def _print_splits_for_depth(
+    depth: int, splits: list[Split], score_func: Optional[object] = None
+) -> None:
+    """
+    Print splits for a given depth using rich formatting.
+
+    Parameters
+    ----------
+    depth : int
+        The depth level being printed
+    splits : list[Split]
+        List of Split objects to print
+    score_func : Optional[object], optional
+        Score function (used to determine if splits should be sorted by score)
+    """
+    console = Console()
+
+    # Sort splits by score if score_func is provided
+    if score_func is not None:
+        splits_to_print = sorted(
+            splits, key=lambda s: s.score if s.score is not None else float("-inf"), reverse=True
+        )
+    else:
+        splits_to_print = splits
+
+    # Create header
+    console.print()
+    console.rule(f"[bold blue]Depth {depth}[/bold blue]", style="blue")
+    console.print()
+
+    # Print each split
+    for split in splits_to_print:
+        split_str = str(split)
+        console.print(Panel(split_str, border_style="cyan", padding=(0, 1)))
+
+    console.print()
 
 
 def prepare_splits(
@@ -1359,6 +1417,7 @@ def prepare_splits(
     min_samples: int = 1,
     score_func=None,
     keep_best_n: int | None = None,
+    verbose: str = "no",
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -1409,6 +1468,13 @@ def prepare_splits(
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
         score_func must also be provided. Default is None.
+    verbose : str, optional
+        Controls printing of splits. Default is "no".
+        - "no": No printing
+        - "best": Print the split with the highest score at the end of each depth
+                  (requires score_func to be not None)
+        - "all": Print all splits in all_splits list at the end of each depth.
+                 If score_func is not None, splits are printed in descending score order.
 
     Returns
     -------
@@ -1439,6 +1505,12 @@ def prepare_splits(
     # Validate parameters
     if keep_best_n is not None and score_func is None:
         raise ValueError("score_func must be provided when keep_best_n is not None")
+
+    if verbose not in ["no", "best", "all"]:
+        raise ValueError(f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'")
+
+    if verbose == "best" and score_func is None:
+        raise ValueError("verbose='best' requires score_func to be not None")
 
     # Align filters_df with trades_df
     filters_df = _align_filters_with_trades(filters_df, trades_df)
@@ -1487,13 +1559,23 @@ def prepare_splits(
     else:
         all_splits = depth_1_splits.copy()
 
+    # Print depth 1 splits if verbose is enabled
+    if verbose == "best":
+        if len(all_splits) > 0:
+            best_split = max(
+                all_splits, key=lambda s: s.score if s.score is not None else float("-inf")
+            )
+            _print_splits_for_depth(1, [best_split], score_func)
+    elif verbose == "all":
+        _print_splits_for_depth(1, all_splits, score_func)
+
     # Generate child splits if max_depth > 1
     if max_depth > 1:
         # Track the previous depth's new splits
         # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
         previous_depth_splits = all_splits
 
-        for _ in range(2, max_depth + 1):
+        for depth in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
             exclusion_mask = _calculate_exclusion_mask(
                 previous_depth_splits, depth_1_splits, device, min_samples
@@ -1547,6 +1629,16 @@ def prepare_splits(
             else:
                 # Update previous_depth_splits for the next iteration
                 previous_depth_splits = new_splits
+
+            # Print splits for this depth if verbose is enabled
+            if verbose == "best":
+                if len(all_splits) > 0:
+                    best_split = max(
+                        all_splits, key=lambda s: s.score if s.score is not None else float("-inf")
+                    )
+                    _print_splits_for_depth(depth, [best_split], score_func)
+            elif verbose == "all":
+                _print_splits_for_depth(depth, all_splits, score_func)
 
     # Convert filters_df to torch tensor X
     X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
