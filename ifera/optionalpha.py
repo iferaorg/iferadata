@@ -1444,19 +1444,32 @@ def prepare_splits(
 
     # Generate child splits if max_depth > 1
     if max_depth > 1:
-        # Track the previous depth's new splits
-        # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
-        previous_depth_splits = all_splits
+        # At depth 2, we want to combine depth_1_splits with themselves (or a filtered subset)
+        # At depth 3+, we combine previous depth's new_splits with depth_1_splits
 
-        for _ in range(2, max_depth + 1):
+        # For depth 2, determine if we should use the optimized "same sets" path
+        # This happens when all_splits contains the same splits as depth_1_splits
+        # (i.e., when keep_best_n is None or didn't filter anything)
+        if keep_best_n is None or len(all_splits) >= len(depth_1_splits):
+            # Use depth_1_splits for both to trigger the "same sets" optimization
+            previous_depth_splits = depth_1_splits
+        else:
+            # Use the filtered all_splits (subset of depth_1_splits)
+            previous_depth_splits = all_splits
+
+        for depth in range(2, max_depth + 1):
+            # At depth 2, use the initial previous_depth_splits
+            # At depth 3+, use the updated previous_depth_splits from the previous iteration
+            parent_set_a = previous_depth_splits
+
             # Calculate exclusion mask between the two parent sets
             exclusion_mask = _calculate_exclusion_mask(
-                previous_depth_splits, depth_1_splits, device, min_samples
+                parent_set_a, depth_1_splits, device, min_samples
             )
 
             # Generate child splits from non-exclusive parent pairs
             new_splits = _generate_child_splits(
-                previous_depth_splits,
+                parent_set_a,
                 depth_1_splits,
                 exclusion_mask,
             )
