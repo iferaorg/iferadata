@@ -5,6 +5,7 @@ This module provides functionality to parse HTML-formatted trade log grids
 from Option Alpha and convert them into pandas DataFrames.
 """
 
+import math
 import re
 from datetime import datetime, time
 from typing import NamedTuple, Optional
@@ -576,15 +577,21 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     indicator_names = ["ADX_14"]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
+        indicator_df = parse_simple_indicator(
+            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
+        )
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
+            indicator_df = indicator_df.rename(
+                columns={"indicator": f"{indicator_name.lower()}"}
+            )
             dfs.append(indicator_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
+        df_merged = reduce(
+            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
+        )
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -692,8 +699,10 @@ class Split:
             # Multiple filters in the same split represent OR relationship
             result = []
             for filter_info in self.filters:
-                operator = "<" if filter_info.direction == "left" else ">"
-                result.append([(filter_info.filter_name, operator, filter_info.threshold)])
+                operator = "<=" if filter_info.direction == "left" else ">="
+                result.append(
+                    [(filter_info.filter_name, operator, filter_info.threshold)]
+                )
             return result
 
         # Recursive case: child split with parents
@@ -723,8 +732,8 @@ class Split:
         """
         Merge terms with the same filter and direction within a conjunction.
 
-        For left direction (<), keeps the lower threshold.
-        For right direction (>), keeps the higher threshold.
+        For left direction (<=), keeps the lower threshold.
+        For right direction (>=), keeps the higher threshold.
 
         Parameters
         ----------
@@ -751,11 +760,11 @@ class Split:
         # Merge terms: for each group, select the appropriate threshold
         merged = []
         for (filter_name, operator), thresholds in groups.items():
-            if operator == "<":
-                # For left direction, use the minimum (most restrictive for <)
+            if operator == "<=":
+                # For left direction, use the minimum (most restrictive for <=)
                 selected_threshold = min(thresholds)
-            else:  # operator == ">"
-                # For right direction, use the maximum (most restrictive for >)
+            else:  # operator == ">="
+                # For right direction, use the maximum (most restrictive for >=)
                 selected_threshold = max(thresholds)
             merged.append((filter_name, operator, selected_threshold))
 
@@ -806,7 +815,9 @@ class Split:
         return "\n".join(lines)
 
 
-def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
+def _align_filters_with_trades(
+    filters_df: pd.DataFrame, trades_df: pd.DataFrame
+) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -855,7 +866,7 @@ def _add_computed_columns(
     """
     Add computed columns to filters DataFrame.
 
-    Adds reward_per_risk, weekday filters (is_monday, is_tuesday, etc.),
+    Adds reward_per_risk, premium, weekday filters (is_monday, is_tuesday, etc.),
     and open_minutes columns.
 
     Parameters
@@ -875,7 +886,12 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (
+        spread_width * 100 - trades_df["risk"]
+    ) / trades_df["risk"]
+
+    # Add premium column
+    filters_df["premium"] = spread_width * 100 - trades_df["risk"]
 
     # Add weekday filters based on date
     weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
@@ -1020,6 +1036,7 @@ def _create_splits_for_filter(
     dtype: torch.dtype,
     max_splits_per_filter: int | None,
     min_samples: int,
+    filter_granularities: dict[str, float],
 ) -> list[Split]:
     """
     Create splits for a single filter column.
@@ -1044,55 +1061,121 @@ def _create_splits_for_filter(
         Maximum number of splits per direction
     min_samples : int
         Minimum number of samples required on each side of the split
+    filter_granularities : dict[str, float]
+        Dictionary mapping filter names to granularity values
 
     Returns
     -------
     list[Split]
         List of Split objects for this filter
     """
-    # Get sorted unique values
-    unique_vals = torch.tensor(sorted(filters_df[col_name].unique()), dtype=dtype, device=device)
+    # Convert filter column to tensor for masking (original values)
+    col_tensor_original = torch.tensor(
+        filters_df[col_name].values, dtype=dtype, device=device
+    )
 
-    if len(unique_vals) <= 1:
-        # No splits possible for this filter
-        return []
-
-    # Convert filter column to tensor for masking
-    col_tensor = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
+    # Check if this filter has a granularity
+    granularity = filter_granularities.get(col_name)
 
     splits = []
 
     # Create left splits if not in right_only_filters
     if col_name not in right_only_filters:
-        left_split_indices = _select_split_indices(
-            unique_vals, col_tensor, max_splits_per_filter, min_samples, "left"
-        )
-        for i in left_split_indices:
-            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
-            left_mask = col_tensor <= threshold
-            splits.append(
-                Split(
-                    mask=left_mask,
-                    filters=[FilterInfo(col_idx, col_name, threshold.item(), "left")],
-                    parents=[],
-                )
+        if granularity is not None:
+            # Round values UP to nearest granularity multiple for left direction
+            rounded_vals = [
+                math.ceil(v / granularity) * granularity for v in filters_df[col_name]
+            ]
+            unique_vals_left = torch.tensor(
+                sorted(set(rounded_vals)), dtype=dtype, device=device
             )
+            col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
+        else:
+            # Use original unique values
+            unique_vals_left = torch.tensor(
+                sorted(filters_df[col_name].unique()), dtype=dtype, device=device
+            )
+            col_tensor_left = col_tensor_original
+
+        if len(unique_vals_left) > 1:
+            left_split_indices = _select_split_indices(
+                unique_vals_left,
+                col_tensor_left,
+                max_splits_per_filter,
+                min_samples,
+                "left",
+            )
+            for i in left_split_indices:
+                # Calculate threshold from unique values
+                threshold_avg = (unique_vals_left[i] + unique_vals_left[i + 1]) / 2.0
+
+                if granularity is not None:
+                    # Round threshold DOWN (opposite of left rounding) to nearest granularity
+                    threshold = (
+                        math.floor(threshold_avg.item() / granularity) * granularity
+                    )
+                else:
+                    threshold = threshold_avg.item()
+
+                # Use original col_tensor for mask
+                left_mask = col_tensor_original <= threshold
+                splits.append(
+                    Split(
+                        mask=left_mask,
+                        filters=[FilterInfo(col_idx, col_name, threshold, "left")],
+                        parents=[],
+                    )
+                )
 
     # Create right splits if not in left_only_filters
     if col_name not in left_only_filters:
-        right_split_indices = _select_split_indices(
-            unique_vals, col_tensor, max_splits_per_filter, min_samples, "right"
-        )
-        for i in right_split_indices:
-            threshold = (unique_vals[i] + unique_vals[i + 1]) / 2.0
-            right_mask = col_tensor >= threshold
-            splits.append(
-                Split(
-                    mask=right_mask,
-                    filters=[FilterInfo(col_idx, col_name, threshold.item(), "right")],
-                    parents=[],
-                )
+        if granularity is not None:
+            # Round values DOWN to nearest granularity multiple for right direction
+            rounded_vals = [
+                math.floor(v / granularity) * granularity for v in filters_df[col_name]
+            ]
+            unique_vals_right = torch.tensor(
+                sorted(set(rounded_vals)), dtype=dtype, device=device
             )
+            col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
+        else:
+            # Use original unique values
+            unique_vals_right = torch.tensor(
+                sorted(filters_df[col_name].unique()), dtype=dtype, device=device
+            )
+            col_tensor_right = col_tensor_original
+
+        if len(unique_vals_right) > 1:
+            right_split_indices = _select_split_indices(
+                unique_vals_right,
+                col_tensor_right,
+                max_splits_per_filter,
+                min_samples,
+                "right",
+            )
+            for i in right_split_indices:
+                # Calculate threshold from unique values
+                threshold_avg = (unique_vals_right[i] + unique_vals_right[i + 1]) / 2.0
+
+                if granularity is not None:
+                    # Round threshold UP (opposite of right rounding) to nearest granularity
+                    threshold = (
+                        math.ceil(threshold_avg.item() / granularity) * granularity
+                    )
+                else:
+                    threshold = threshold_avg.item()
+
+                # Use original col_tensor for mask
+                right_mask = col_tensor_original >= threshold
+                splits.append(
+                    Split(
+                        mask=right_mask,
+                        filters=[FilterInfo(col_idx, col_name, threshold, "right")],
+                        parents=[],
+                    )
+                )
+
+    return splits
 
     return splits
 
@@ -1311,7 +1394,9 @@ def _generate_child_splits(
     return child_splits
 
 
-def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
+def _remove_redundant_splits(
+    new_splits: list[Split], old_splits: list[Split]
+) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -1406,7 +1491,9 @@ def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
 
     # Sort splits by score in descending order (None values are treated as -inf)
     sorted_splits = sorted(
-        splits, key=lambda s: s.score if s.score is not None else float("-inf"), reverse=True
+        splits,
+        key=lambda s: s.score if s.score is not None else float("-inf"),
+        reverse=True,
     )
 
     # Return the top n
@@ -1433,7 +1520,9 @@ def _print_splits_for_depth(
     # Sort splits by score if score_func is provided
     if score_func is not None:
         splits_to_print = sorted(
-            splits, key=lambda s: s.score if s.score is not None else float("-inf"), reverse=True
+            splits,
+            key=lambda s: s.score if s.score is not None else float("-inf"),
+            reverse=True,
         )
     else:
         splits_to_print = splits
@@ -1465,6 +1554,7 @@ def prepare_splits(
     score_func=None,
     keep_best_n: int | None = None,
     verbose: str = "no",
+    filter_granularities: dict[str, float] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -1522,6 +1612,13 @@ def prepare_splits(
                   (requires score_func to be not None)
         - "all": Print all splits in all_splits list at the end of each depth.
                  If score_func is not None, splits are printed in descending score order.
+    filter_granularities : dict[str, float] | None, optional
+        Dictionary mapping filter names to granularity values. Default is None (empty dict).
+        When generating splits for a filter in this dict, values are rounded to multiples
+        of the granularity before selecting split indices:
+        - Left direction: round values up to nearest granularity multiple
+        - Right direction: round values down to nearest granularity multiple
+        - Threshold: rounded in opposite direction after averaging unique values
 
     Returns
     -------
@@ -1554,10 +1651,31 @@ def prepare_splits(
         raise ValueError("score_func must be provided when keep_best_n is not None")
 
     if verbose not in ["no", "best", "all"]:
-        raise ValueError(f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'")
+        raise ValueError(
+            f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'"
+        )
 
     if verbose == "best" and score_func is None:
         raise ValueError("verbose='best' requires score_func to be not None")
+
+    # Initialize filter_granularities with default values
+    if filter_granularities is None:
+        filter_granularities = {}
+
+    # Add default granularities for computed columns
+    default_granularities = {
+        "reward_per_risk": 0.001,
+        "premium": 0.01,
+        "is_monday": 1,
+        "is_tuesday": 1,
+        "is_wednesday": 1,
+        "is_thursday": 1,
+        "is_friday": 1,
+        "open_minutes": 5,
+    }
+
+    # Merge default granularities with user-provided ones (user values take precedence)
+    filter_granularities = {**default_granularities, **filter_granularities}
 
     # Align filters_df with trades_df
     filters_df = _align_filters_with_trades(filters_df, trades_df)
@@ -1588,6 +1706,7 @@ def prepare_splits(
             dtype,
             max_splits_per_filter,
             min_samples,
+            filter_granularities,
         )
         depth_1_splits.extend(filter_splits)
 
@@ -1610,7 +1729,8 @@ def prepare_splits(
     if verbose == "best":
         if len(all_splits) > 0:
             best_split = max(
-                all_splits, key=lambda s: s.score if s.score is not None else float("-inf")
+                all_splits,
+                key=lambda s: s.score if s.score is not None else float("-inf"),
             )
             _print_splits_for_depth(1, [best_split], score_func)
     elif verbose == "all":
@@ -1646,7 +1766,9 @@ def prepare_splits(
             new_splits = _merge_identical_splits(new_splits, device)
 
             # Filter out splits with fewer than min_samples
-            new_splits = [split for split in new_splits if split.mask.sum().item() >= min_samples]
+            new_splits = [
+                split for split in new_splits if split.mask.sum().item() >= min_samples
+            ]
 
             # Exit early if no new splits remain after filtering
             if len(new_splits) == 0:
@@ -1681,13 +1803,16 @@ def prepare_splits(
             if verbose == "best":
                 if len(all_splits) > 0:
                     best_split = max(
-                        all_splits, key=lambda s: s.score if s.score is not None else float("-inf")
+                        all_splits,
+                        key=lambda s: s.score if s.score is not None else float("-inf"),
                     )
                     _print_splits_for_depth(depth, [best_split], score_func)
             elif verbose == "all":
                 _print_splits_for_depth(depth, all_splits, score_func)
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
+    X = torch.tensor(
+        filters_df.values, dtype=dtype, device=device
+    )  # pylint: disable=invalid-name
 
     return X, y, all_splits
