@@ -1174,8 +1174,6 @@ def _create_splits_for_filter(
 
     return splits
 
-    return splits
-
 
 def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[Split]:
     """
@@ -1206,14 +1204,6 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
     n_splits = len(splits)
     n_samples = all_masks.shape[1]
 
-    # Create a matrix where entry (i,j) is the number of positions where masks match
-    match_counts = torch.matmul(all_masks_float, all_masks_float.T) + torch.matmul(
-        1 - all_masks_float, (1 - all_masks_float).T
-    )
-
-    # Two masks are identical if they match at all positions
-    mask_equality = match_counts == n_samples
-
     # Find groups of identical masks
     merged_splits: list[Split] = []
     processed = torch.zeros(n_splits, dtype=torch.bool, device=device)
@@ -1223,7 +1213,19 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
             continue
 
         # Find all splits with identical masks to split i
-        identical_indices = mask_equality[i].nonzero(as_tuple=True)[0]
+        # Compare mask i with all remaining unprocessed masks
+        # Two masks are identical if they match at all positions
+        mask_i = all_masks_float[i : i + 1, :]  # Shape: (1, n_samples)
+
+        # Compute match counts for mask i against all masks
+        # match_count = number of positions where masks match
+        match_counts_i = torch.matmul(mask_i, all_masks_float.T) + torch.matmul(
+            1 - mask_i, (1 - all_masks_float).T
+        )
+        match_counts_i = match_counts_i.squeeze(0)  # Shape: (n_splits,)
+
+        # Find identical masks
+        identical_indices = (match_counts_i == n_samples).nonzero(as_tuple=True)[0]
 
         # Merge filters and parents from all identical splits
         merged_filters = []
@@ -1247,6 +1249,7 @@ def _calculate_exclusion_mask(
     parent_set_b: list[Split],
     device: torch.device,
     min_samples: int,
+    masks_b_stacked: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Calculate exclusion mask between two separate parent sets.
@@ -1266,6 +1269,9 @@ def _calculate_exclusion_mask(
         PyTorch device for tensors
     min_samples : int
         Minimum number of samples required in the intersection for a valid combination
+    masks_b_stacked : torch.Tensor | None, optional
+        Pre-stacked masks for parent_set_b to avoid redundant stacking.
+        If None, masks will be stacked from parent_set_b.
 
     Returns
     -------
@@ -1278,9 +1284,14 @@ def _calculate_exclusion_mask(
     if n_set_a == 0 or n_set_b == 0:
         return torch.zeros((n_set_a, n_set_b), dtype=torch.bool, device=device)
 
-    # Stack masks
+    # Stack masks for set_a
     masks_a = torch.stack([split.mask for split in parent_set_a], dim=0)
-    masks_b = torch.stack([split.mask for split in parent_set_b], dim=0)
+
+    # Use pre-stacked masks for set_b if provided, otherwise stack them
+    if masks_b_stacked is None:
+        masks_b = torch.stack([split.mask for split in parent_set_b], dim=0)
+    else:
+        masks_b = masks_b_stacked
 
     masks_a_float = masks_a.float()
     masks_b_float = masks_b.float()
@@ -1735,10 +1746,18 @@ def prepare_splits(
         # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
         previous_depth_splits = all_splits
 
+        # Pre-stack masks for depth_1_splits to avoid redundant stacking in each iteration
+        depth_1_masks_stacked = torch.stack([split.mask for split in depth_1_splits], dim=0)
+
         for depth in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
+            # Pass the pre-stacked depth_1_masks to avoid redundant stacking
             exclusion_mask = _calculate_exclusion_mask(
-                previous_depth_splits, depth_1_splits, device, min_samples
+                previous_depth_splits,
+                depth_1_splits,
+                device,
+                min_samples,
+                masks_b_stacked=depth_1_masks_stacked,
             )
 
             # Generate child splits from non-exclusive parent pairs
@@ -1758,10 +1777,7 @@ def prepare_splits(
             # Merge identical splits among new splits
             new_splits = _merge_identical_splits(new_splits, device)
 
-            # Filter out splits with fewer than min_samples
-            new_splits = [split for split in new_splits if split.mask.sum().item() >= min_samples]
-
-            # Exit early if no new splits remain after filtering
+            # Exit early if no new splits remain
             if len(new_splits) == 0:
                 break
 
