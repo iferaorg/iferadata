@@ -16,7 +16,7 @@ def test_split_str_simple_left_filter():
     result = str(split)
 
     assert "Split filters:" in result
-    assert "(filter_a < 1.5)" in result
+    assert "(filter_a <= 1.5)" in result
 
 
 def test_split_str_simple_right_filter():
@@ -29,7 +29,7 @@ def test_split_str_simple_right_filter():
     result = str(split)
 
     assert "Split filters:" in result
-    assert "(filter_b > 2.5)" in result
+    assert "(filter_b >= 2.5)" in result
 
 
 def test_split_str_multiple_filters_or():
@@ -48,8 +48,8 @@ def test_split_str_multiple_filters_or():
     # Each should be on its own line
     lines = result.split("\n")
     assert len(lines) == 3  # "Split filters:" + 2 filter lines
-    assert "(filter_a < 1.5)" in result
-    assert "(filter_b < 2.5)" in result
+    assert "(filter_a <= 1.5)" in result
+    assert "(filter_b <= 2.5)" in result
 
 
 def test_split_str_child_split_simple():
@@ -75,7 +75,7 @@ def test_split_str_child_split_simple():
 
     # Child should show AND relationship
     assert "Split filters:" in result
-    assert "(filter_a < 1.5) and (filter_b > 2.5)" in result
+    assert "(filter_a <= 1.5) and (filter_b >= 2.5)" in result
 
 
 def test_split_str_child_split_with_or_parents():
@@ -110,8 +110,8 @@ def test_split_str_child_split_with_or_parents():
     lines = result.strip().split("\n")
     # Should have "Split filters:" + 2 conjunctions
     assert len(lines) == 3
-    assert "(filter_a1 < 1.5) and (filter_b > 2.5)" in result
-    assert "(filter_a2 < 3.5) and (filter_b > 2.5)" in result
+    assert "(filter_a1 <= 1.5) and (filter_b >= 2.5)" in result
+    assert "(filter_a2 <= 3.5) and (filter_b >= 2.5)" in result
 
 
 def test_split_str_multiple_parent_pairs():
@@ -147,8 +147,8 @@ def test_split_str_multiple_parent_pairs():
     # Should show both combinations (OR relationship between parent pairs)
     lines = result.strip().split("\n")
     assert len(lines) == 3  # "Split filters:" + 2 conjunctions
-    assert "(filter_a < 1.0) and (filter_b > 2.0)" in result
-    assert "(filter_c < 3.0) and (filter_b > 2.0)" in result
+    assert "(filter_a <= 1.0) and (filter_b >= 2.0)" in result
+    assert "(filter_c <= 3.0) and (filter_b >= 2.0)" in result
 
 
 def test_split_str_nested_parents():
@@ -190,7 +190,7 @@ def test_split_str_nested_parents():
 
     # Should expand to: A AND B AND C
     assert "Split filters:" in result
-    assert "(filter_a < 1.0) and (filter_b > 2.0) and (filter_c < 3.0)" in result
+    assert "(filter_a <= 1.0) and (filter_b >= 2.0) and (filter_c <= 3.0)" in result
 
 
 def test_split_str_with_prepare_splits():
