@@ -8,11 +8,11 @@ from ifera.optionalpha import Split, prepare_splits
 
 
 def test_split_score_initialization():
-    """Test that Split objects are initialized with score = -inf."""
+    """Test that Split objects are initialized with score = None."""
     mask = torch.tensor([True, False, True], dtype=torch.bool)
     split = Split(mask=mask, filters=[], parents=[])
 
-    assert split.score == float("-inf")
+    assert split.score is None
 
 
 def test_prepare_splits_with_score_func():
@@ -47,9 +47,9 @@ def test_prepare_splits_with_score_func():
         score_func=simple_score_func,
     )
 
-    # Verify that all splits have been scored (not -inf)
+    # Verify that all splits have been scored (not None)
     for split in splits:
-        assert split.score != float("-inf"), "Split should have been scored"
+        assert split.score is not None, "Split should have been scored"
         assert isinstance(split.score, float), "Score should be a float"
 
 
@@ -148,14 +148,19 @@ def test_prepare_splits_keep_best_n_filters_splits():
 
         # Verify that top_splits are sorted by score (descending)
         scores = [split.score for split in top_splits]
-        assert scores == sorted(scores, reverse=True), "Splits should be sorted by score"
+        assert all(s is not None for s in scores), "All splits should have scores"
+        scores_typed = [s for s in scores if s is not None]  # Type guard
+        assert scores_typed == sorted(scores_typed, reverse=True), "Splits should be sorted by score"
 
         # Verify that all top_splits have higher scores than any non-selected split
-        top_min_score = min(scores)
-        all_scores = sorted([split.score for split in all_splits], reverse=True)
+        top_min_score = min(scores_typed)
+        all_scores = [split.score for split in all_splits]
+        assert all(s is not None for s in all_scores), "All splits should have scores"
+        all_scores_typed = [s for s in all_scores if s is not None]  # Type guard
+        all_scores_sorted = sorted(all_scores_typed, reverse=True)
         # The top_n scores from all_splits should match top_splits scores
-        expected_top_scores = all_scores[:keep_n]
-        assert set(scores) == set(expected_top_scores), "Should keep the top scoring splits"
+        expected_top_scores = all_scores_sorted[:keep_n]
+        assert set(scores_typed) == set(expected_top_scores), "Should keep the top scoring splits"
 
 
 def test_prepare_splits_keep_best_n_with_depth_2():
@@ -206,7 +211,7 @@ def test_prepare_splits_keep_best_n_with_depth_2():
 
     # All splits should have scores
     for split in splits:
-        assert split.score != float("-inf"), "Split should have been scored"
+        assert split.score is not None, "Split should have been scored"
 
 
 def test_prepare_splits_scoring_with_empty_masks():
@@ -316,7 +321,9 @@ def test_prepare_splits_score_ordering():
 
     # Verify splits are ordered by score descending
     scores = [split.score for split in splits]
-    assert scores == sorted(scores, reverse=True), "Splits should be ordered by score descending"
+    assert all(s is not None for s in scores), "All splits should have scores"
+    scores_typed = [s for s in scores if s is not None]  # Type guard
+    assert scores_typed == sorted(scores_typed, reverse=True), "Splits should be ordered by score descending"
 
 
 def test_prepare_splits_early_exit_with_keep_best_n():
@@ -367,7 +374,7 @@ def test_prepare_splits_early_exit_with_keep_best_n():
 
     # Check that no errors occurred
     for split in splits:
-        assert split.score != float("-inf"), "Split should have been scored"
+        assert split.score is not None, "Split should have been scored"
 
 
 def test_score_func_receives_correct_parameters():
