@@ -717,6 +717,50 @@ class Split:
         # Empty split (shouldn't happen, but handle gracefully)
         return []
 
+    def _merge_conjunction_terms(
+        self, conjunction: list[tuple[str, str, float]]
+    ) -> list[tuple[str, str, float]]:
+        """
+        Merge terms with the same filter and direction within a conjunction.
+
+        For left direction (<), keeps the lower threshold.
+        For right direction (>), keeps the higher threshold.
+
+        Parameters
+        ----------
+        conjunction : list[tuple[str, str, float]]
+            List of (filter_name, operator, threshold) tuples
+
+        Returns
+        -------
+        list[tuple[str, str, float]]
+            Merged list of filter terms
+        """
+        if len(conjunction) <= 1:
+            return conjunction
+
+        # Group terms by (filter_name, operator)
+        # Key: (filter_name, operator), Value: list of thresholds
+        groups: dict[tuple[str, str], list[float]] = {}
+        for filter_name, operator, threshold in conjunction:
+            key = (filter_name, operator)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(threshold)
+
+        # Merge terms: for each group, select the appropriate threshold
+        merged = []
+        for (filter_name, operator), thresholds in groups.items():
+            if operator == "<":
+                # For left direction, use the minimum (most restrictive for <)
+                selected_threshold = min(thresholds)
+            else:  # operator == ">"
+                # For right direction, use the maximum (most restrictive for >)
+                selected_threshold = max(thresholds)
+            merged.append((filter_name, operator, selected_threshold))
+
+        return merged
+
     def __str__(self) -> str:
         """
         Return a string representation of the split in DNF.
@@ -747,9 +791,12 @@ class Split:
 
         lines = [header]
         for conjunction in dnf_terms:
+            # Merge terms with the same filter and direction
+            merged_conjunction = self._merge_conjunction_terms(conjunction)
+
             # Format each filter in the conjunction
             filter_strs = []
-            for filter_name, operator, threshold in conjunction:
+            for filter_name, operator, threshold in merged_conjunction:
                 filter_strs.append(f"({filter_name} {operator} {threshold})")
 
             # Join with " and "
