@@ -479,6 +479,8 @@ def parse_simple_indicator(file_name: str) -> pd.DataFrame | None:
             html = f.read()
 
         df = parse_filter_log(html)
+        # Fill empty descriptions with 0
+        df["description"] = df["description"].replace("", "0")
         df["indicator"] = df["description"].astype(float)
 
         # Eliminate duplicate dates
@@ -488,6 +490,34 @@ def parse_simple_indicator(file_name: str) -> pd.DataFrame | None:
         return None
 
     result: pd.DataFrame = df[["date", "indicator"]]  # type: ignore
+    return result
+
+
+def parse_moving_average(file_name: str) -> pd.DataFrame | None:
+    try:
+        with open(file_name, "r") as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_moving_average(description):
+        match = re.search(r'Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)', description)
+        if match:
+            price = float(match.group(1).replace(',', ''))
+            ma = float(match.group(2).replace(',', ''))
+            return int(price > ma)
+        else:
+            return None
+
+    df["moving_average"] = df["description"].apply(_parse_moving_average)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "moving_average")
+
+    result: pd.DataFrame = df[["date", "moving_average"]]  # type: ignore
     return result
 
 
@@ -517,6 +547,146 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
     df = _check_and_eliminate_duplicates(df, "range_width")
 
     result: pd.DataFrame = df[["date", "range_width"]]  # type: ignore
+    return result
+
+
+def parse_change_percent(prefix: str) -> pd.DataFrame | None:
+    file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_PERCENT.txt"
+    try:
+        with open(file_name, "r") as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_change_percent(description):
+        match = re.search(r'Below min: (\-?[\d,]+\.\d+)', description)
+        if match:
+            val = float(match.group(1).replace(',', ''))
+            return val
+        else:
+            return None
+
+    df["change_percent"] = df["description"].apply(_parse_change_percent)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "change_percent")
+
+    result: pd.DataFrame = df[["date", "change_percent"]]  # type: ignore
+    return result
+
+
+def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
+    file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_STDEV.txt"
+    try:
+        with open(file_name, "r") as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_change_stdev(description):
+        match = re.search(r'Change Std Devs: (\-?[\d,]+\.\d+)', description)
+        if match:
+            val = float(match.group(1).replace(',', ''))
+            return val
+        else:
+            return None
+
+    df["change_stdev"] = df["description"].apply(_parse_change_stdev)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "change_stdev")
+
+    result: pd.DataFrame = df[["date", "change_stdev"]]  # type: ignore
+    return result
+
+
+def parse_gap(prefix: str) -> pd.DataFrame | None:
+    file_name = f"{FILTERS_FOLDER}{prefix}-GAP.txt"
+    try:
+        with open(file_name, "r") as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_gap(description):
+        match = re.search(r'Gap: (\-?[\d,]+\.\d+)', description)
+        if match:
+            val = float(match.group(1).replace(',', ''))
+            return val
+        else:
+            return None
+
+    df["gap"] = df["description"].apply(_parse_gap)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "gap")
+
+    result: pd.DataFrame = df[["date", "gap"]]  # type: ignore
+    return result
+
+
+def parse_open_change(prefix: str) -> pd.DataFrame | None:
+    file_name = f"{FILTERS_FOLDER}{prefix}-OPEN_CHANGE.txt"
+    try:
+        with open(file_name, "r") as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_open_change(description):
+        match = re.search(r'Open Chg %: (\-?[\d,]+\.\d+)', description)
+        if match:
+            val = float(match.group(1).replace(',', ''))
+            return val
+        else:
+            return None
+
+    df["open_change"] = df["description"].apply(_parse_open_change)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "open_change")
+
+    result: pd.DataFrame = df[["date", "open_change"]]  # type: ignore
+    return result
+
+
+def parse_vixc(prefix: str) -> pd.DataFrame | None:
+    file_name = f"{FILTERS_FOLDER}{prefix}-VIXC.txt"
+    try:
+        with open(file_name, "r") as f:
+            html = f.read()
+
+        df = parse_filter_log(html)
+
+    except FileNotFoundError:
+        return None
+
+    def _parse_vixc(description):
+        match = re.search(r'VIX Change: (\-?[\d,]+\.\d+)', description)
+        if match:
+            val = float(match.group(1).replace(',', ''))
+            return val
+        else:
+            return None
+
+    df["vixc"] = df["description"].apply(_parse_vixc)
+
+    # Eliminate duplicate dates
+    df = _check_and_eliminate_duplicates(df, "vixc")
+
+    result: pd.DataFrame = df[["date", "vixc"]]  # type: ignore
     return result
 
 
@@ -551,10 +721,6 @@ def get_filters(prefix: str) -> pd.DataFrame:
     """
     dfs = []
 
-    range_df = parse_range_with(prefix)
-    if range_df is not None:
-        dfs.append(range_df)
-
     simple_filters = [
         "FIRST_BO",
         "SKIP_CPI",
@@ -575,17 +741,80 @@ def get_filters(prefix: str) -> pd.DataFrame:
             filter_df = filter_df.rename(columns={"filter": f"{filter_name.lower()}"})
             dfs.append(filter_df)
 
-    indicator_names = ["ADX_14"]
+    range_df = parse_range_with(prefix)
+    if range_df is not None:
+        dfs.append(range_df)
+
+    change_percent_df = parse_change_percent(prefix)
+    if change_percent_df is not None:
+        dfs.append(change_percent_df)
+        
+    change_stdev_df = parse_change_stdev(prefix)
+    if change_stdev_df is not None:
+        dfs.append(change_stdev_df)
+
+    gap_df = parse_gap(prefix)
+    if gap_df is not None:
+        dfs.append(gap_df)
+
+    open_change_df = parse_open_change(prefix)
+    if open_change_df is not None:
+        dfs.append(open_change_df)
+
+    vixc_df = parse_vixc(prefix)
+    if vixc_df is not None:
+        dfs.append(vixc_df)
+
+    indicator_names = [
+        "ADX_14",
+        "CCI_20",
+        "CMO_9",
+        "IVR",
+        "MACD_12_26_9",
+        "MOMENTUM_10",
+        "RSI_14",
+        "STOCH_14_3_3",
+        "STOCH_RSI_14_14_3_3",
+        "VIX",
+    ]
+   
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
+        indicator_df = parse_simple_indicator(
+            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
+        )
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
+            indicator_df = indicator_df.rename(
+                columns={"indicator": f"{indicator_name.lower()}"}
+            )
             dfs.append(indicator_df)
+
+    moving_averages = [
+        "SMA_10",
+        "SMA_20",
+        "SMA_30",
+        "SMA_50",
+        "SMA_100",
+        "SMA_200",
+        "EMA_10",
+        "EMA_20",
+        "EMA_30",
+        "EMA_50",
+        "EMA_100",
+        "EMA_200",
+    ]
+
+    for ma in moving_averages:
+        ma_df = parse_moving_average(f"{FILTERS_FOLDER}{prefix}-{ma}.txt")
+        if ma_df is not None:
+            ma_df = ma_df.rename(columns={"moving_average": f"{ma.lower()}"})
+            dfs.append(ma_df)
 
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
+        df_merged = reduce(
+            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
+        )
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -625,6 +854,7 @@ class Split:
     """
 
     score: float | None
+    max_conjunctions_print = 3
 
     def __init__(
         self,
@@ -821,16 +1051,26 @@ class Split:
             # Format each filter in the conjunction
             filter_strs = []
             for _, filter_name, operator, threshold in sorted_conjunction:
-                filter_strs.append(f"({filter_name} {operator} {threshold})")
+                filter_strs.append(f"({filter_name} {operator} {threshold:.4g})")
 
             # Join with " & " for compactness
             conjunction_str = " & ".join(filter_strs)
             lines.append(f" - {conjunction_str}")
 
+            if len(seen_conjunctions) >= self.max_conjunctions_print:
+                break
+
+        if len(seen_conjunctions) > self.max_conjunctions_print:
+            lines.append(
+                f" - ... ({len(seen_conjunctions) - self.max_conjunctions_print} more)"
+            )
+
         return "\n".join(lines)
 
 
-def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
+def _align_filters_with_trades(
+    filters_df: pd.DataFrame, trades_df: pd.DataFrame
+) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -899,7 +1139,9 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (
+        spread_width * 100 - trades_df["risk"]
+    ) / trades_df["risk"]
 
     # Add premium column
     filters_df["premium"] = spread_width * 100 - trades_df["risk"]
@@ -1081,7 +1323,9 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Convert filter column to tensor for masking (original values)
-    col_tensor_original = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
+    col_tensor_original = torch.tensor(
+        filters_df[col_name].values, dtype=dtype, device=device
+    )
 
     # Check if this filter has a granularity
     granularity = filter_granularities.get(col_name)
@@ -1092,8 +1336,12 @@ def _create_splits_for_filter(
     if col_name not in right_only_filters:
         if granularity is not None:
             # Round values UP to nearest granularity multiple for left direction
-            rounded_vals = [math.ceil(v / granularity) * granularity for v in filters_df[col_name]]
-            unique_vals_left = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
+            rounded_vals = [
+                math.ceil(v / granularity) * granularity for v in filters_df[col_name]
+            ]
+            unique_vals_left = torch.tensor(
+                sorted(set(rounded_vals)), dtype=dtype, device=device
+            )
             col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
         else:
             # Use original unique values
@@ -1116,7 +1364,9 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold DOWN (opposite of left rounding) to nearest granularity
-                    threshold = math.floor(threshold_avg.item() / granularity) * granularity
+                    threshold = (
+                        math.floor(threshold_avg.item() / granularity) * granularity
+                    )
                 else:
                     threshold = threshold_avg.item()
 
@@ -1134,8 +1384,12 @@ def _create_splits_for_filter(
     if col_name not in left_only_filters:
         if granularity is not None:
             # Round values DOWN to nearest granularity multiple for right direction
-            rounded_vals = [math.floor(v / granularity) * granularity for v in filters_df[col_name]]
-            unique_vals_right = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
+            rounded_vals = [
+                math.floor(v / granularity) * granularity for v in filters_df[col_name]
+            ]
+            unique_vals_right = torch.tensor(
+                sorted(set(rounded_vals)), dtype=dtype, device=device
+            )
             col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
         else:
             # Use original unique values
@@ -1158,7 +1412,9 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold UP (opposite of right rounding) to nearest granularity
-                    threshold = math.ceil(threshold_avg.item() / granularity) * granularity
+                    threshold = (
+                        math.ceil(threshold_avg.item() / granularity) * granularity
+                    )
                 else:
                     threshold = threshold_avg.item()
 
@@ -1175,6 +1431,7 @@ def _create_splits_for_filter(
     return splits
 
 
+@torch.compile(mode="max-autotune")
 def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[Split]:
     """
     Merge splits with identical masks.
@@ -1208,6 +1465,9 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
     merged_splits: list[Split] = []
     processed = torch.zeros(n_splits, dtype=torch.bool, device=device)
 
+    all_masks_float_T = all_masks_float.T  # Shape: (n_samples, n_splits)
+    all_masks_float_inv_T = (1 - all_masks_float).T  # Shape: (n_samples, n_splits)
+
     for i in range(n_splits):
         if processed[i]:
             continue
@@ -1219,8 +1479,8 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
 
         # Compute match counts for mask i against all masks
         # match_count = number of positions where masks match
-        match_counts_i = torch.matmul(mask_i, all_masks_float.T) + torch.matmul(
-            1 - mask_i, (1 - all_masks_float).T
+        match_counts_i = torch.matmul(mask_i, all_masks_float_T) + torch.matmul(
+            1 - mask_i, all_masks_float_inv_T
         )
         match_counts_i = match_counts_i.squeeze(0)  # Shape: (n_splits,)
 
@@ -1402,7 +1662,9 @@ def _generate_child_splits(
     return child_splits
 
 
-def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
+def _remove_redundant_splits(
+    new_splits: list[Split], old_splits: list[Split]
+) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -1493,7 +1755,7 @@ def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
         List of the top n splits sorted by score (descending)
     """
     if len(splits) <= keep_best_n:
-        return splits
+        return splits.copy()
 
     # Sort splits by score in descending order (None values are treated as -inf)
     sorted_splits = sorted(
@@ -1657,7 +1919,9 @@ def prepare_splits(
         raise ValueError("score_func must be provided when keep_best_n is not None")
 
     if verbose not in ["no", "best", "all"]:
-        raise ValueError(f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'")
+        raise ValueError(
+            f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'"
+        )
 
     if verbose == "best" and score_func is None:
         raise ValueError("verbose='best' requires score_func to be not None")
@@ -1669,7 +1933,7 @@ def prepare_splits(
     # Add default granularities for computed columns
     default_granularities = {
         "reward_per_risk": 0.001,
-        "premium": 0.01,
+        "premium": 1.0,
         "is_monday": 1,
         "is_tuesday": 1,
         "is_wednesday": 1,
@@ -1713,6 +1977,7 @@ def prepare_splits(
             filter_granularities,
         )
         depth_1_splits.extend(filter_splits)
+    print(f"Generated {len(depth_1_splits)} depth 1 splits.")
 
     # Merge splits with identical masks
     depth_1_splits = _merge_identical_splits(depth_1_splits, device)
@@ -1747,7 +2012,9 @@ def prepare_splits(
         previous_depth_splits = all_splits
 
         # Pre-stack masks for depth_1_splits to avoid redundant stacking in each iteration
-        depth_1_masks_stacked = torch.stack([split.mask for split in depth_1_splits], dim=0)
+        depth_1_masks_stacked = torch.stack(
+            [split.mask for split in depth_1_splits], dim=0
+        )
 
         for depth in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
@@ -1766,6 +2033,7 @@ def prepare_splits(
                 depth_1_splits,
                 exclusion_mask,
             )
+            print(f"Generated {len(new_splits)} depth {depth} splits.")
 
             # Remove new splits that have identical masks to any existing splits
             new_splits = _remove_redundant_splits(new_splits, all_splits)
@@ -1818,6 +2086,8 @@ def prepare_splits(
                 _print_splits_for_depth(depth, all_splits, score_func)
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
+    X = torch.tensor(
+        filters_df.values, dtype=dtype, device=device
+    )  # pylint: disable=invalid-name
 
     return X, y, all_splits
