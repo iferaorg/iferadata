@@ -1334,7 +1334,50 @@ def _create_splits_for_filter(
 
 
 @torch.compile(mode="max-autotune")
-def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[Split]:
+def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
+    """
+    Find groups of identical masks using pure tensor operations.
+
+    Parameters
+    ----------
+    masks : torch.Tensor
+        2D boolean tensor of shape (n_splits, n_samples)
+
+    Returns
+    -------
+    torch.Tensor
+        1D integer tensor of shape (n_splits,) where each value is the index
+        of the first occurrence of that mask pattern. Splits with the same
+        value should be merged together.
+    """
+    n_splits = masks.shape[0]
+    n_samples = masks.shape[1]
+
+    # Convert to float for matrix operations
+    masks_float = masks.float()
+
+    # Compute pairwise equality matrix (n_splits x n_splits)
+    # Two masks are equal if they match at all positions
+    match_counts = torch.matmul(masks_float, masks_float.T) + torch.matmul(
+        1 - masks_float, (1 - masks_float).T
+    )
+
+    # Create boolean equality matrix
+    masks_equal = match_counts == n_samples
+
+    # For each mask, find the index of its first occurrence
+    # This creates a group identifier where identical masks get the same index
+    group_ids = torch.zeros(n_splits, dtype=torch.long, device=masks.device)
+
+    for i in range(n_splits):
+        # Find the first mask that matches mask i (including itself)
+        first_match = masks_equal[i].nonzero(as_tuple=True)[0][0]
+        group_ids[i] = first_match
+
+    return group_ids
+
+
+def _merge_identical_splits(splits: list[Split]) -> list[Split]:
     """
     Merge splits with identical masks.
 
@@ -1342,8 +1385,6 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
     ----------
     splits : list[Split]
         List of Split objects
-    device : torch.device
-        PyTorch device for tensors
 
     Returns
     -------
@@ -1356,54 +1397,79 @@ def _merge_identical_splits(splits: list[Split], device: torch.device) -> list[S
     # Stack all masks into a 2D tensor (n_splits x n_samples)
     all_masks = torch.stack([split.mask for split in splits], dim=0)
 
-    # Convert to float for matrix operations
-    all_masks_float = all_masks.float()
-
-    # Compute pairwise equality of masks
-    n_splits = len(splits)
-    n_samples = all_masks.shape[1]
-
     # Find groups of identical masks
+    group_ids = _find_identical_mask_groups(all_masks)
+
+    # Get unique group ids and build merged splits
+    unique_groups = torch.unique(group_ids, sorted=True)
     merged_splits: list[Split] = []
-    processed = torch.zeros(n_splits, dtype=torch.bool, device=device)
 
-    all_masks_float_T = all_masks_float.T  # Shape: (n_samples, n_splits)
-    all_masks_float_inv_T = (1 - all_masks_float).T  # Shape: (n_samples, n_splits)
+    for group_id in unique_groups:
+        group_id_int = int(group_id.item())
+        # Find all splits in this group
+        group_mask = group_ids == group_id
+        group_indices = group_mask.nonzero(as_tuple=True)[0]
 
-    for i in range(n_splits):
-        if processed[i]:
-            continue
-
-        # Find all splits with identical masks to split i
-        # Compare mask i with all remaining unprocessed masks
-        # Two masks are identical if they match at all positions
-        mask_i = all_masks_float[i : i + 1, :]  # Shape: (1, n_samples)
-
-        # Compute match counts for mask i against all masks
-        # match_count = number of positions where masks match
-        match_counts_i = torch.matmul(mask_i, all_masks_float_T) + torch.matmul(
-            1 - mask_i, all_masks_float_inv_T
-        )
-        match_counts_i = match_counts_i.squeeze(0)  # Shape: (n_splits,)
-
-        # Find identical masks
-        identical_indices = (match_counts_i == n_samples).nonzero(as_tuple=True)[0]
-
-        # Merge filters and parents from all identical splits
+        # Merge filters and parents from all splits in the group
         merged_filters = []
         merged_parents = []
-        for idx in identical_indices:
+        for idx in group_indices:
             idx_int = int(idx.item())
             merged_filters.extend(splits[idx_int].filters)
             merged_parents.extend(splits[idx_int].parents)
-            processed[idx] = True
 
-        # Create a merged split with all filters and parents
+        # Create merged split using the mask from the first split in the group
         merged_splits.append(
-            Split(mask=splits[i].mask, filters=merged_filters, parents=merged_parents)
+            Split(mask=splits[group_id_int].mask, filters=merged_filters, parents=merged_parents)
         )
 
     return merged_splits
+
+
+@torch.compile(mode="max-autotune")
+def _compute_exclusion_mask_tensor(
+    masks_a: torch.Tensor,
+    masks_b: torch.Tensor,
+    min_samples: int,
+) -> torch.Tensor:
+    """
+    Compute exclusion mask between two sets of masks (pure tensor operation).
+
+    Parameters
+    ----------
+    masks_a : torch.Tensor
+        2D boolean tensor of shape (n_set_a, n_samples)
+    masks_b : torch.Tensor
+        2D boolean tensor of shape (n_set_b, n_samples)
+    min_samples : int
+        Minimum number of samples required in the intersection
+
+    Returns
+    -------
+    torch.Tensor
+        2-D bool tensor (n_set_a x n_set_b) indicating mutual exclusion
+    """
+    masks_a_float = masks_a.float()
+    masks_b_float = masks_b.float()
+
+    # Compute intersection counts between the two sets
+    intersection_counts = torch.matmul(masks_a_float, masks_b_float.T)
+
+    # Rule 1: Insufficient intersection means mutually exclusive
+    has_sufficient_intersection = intersection_counts >= min_samples
+    rule1_mask = ~has_sufficient_intersection
+
+    # Rule 2: Subset relationships
+    mask_sums_a = masks_a_float.sum(dim=1)
+    mask_sums_b = masks_b_float.sum(dim=1)
+    a_subset_of_b = intersection_counts == mask_sums_a.unsqueeze(1)
+    b_subset_of_a = intersection_counts == mask_sums_b.unsqueeze(0)
+    rule2_mask = a_subset_of_b | b_subset_of_a
+
+    # Combine rules
+    exclusion_mask = rule1_mask | rule2_mask
+
+    return exclusion_mask
 
 
 def _calculate_exclusion_mask(
@@ -1455,27 +1521,39 @@ def _calculate_exclusion_mask(
     else:
         masks_b = masks_b_stacked
 
-    masks_a_float = masks_a.float()
-    masks_b_float = masks_b.float()
+    # Use compiled tensor function
+    return _compute_exclusion_mask_tensor(masks_a, masks_b, min_samples)
 
-    # Compute intersection counts between the two sets
-    intersection_counts = torch.matmul(masks_a_float, masks_b_float.T)
 
-    # Rule 1: Insufficient intersection means mutually exclusive
-    has_sufficient_intersection = intersection_counts >= min_samples
-    rule1_mask = ~has_sufficient_intersection
+@torch.compile(mode="max-autotune")
+def _compute_child_masks_tensor(
+    masks_a: torch.Tensor,
+    masks_b: torch.Tensor,
+    valid_pairs: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute child masks for valid parent pairs (pure tensor operation).
 
-    # Rule 2: Subset relationships
-    mask_sums_a = masks_a_float.sum(dim=1)
-    mask_sums_b = masks_b_float.sum(dim=1)
-    a_subset_of_b = intersection_counts == mask_sums_a.unsqueeze(1)
-    b_subset_of_a = intersection_counts == mask_sums_b.unsqueeze(0)
-    rule2_mask = a_subset_of_b | b_subset_of_a
+    Parameters
+    ----------
+    masks_a : torch.Tensor
+        2D boolean tensor of shape (n_set_a, n_samples)
+    masks_b : torch.Tensor
+        2D boolean tensor of shape (n_set_b, n_samples)
+    valid_pairs : torch.Tensor
+        2D tensor of shape (n_pairs, 2) containing indices of valid parent pairs
 
-    # Combine rules
-    exclusion_mask = rule1_mask | rule2_mask
+    Returns
+    -------
+    torch.Tensor
+        2D boolean tensor of shape (n_pairs, n_samples) containing child masks
+    """
+    # Extract parent masks for each valid pair and compute AND
+    parent_a_masks = masks_a[valid_pairs[:, 0]]
+    parent_b_masks = masks_b[valid_pairs[:, 1]]
+    child_masks = parent_a_masks & parent_b_masks
 
-    return exclusion_mask
+    return child_masks
 
 
 def _generate_child_splits(
@@ -1508,60 +1586,129 @@ def _generate_child_splits(
     """
     n_set_a = len(parent_set_a)
     n_set_b = len(parent_set_b)
-    child_splits = []
+
+    if n_set_a == 0 or n_set_b == 0:
+        return []
 
     # Check if the two sets are the same (by object identity)
     sets_are_same = parent_set_a is parent_set_b
 
-    # Track parent pairs that have been used to avoid duplicates
-    # Use frozenset of Split objects (which now have __eq__ and __hash__ based on id)
-    used_pairs: set[frozenset[Split]] = set()
-
+    # Find valid (non-exclusive) pairs
     if sets_are_same:
         # Same parent sets: only check upper triangle to avoid duplicates
-        for i in range(n_set_a):
-            for j in range(i + 1, n_set_b):
-                if not exclusion_mask[i, j]:
-                    # Create child split by combining masks with logical AND
-                    child_mask = parent_set_a[i].mask & parent_set_b[j].mask
-                    # Child splits have empty filters list and parent Split references
-                    child_splits.append(
-                        Split(
-                            mask=child_mask,
-                            filters=[],
-                            parents=[[parent_set_a[i], parent_set_b[j]]],
-                        )
-                    )
+        # Create indices for upper triangle
+        i_indices, j_indices = torch.triu_indices(
+            n_set_a, n_set_b, offset=1, device=exclusion_mask.device
+        )
+        # Filter by exclusion mask
+        upper_triangle_mask = ~exclusion_mask[i_indices, j_indices]
+        valid_i = i_indices[upper_triangle_mask]
+        valid_j = j_indices[upper_triangle_mask]
     else:
         # Different parent sets: check all combinations
-        # Track pairs to avoid generating both (a, b) and (b, a) when both are in sets
-        for i in range(n_set_a):
-            for j in range(n_set_b):
-                if not exclusion_mask[i, j]:
-                    parent_a = parent_set_a[i]
-                    parent_b = parent_set_b[j]
+        # Find all valid pairs
+        valid_pairs_mask = ~exclusion_mask
+        valid_i, valid_j = valid_pairs_mask.nonzero(as_tuple=True)
 
-                    # Create a pair identifier using frozenset
-                    pair = frozenset([parent_a, parent_b])
+        # Track parent pairs to avoid duplicates
+        # Use frozenset of Split objects for deduplication
+        unique_pairs = {}
+        filtered_i = []
+        filtered_j = []
 
-                    # Skip if this pair was already used
-                    if pair in used_pairs:
-                        continue
+        for idx in range(len(valid_i)):
+            i = int(valid_i[idx].item())
+            j = int(valid_j[idx].item())
+            parent_a = parent_set_a[i]
+            parent_b = parent_set_b[j]
 
-                    used_pairs.add(pair)
+            # Create a pair identifier using frozenset
+            pair = frozenset([id(parent_a), id(parent_b)])
 
-                    # Create child split by combining masks with logical AND
-                    child_mask = parent_a.mask & parent_b.mask
-                    # Child splits have empty filters list and parent Split references
-                    child_splits.append(
-                        Split(
-                            mask=child_mask,
-                            filters=[],
-                            parents=[[parent_a, parent_b]],
-                        )
-                    )
+            # Skip if this pair was already used
+            if pair in unique_pairs:
+                continue
+
+            unique_pairs[pair] = True
+            filtered_i.append(i)
+            filtered_j.append(j)
+
+        # Convert back to tensors
+        if len(filtered_i) > 0:
+            valid_i = torch.tensor(filtered_i, dtype=torch.long, device=exclusion_mask.device)
+            valid_j = torch.tensor(filtered_j, dtype=torch.long, device=exclusion_mask.device)
+        else:
+            valid_i = torch.tensor([], dtype=torch.long, device=exclusion_mask.device)
+            valid_j = torch.tensor([], dtype=torch.long, device=exclusion_mask.device)
+
+    # If no valid pairs, return empty list
+    if len(valid_i) == 0:
+        return []
+
+    # Stack parent masks
+    masks_a = torch.stack([split.mask for split in parent_set_a], dim=0)
+    masks_b = torch.stack([split.mask for split in parent_set_b], dim=0)
+
+    # Create tensor of valid pairs
+    valid_pairs = torch.stack([valid_i, valid_j], dim=1)
+
+    # Compute child masks using compiled function
+    child_masks = _compute_child_masks_tensor(masks_a, masks_b, valid_pairs)
+
+    # Create Split objects
+    child_splits = []
+    for idx in range(len(valid_i)):
+        i = int(valid_i[idx].item())
+        j = int(valid_j[idx].item())
+        child_splits.append(
+            Split(
+                mask=child_masks[idx],
+                filters=[],
+                parents=[[parent_set_a[i], parent_set_b[j]]],
+            )
+        )
 
     return child_splits
+
+
+@torch.compile(mode="max-autotune")
+def _find_redundant_mask_indices(
+    new_masks: torch.Tensor,
+    old_masks: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Find indices of new masks that are redundant (identical to old masks).
+
+    Parameters
+    ----------
+    new_masks : torch.Tensor
+        2D boolean tensor of shape (n_new, n_samples)
+    old_masks : torch.Tensor
+        2D boolean tensor of shape (n_old, n_samples)
+
+    Returns
+    -------
+    torch.Tensor
+        1D boolean tensor of shape (n_new,) where True means the mask should be kept
+    """
+    # Convert to float for matrix operations
+    new_masks_float = new_masks.float()
+    old_masks_float = old_masks.float()
+
+    n_samples = new_masks.shape[1]
+
+    # Compute pairwise equality: new_masks[i] == old_masks[j]
+    # Two masks are equal if they match at all positions
+    match_counts = torch.matmul(new_masks_float, old_masks_float.T) + torch.matmul(
+        1 - new_masks_float, (1 - old_masks_float).T
+    )
+    mask_equality = match_counts == n_samples
+
+    # Find new splits that have no matching old split
+    has_match = mask_equality.any(dim=1)
+    keep_mask = ~has_match
+
+    return keep_mask
 
 
 def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
@@ -1587,22 +1734,9 @@ def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -
     new_masks = torch.stack([split.mask for split in new_splits], dim=0)
     old_masks = torch.stack([split.mask for split in old_splits], dim=0)
 
-    # Convert to float for matrix operations
-    new_masks_float = new_masks.float()
-    old_masks_float = old_masks.float()
-
-    n_samples = new_masks.shape[1]
-
-    # Compute pairwise equality: new_masks[i] == old_masks[j]
-    # Two masks are equal if they match at all positions
-    match_counts = torch.matmul(new_masks_float, old_masks_float.T) + torch.matmul(
-        1 - new_masks_float, (1 - old_masks_float).T
-    )
-    mask_equality = match_counts == n_samples
-
-    # Find new splits that have no matching old split
-    has_match = mask_equality.any(dim=1)
-    keep_indices = (~has_match).nonzero(as_tuple=True)[0]
+    # Use compiled function to find which splits to keep
+    keep_mask = _find_redundant_mask_indices(new_masks, old_masks)
+    keep_indices = keep_mask.nonzero(as_tuple=True)[0]
 
     # Return only new splits that don't match any old split
     return [new_splits[i] for i in keep_indices.tolist()]
@@ -1878,7 +2012,7 @@ def prepare_splits(
     print(f"Generated {len(depth_1_splits)} depth 1 splits.")
 
     # Merge splits with identical masks
-    depth_1_splits = _merge_identical_splits(depth_1_splits, device)
+    depth_1_splits = _merge_identical_splits(depth_1_splits)
 
     # Score depth_1_splits if score_func is provided
     if score_func is not None:
@@ -1939,7 +2073,7 @@ def prepare_splits(
                 break
 
             # Merge identical splits among new splits
-            new_splits = _merge_identical_splits(new_splits, device)
+            new_splits = _merge_identical_splits(new_splits)
 
             # Exit early if no new splits remain
             if len(new_splits) == 0:
