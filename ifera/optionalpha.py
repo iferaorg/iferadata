@@ -412,6 +412,64 @@ def _extract_dollar_amount(cell) -> float:
 FILTERS_FOLDER = "data/results/option_alpha/filters/"
 
 
+def _read_filter_file(file_name: str) -> pd.DataFrame | None:
+    """
+    Read and parse a filter log file.
+
+    Parameters
+    ----------
+    file_name : str
+        Path to the filter log file
+
+    Returns
+    -------
+    pd.DataFrame | None
+        Parsed filter log DataFrame, or None if file not found
+    """
+    try:
+        with open(file_name, "r", encoding="utf-8") as f:
+            html = f.read()
+        return parse_filter_log(html)
+    except FileNotFoundError:
+        return None
+
+
+def _parse_description_with_regex(
+    df: pd.DataFrame, column_name: str, regex_pattern: str, parse_func=None
+) -> pd.DataFrame:
+    """
+    Parse description column using a regex pattern and create a new column.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame with a 'description' column
+    column_name : str
+        Name of the new column to create
+    regex_pattern : str
+        Regex pattern to match in the description
+    parse_func : callable, optional
+        Function to parse the matched value. If None, extracts first group as float.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with the new column added and duplicates eliminated
+    """
+
+    def default_parse(description):
+        match = re.search(regex_pattern, description)
+        if match:
+            val = float(match.group(1).replace(",", ""))
+            return val
+        return None
+
+    parser = parse_func if parse_func is not None else default_parse
+    df[column_name] = df["description"].apply(parser)
+    df = _check_and_eliminate_duplicates(df, column_name)
+    return df[["date", column_name]]  # type: ignore
+
+
 def _check_and_eliminate_duplicates(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
     """
     Check for duplicate dates and eliminate them if values are the same.
@@ -456,80 +514,51 @@ def _check_and_eliminate_duplicates(df: pd.DataFrame, column_name: str) -> pd.Da
 
 
 def parse_simple_filter(file_name: str) -> pd.DataFrame | None:
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-        df["filter"] = 1
-
-        # Eliminate duplicate dates
-        df = _check_and_eliminate_duplicates(df, "filter")
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
 
-    result: pd.DataFrame = df[["date", "filter"]]  # type: ignore
-    return result
+    df["filter"] = 1
+    df = _check_and_eliminate_duplicates(df, "filter")
+    return df[["date", "filter"]]  # type: ignore
 
 
 def parse_simple_indicator(file_name: str) -> pd.DataFrame | None:
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-        # Fill empty descriptions with 0
-        df["description"] = df["description"].replace("", "0")
-        df["indicator"] = df["description"].astype(float)
-
-        # Eliminate duplicate dates
-        df = _check_and_eliminate_duplicates(df, "indicator")
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
 
-    result: pd.DataFrame = df[["date", "indicator"]]  # type: ignore
-    return result
+    # Fill empty descriptions with 0
+    df["description"] = df["description"].replace("", "0")
+    df["indicator"] = df["description"].astype(float)
+    df = _check_and_eliminate_duplicates(df, "indicator")
+    return df[["date", "indicator"]]  # type: ignore
 
 
 def parse_moving_average(file_name: str) -> pd.DataFrame | None:
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
 
     def _parse_moving_average(description):
-        match = re.search(r'Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)', description)
+        match = re.search(
+            r"Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)", description
+        )
         if match:
-            price = float(match.group(1).replace(',', ''))
-            ma = float(match.group(2).replace(',', ''))
+            price = float(match.group(1).replace(",", ""))
+            ma = float(match.group(2).replace(",", ""))
             return int(price > ma)
-        else:
-            return None
+        return None
 
     df["moving_average"] = df["description"].apply(_parse_moving_average)
-
-    # Eliminate duplicate dates
     df = _check_and_eliminate_duplicates(df, "moving_average")
-
-    result: pd.DataFrame = df[["date", "moving_average"]]  # type: ignore
-    return result
+    return df[["date", "moving_average"]]  # type: ignore
 
 
 def parse_range_with(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-RANGE_WIDTH.txt"
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
 
     def _parse_range_width(description):
@@ -538,156 +567,57 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
             min_val = float(match.group(1).replace(",", ""))
             max_val = float(match.group(2).replace(",", ""))
             return (max_val - min_val) / max_val if max_val != 0 else 0
-        else:
-            return None
+        return None
 
     df["range_width"] = df["description"].apply(_parse_range_width)
-
-    # Eliminate duplicate dates
     df = _check_and_eliminate_duplicates(df, "range_width")
-
-    result: pd.DataFrame = df[["date", "range_width"]]  # type: ignore
-    return result
+    return df[["date", "range_width"]]  # type: ignore
 
 
 def parse_change_percent(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_PERCENT.txt"
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
-
-    def _parse_change_percent(description):
-        match = re.search(r'Below min: (\-?[\d,]+\.\d+)', description)
-        if match:
-            val = float(match.group(1).replace(',', ''))
-            return val
-        else:
-            return None
-
-    df["change_percent"] = df["description"].apply(_parse_change_percent)
-
-    # Eliminate duplicate dates
-    df = _check_and_eliminate_duplicates(df, "change_percent")
-
-    result: pd.DataFrame = df[["date", "change_percent"]]  # type: ignore
-    return result
+    return _parse_description_with_regex(
+        df, "change_percent", r"Below min: (\-?[\d,]+\.\d+)"
+    )
 
 
 def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_STDEV.txt"
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
-
-    def _parse_change_stdev(description):
-        match = re.search(r'Change Std Devs: (\-?[\d,]+\.\d+)', description)
-        if match:
-            val = float(match.group(1).replace(',', ''))
-            return val
-        else:
-            return None
-
-    df["change_stdev"] = df["description"].apply(_parse_change_stdev)
-
-    # Eliminate duplicate dates
-    df = _check_and_eliminate_duplicates(df, "change_stdev")
-
-    result: pd.DataFrame = df[["date", "change_stdev"]]  # type: ignore
-    return result
+    return _parse_description_with_regex(
+        df, "change_stdev", r"Change Std Devs: (\-?[\d,]+\.\d+)"
+    )
 
 
 def parse_gap(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-GAP.txt"
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
-
-    def _parse_gap(description):
-        match = re.search(r'Gap: (\-?[\d,]+\.\d+)', description)
-        if match:
-            val = float(match.group(1).replace(',', ''))
-            return val
-        else:
-            return None
-
-    df["gap"] = df["description"].apply(_parse_gap)
-
-    # Eliminate duplicate dates
-    df = _check_and_eliminate_duplicates(df, "gap")
-
-    result: pd.DataFrame = df[["date", "gap"]]  # type: ignore
-    return result
+    return _parse_description_with_regex(df, "gap", r"Gap: (\-?[\d,]+\.\d+)")
 
 
 def parse_open_change(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-OPEN_CHANGE.txt"
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
-
-    def _parse_open_change(description):
-        match = re.search(r'Open Chg %: (\-?[\d,]+\.\d+)', description)
-        if match:
-            val = float(match.group(1).replace(',', ''))
-            return val
-        else:
-            return None
-
-    df["open_change"] = df["description"].apply(_parse_open_change)
-
-    # Eliminate duplicate dates
-    df = _check_and_eliminate_duplicates(df, "open_change")
-
-    result: pd.DataFrame = df[["date", "open_change"]]  # type: ignore
-    return result
+    return _parse_description_with_regex(
+        df, "open_change", r"Open Chg %: (\-?[\d,]+\.\d+)"
+    )
 
 
 def parse_vixc(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-VIXC.txt"
-    try:
-        with open(file_name, "r") as f:
-            html = f.read()
-
-        df = parse_filter_log(html)
-
-    except FileNotFoundError:
+    df = _read_filter_file(file_name)
+    if df is None:
         return None
-
-    def _parse_vixc(description):
-        match = re.search(r'VIX Change: (\-?[\d,]+\.\d+)', description)
-        if match:
-            val = float(match.group(1).replace(',', ''))
-            return val
-        else:
-            return None
-
-    df["vixc"] = df["description"].apply(_parse_vixc)
-
-    # Eliminate duplicate dates
-    df = _check_and_eliminate_duplicates(df, "vixc")
-
-    result: pd.DataFrame = df[["date", "vixc"]]  # type: ignore
-    return result
+    return _parse_description_with_regex(df, "vixc", r"VIX Change: (\-?[\d,]+\.\d+)")
 
 
 def get_filters(prefix: str) -> pd.DataFrame:
@@ -721,7 +651,8 @@ def get_filters(prefix: str) -> pd.DataFrame:
     """
     dfs = []
 
-    simple_filters = [
+    # Simple filters
+    simple_filter_names = [
         "FIRST_BO",
         "SKIP_CPI",
         "SKIP_EOM",
@@ -735,36 +666,31 @@ def get_filters(prefix: str) -> pd.DataFrame:
         "SKIP_PPI",
         "SKIP_TW",
     ]
-    for filter_name in simple_filters:
+    for filter_name in simple_filter_names:
         filter_df = parse_simple_filter(f"{FILTERS_FOLDER}{prefix}-{filter_name}.txt")
         if filter_df is not None:
             filter_df = filter_df.rename(columns={"filter": f"{filter_name.lower()}"})
             dfs.append(filter_df)
 
+    # Range width
     range_df = parse_range_with(prefix)
     if range_df is not None:
         dfs.append(range_df)
 
-    change_percent_df = parse_change_percent(prefix)
-    if change_percent_df is not None:
-        dfs.append(change_percent_df)
-        
-    change_stdev_df = parse_change_stdev(prefix)
-    if change_stdev_df is not None:
-        dfs.append(change_stdev_df)
+    # Metric filters with prefix parameter
+    metric_filters = [
+        ("change_percent", parse_change_percent),
+        ("change_stdev", parse_change_stdev),
+        ("gap", parse_gap),
+        ("open_change", parse_open_change),
+        ("vixc", parse_vixc),
+    ]
+    for _column_name, parse_func in metric_filters:
+        metric_df = parse_func(prefix)
+        if metric_df is not None:
+            dfs.append(metric_df)
 
-    gap_df = parse_gap(prefix)
-    if gap_df is not None:
-        dfs.append(gap_df)
-
-    open_change_df = parse_open_change(prefix)
-    if open_change_df is not None:
-        dfs.append(open_change_df)
-
-    vixc_df = parse_vixc(prefix)
-    if vixc_df is not None:
-        dfs.append(vixc_df)
-
+    # Indicators
     indicator_names = [
         "ADX_14",
         "CCI_20",
@@ -777,7 +703,6 @@ def get_filters(prefix: str) -> pd.DataFrame:
         "STOCH_RSI_14_14_3_3",
         "VIX",
     ]
-   
     for indicator_name in indicator_names:
         indicator_df = parse_simple_indicator(
             f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
@@ -788,7 +713,8 @@ def get_filters(prefix: str) -> pd.DataFrame:
             )
             dfs.append(indicator_df)
 
-    moving_averages = [
+    # Moving averages
+    moving_average_names = [
         "SMA_10",
         "SMA_20",
         "SMA_30",
@@ -802,8 +728,7 @@ def get_filters(prefix: str) -> pd.DataFrame:
         "EMA_100",
         "EMA_200",
     ]
-
-    for ma in moving_averages:
+    for ma in moving_average_names:
         ma_df = parse_moving_average(f"{FILTERS_FOLDER}{prefix}-{ma}.txt")
         if ma_df is not None:
             ma_df = ma_df.rename(columns={"moving_average": f"{ma.lower()}"})
