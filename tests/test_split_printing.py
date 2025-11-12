@@ -147,9 +147,9 @@ def test_split_str_multiple_parent_pairs():
     # Should show both combinations (OR relationship between parent pairs)
     lines = result.strip().split("\n")
     assert len(lines) == 3  # "Split filters:" + 2 conjunctions
-    assert "(filter_a <= 1.0) & (filter_b >= 2.0)" in result
+    assert "(filter_a <= 1) & (filter_b >= 2)" in result
     # Note: terms are sorted by filter_idx, so filter_b (idx=1) comes before filter_c (idx=2)
-    assert "(filter_b >= 2.0) & (filter_c <= 3.0)" in result
+    assert "(filter_b >= 2) & (filter_c <= 3)" in result
 
 
 def test_split_str_nested_parents():
@@ -191,7 +191,7 @@ def test_split_str_nested_parents():
 
     # Should expand to: A AND B AND C
     assert "Split filters:" in result
-    assert "(filter_a <= 1.0) & (filter_b >= 2.0) & (filter_c <= 3.0)" in result
+    assert "(filter_a <= 1) & (filter_b >= 2) & (filter_c <= 3)" in result
 
 
 def test_split_str_with_prepare_splits():

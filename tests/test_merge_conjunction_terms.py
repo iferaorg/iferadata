@@ -64,9 +64,9 @@ def test_merge_right_filters_same_filter():
     result = str(child)
 
     # Should only have filter_y once with the higher threshold
-    assert "(filter_y >= 3.0)" in result
+    assert "(filter_y >= 3)" in result
     # Should NOT have the lower threshold
-    assert "2.0" not in result
+    assert "2" not in result
     # Should only appear once in the conjunction
     assert result.count("filter_y") == 1
 
@@ -144,7 +144,7 @@ def test_merge_multiple_filters_in_conjunction():
 
     # Should have both filters in the conjunction
     assert "(filter_x <= 0.5)" in result
-    assert "(filter_y >= 2.0)" in result
+    assert "(filter_y >= 2)" in result
     # filter_x should appear only once
     assert result.count("filter_x") == 1
     # filter_y should appear only once
@@ -193,10 +193,10 @@ def test_merge_with_three_same_filters():
     result = str(depth_3)
 
     # Should only have filter_x once with the lowest threshold
-    assert "(filter_x <= 1.0)" in result
+    assert "(filter_x <= 1)" in result
     # Should NOT have the other thresholds
-    assert "2.0" not in result
-    assert "3.0" not in result
+    assert "2" not in result
+    assert "3" not in result
     # Should only appear once
     assert result.count("filter_x") == 1
 

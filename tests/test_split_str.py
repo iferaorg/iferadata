@@ -31,11 +31,13 @@ def test_split_str_deduplicates_repeated_conjunctions():
     lines = str_repr.split("\n")
 
     # Should have header + 1 unique conjunction (not 2)
-    assert len(lines) == 2, f"Expected 2 lines (header + 1 conjunction), got {len(lines)}"
+    assert (
+        len(lines) == 2
+    ), f"Expected 2 lines (header + 1 conjunction), got {len(lines)}"
 
     # The conjunction line should contain both filters
     assert "(filter_a >= 1.5)" in lines[1]
-    assert "(filter_b <= 10.0)" in lines[1]
+    assert "(filter_b <= 10)" in lines[1]
 
 
 def test_split_str_sorts_by_filter_idx():
@@ -146,7 +148,9 @@ def test_split_str_multiple_parent_pairs():
     lines = str_repr.split("\n")
 
     # Should have 2 different conjunctions (OR relationship)
-    assert len(lines) == 3, f"Expected 3 lines (header + 2 conjunctions), got {len(lines)}"
+    assert (
+        len(lines) == 3
+    ), f"Expected 3 lines (header + 2 conjunctions), got {len(lines)}"
 
 
 def test_split_str_complex_sorting():
@@ -191,7 +195,9 @@ def test_split_str_complex_sorting():
     idx_e = str_repr.find("filter_e")
     idx_g = str_repr.find("filter_g")
 
-    assert idx_b < idx_e < idx_g, "Filters should appear in order: filter_b, filter_e, filter_g"
+    assert (
+        idx_b < idx_e < idx_g
+    ), "Filters should appear in order: filter_b, filter_e, filter_g"
 
 
 def test_split_str_empty_split():
