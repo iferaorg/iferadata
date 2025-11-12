@@ -7,6 +7,7 @@ from Option Alpha and convert them into pandas DataFrames.
 
 import math
 import re
+from dataclasses import dataclass
 from datetime import datetime, time
 from typing import NamedTuple, Optional
 
@@ -15,6 +16,26 @@ import torch
 from bs4 import BeautifulSoup
 from rich.console import Console
 from rich.panel import Panel
+
+
+@dataclass
+class SplitTensorState:
+    """
+    Tensor-based representation of split state for efficient batch operations.
+
+    This class stores split information in tensor format to minimize context
+    switching between tensors and Python objects during split generation.
+
+    Attributes
+    ----------
+    masks : torch.Tensor
+        2D boolean tensor of shape (n_splits, n_samples) containing split masks
+    split_objects : list[Split]
+        Corresponding Split objects (created lazily only when needed)
+    """
+
+    masks: torch.Tensor
+    split_objects: list["Split"]
 
 
 class FilterInfo(NamedTuple):
@@ -1742,6 +1763,28 @@ def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -
     return [new_splits[i] for i in keep_indices.tolist()]
 
 
+@torch.compile(mode="max-autotune")
+def _compute_scores_tensor(y: torch.Tensor, masks: torch.Tensor, score_func) -> torch.Tensor:
+    """
+    Compute scores for all masks using the score function (compilable wrapper).
+
+    Parameters
+    ----------
+    y : torch.Tensor
+        1-D tensor of target values (n_samples)
+    masks : torch.Tensor
+        2D boolean tensor of shape (n_splits, n_samples)
+    score_func : callable
+        Function that takes y and masks and returns scores
+
+    Returns
+    -------
+    torch.Tensor
+        1-D tensor of scores (n_splits,)
+    """
+    return score_func(y, masks)
+
+
 def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
     """
     Score splits using the provided score function.
@@ -1764,12 +1807,42 @@ def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
     # Stack all masks into a 2D tensor (batch_size x n_samples)
     masks = torch.stack([split.mask for split in splits], dim=0)
 
-    # Call score_func to get scores for all splits
-    scores = score_func(y, masks)
+    # Call score_func to get scores for all splits (use compiled version if possible)
+    try:
+        scores = _compute_scores_tensor(y, masks, score_func)
+    except Exception:  # pylint: disable=broad-except
+        # Fallback to non-compiled version if compilation fails
+        scores = score_func(y, masks)
 
     # Assign scores to splits
     for i, split in enumerate(splits):
         split.score = float(scores[i].item())
+
+
+@torch.compile(mode="max-autotune")
+def _select_top_k_indices(scores: torch.Tensor, k: int) -> torch.Tensor:
+    """
+    Select indices of top k scores (pure tensor operation).
+
+    Parameters
+    ----------
+    scores : torch.Tensor
+        1-D tensor of scores
+    k : int
+        Number of top scores to select
+
+    Returns
+    -------
+    torch.Tensor
+        1-D tensor of indices of top k scores
+    """
+    if len(scores) <= k:
+        # Return all indices if we have fewer than k scores
+        return torch.arange(len(scores), dtype=torch.long, device=scores.device)
+
+    # Get top k indices
+    _, top_indices = torch.topk(scores, k, largest=True, sorted=True)
+    return top_indices
 
 
 def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
@@ -1791,15 +1864,15 @@ def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
     if len(splits) <= keep_best_n:
         return splits.copy()
 
-    # Sort splits by score in descending order (None values are treated as -inf)
-    sorted_splits = sorted(
-        splits,
-        key=lambda s: s.score if s.score is not None else float("-inf"),
-        reverse=True,
-    )
+    # Extract scores as tensor (treating None as -inf)
+    scores_list = [s.score if s.score is not None else float("-inf") for s in splits]
+    scores = torch.tensor(scores_list, dtype=torch.float32)
 
-    # Return the top n
-    return sorted_splits[:keep_best_n]
+    # Use compiled function to get top k indices
+    top_indices = _select_top_k_indices(scores, keep_best_n)
+
+    # Return splits in top-k order
+    return [splits[i] for i in top_indices.tolist()]
 
 
 def _print_splits_for_depth(
