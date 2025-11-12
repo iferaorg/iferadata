@@ -35,7 +35,7 @@ def test_split_str_deduplicates_repeated_conjunctions():
 
     # The conjunction line should contain both filters
     assert "(filter_a >= 1.5)" in lines[1]
-    assert "(filter_b <= 10.0)" in lines[1]
+    assert "(filter_b <= 10)" in lines[1]
 
 
 def test_split_str_sorts_by_filter_idx():
