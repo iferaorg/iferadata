@@ -1284,8 +1284,9 @@ def test_prepare_splits_depth_2_uses_cached_masks():
     # Verify depth 2 splits have parents
     for split in depth_2_splits:
         assert len(split.parents) > 0, "Depth 2 splits should have parents"
-        # Each parent pair should be from depth 1
-        for parent_a, parent_b in split.parents:
+        # Each parent list should be from depth 1
+        for parent_list in split.parents:
+            parent_a, parent_b = parent_list[0], parent_list[1]
             assert parent_a in depth_1_splits or parent_b in depth_1_splits
 
 
