@@ -852,18 +852,28 @@ class Split:
             all_conjunctions = []
             # Multiple parent lists represent OR relationship
             for parent_list in self.parents:
-                parent_a, parent_b = parent_list[0], parent_list[1]
-                # Get DNF from each parent
-                dnf_a = parent_a._get_dnf_terms()  # pylint: disable=protected-access
-                dnf_b = parent_b._get_dnf_terms()  # pylint: disable=protected-access
+                # Get DNF from each parent in the list
+                parent_dnfs = [
+                    parent._get_dnf_terms()  # pylint: disable=protected-access
+                    for parent in parent_list
+                ]
 
-                # Combine with AND:
-                # (A OR B) AND (C OR D) = (A AND C) OR (A AND D) OR (B AND C) OR (B AND D)
-                for term_a in dnf_a:
-                    for term_b in dnf_b:
-                        # Combine the two terms (both are lists of filter conditions)
-                        combined = term_a + term_b
-                        all_conjunctions.append(combined)
+                # Combine all parent DNFs with AND using the distributive property
+                # Start with the first parent's DNF terms
+                combined_terms = parent_dnfs[0]
+
+                # Iteratively combine with each subsequent parent's DNF
+                for parent_dnf in parent_dnfs[1:]:
+                    new_combined = []
+                    for existing_term in combined_terms:
+                        for new_term in parent_dnf:
+                            # Combine the two terms (both are lists of filter conditions)
+                            merged_term = existing_term + new_term
+                            new_combined.append(merged_term)
+                    combined_terms = new_combined
+
+                # Add all combined terms from this parent list to the result
+                all_conjunctions.extend(combined_terms)
 
             return all_conjunctions
 
