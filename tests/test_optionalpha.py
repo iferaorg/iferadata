@@ -1313,7 +1313,7 @@ def test_merge_identical_splits_large_dataset():
         splits.append(split)
 
     # Merge identical splits
-    merged = _merge_identical_splits(splits, device)
+    merged = _merge_identical_splits(splits)
 
     # Verify that identical masks were merged
     # Each unique mask should appear only once
