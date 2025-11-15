@@ -2181,44 +2181,95 @@ def prepare_splits(
             )
             print(f"Generated {len(new_splits)} depth {depth} splits.")
 
-            # Remove new splits that have identical masks to any existing splits
-            new_splits = _remove_redundant_splits(new_splits, all_splits)
-
-            # Exit early if no new splits remain
+            # Exit early if no new splits were generated
             if len(new_splits) == 0:
                 break
 
-            # Merge identical splits among new splits
-            new_splits = _merge_identical_splits(new_splits)
-
-            # Exit early if no new splits remain
-            if len(new_splits) == 0:
-                break
-
-            # Score new_splits if score_func is provided
-            if score_func is not None:
+            # Optimization: Score new_splits immediately and work with candidates only
+            # This avoids expensive operations on all splits when keep_best_n is set
+            if keep_best_n is not None and score_func is not None:
+                # Step 1: Score all new splits
                 _score_splits(new_splits, y, score_func)
 
-            # Add new splits to all_splits
-            all_splits.extend(new_splits)
+                # Step 2: Sort new splits by descending score
+                new_splits.sort(
+                    key=lambda s: s.score if s.score is not None else float("-inf"),
+                    reverse=True,
+                )
 
-            # Keep only top n all_splits if keep_best_n is specified
-            if keep_best_n is not None:
+                # Step 3-4: Process candidates in batches
+                candidate_splits = []
+                candidate_start_idx = 0
+                batch_size = 2 * keep_best_n
+
+                # Loop to ensure we get enough valid candidates
+                while len(candidate_splits) < keep_best_n and candidate_start_idx < len(new_splits):
+                    # Select next batch of candidates
+                    candidate_end_idx = min(candidate_start_idx + batch_size, len(new_splits))
+                    batch = new_splits[candidate_start_idx:candidate_end_idx]
+
+                    # Remove redundant splits and merge identical ones on this batch
+                    batch = _remove_redundant_splits(batch, all_splits)
+                    if len(batch) > 0:
+                        batch = _merge_identical_splits(batch)
+                        candidate_splits.extend(batch)
+
+                    candidate_start_idx = candidate_end_idx
+
+                # Step 5: Add candidate splits to all_splits (not all new_splits)
+                all_splits.extend(candidate_splits)
+
+                # Keep only top n all_splits
                 all_splits = _keep_top_n_splits(all_splits, keep_best_n)
 
-                # Update previous_depth_splits to only contain kept splits from new_splits
-                # Convert all_splits to a set for efficient lookup
+                # Update previous_depth_splits to only contain kept splits from candidates
                 all_splits_set = set(id(s) for s in all_splits)
                 previous_depth_splits = [
-                    split for split in new_splits if id(split) in all_splits_set
+                    split for split in candidate_splits if id(split) in all_splits_set
                 ]
 
                 # Exit early if no new splits were kept
                 if len(previous_depth_splits) == 0:
                     break
             else:
-                # Update previous_depth_splits for the next iteration
-                previous_depth_splits = new_splits
+                # Original path when keep_best_n is not set or score_func is not provided
+                # Remove new splits that have identical masks to any existing splits
+                new_splits = _remove_redundant_splits(new_splits, all_splits)
+
+                # Exit early if no new splits remain
+                if len(new_splits) == 0:
+                    break
+
+                # Merge identical splits among new splits
+                new_splits = _merge_identical_splits(new_splits)
+
+                # Exit early if no new splits remain
+                if len(new_splits) == 0:
+                    break
+
+                # Score new_splits if score_func is provided
+                if score_func is not None:
+                    _score_splits(new_splits, y, score_func)
+
+                # Add new splits to all_splits
+                all_splits.extend(new_splits)
+
+                # Keep only top n all_splits if keep_best_n is specified
+                if keep_best_n is not None:
+                    all_splits = _keep_top_n_splits(all_splits, keep_best_n)
+
+                    # Update previous_depth_splits to only contain kept splits from new_splits
+                    all_splits_set = set(id(s) for s in all_splits)
+                    previous_depth_splits = [
+                        split for split in new_splits if id(split) in all_splits_set
+                    ]
+
+                    # Exit early if no new splits were kept
+                    if len(previous_depth_splits) == 0:
+                        break
+                else:
+                    # Update previous_depth_splits for the next iteration
+                    previous_depth_splits = new_splits
 
             # Print splits for this depth if verbose is enabled
             if verbose == "best":
