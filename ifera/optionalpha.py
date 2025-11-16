@@ -1483,9 +1483,12 @@ def _merge_identical_splits(splits: list[Split]) -> list[Split]:
             merged_parents.extend(splits[idx_int].parents)
 
         # Create merged split using the mask from the first split in the group
-        merged_splits.append(
-            Split(mask=splits[group_id_int].mask, filters=merged_filters, parents=merged_parents)
+        merged_split = Split(
+            mask=splits[group_id_int].mask, filters=merged_filters, parents=merged_parents
         )
+        # Preserve the score from the first split in the group
+        merged_split.score = splits[group_id_int].score
+        merged_splits.append(merged_split)
 
     return merged_splits
 
