@@ -631,9 +631,7 @@ def parse_moving_average(file_name: str) -> pd.DataFrame | None:
         return None
 
     def _parse_moving_average(description):
-        match = re.search(
-            r"Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)", description
-        )
+        match = re.search(r"Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)", description)
         if match:
             price = float(match.group(1).replace(",", ""))
             ma = float(match.group(2).replace(",", ""))
@@ -669,9 +667,7 @@ def parse_change_percent(prefix: str) -> pd.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(
-        df, "change_percent", r"Below min: (\-?[\d,]+\.\d+)"
-    )
+    return _parse_description_with_regex(df, "change_percent", r"Below min: (\-?[\d,]+\.\d+)")
 
 
 def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
@@ -679,9 +675,7 @@ def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(
-        df, "change_stdev", r"Change Std Devs: (\-?[\d,]+\.\d+)"
-    )
+    return _parse_description_with_regex(df, "change_stdev", r"Change Std Devs: (\-?[\d,]+\.\d+)")
 
 
 def parse_gap(prefix: str) -> pd.DataFrame | None:
@@ -697,9 +691,7 @@ def parse_open_change(prefix: str) -> pd.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(
-        df, "open_change", r"Open Chg %: (\-?[\d,]+\.\d+)"
-    )
+    return _parse_description_with_regex(df, "open_change", r"Open Chg %: (\-?[\d,]+\.\d+)")
 
 
 def parse_vixc(prefix: str) -> pd.DataFrame | None:
@@ -794,13 +786,9 @@ def get_filters(prefix: str) -> pd.DataFrame:
         "VIX",
     ]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(
-            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
-        )
+        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
-            )
+            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
             dfs.append(indicator_df)
 
     # Moving averages
@@ -827,9 +815,7 @@ def get_filters(prefix: str) -> pd.DataFrame:
     if dfs:
         from functools import reduce
 
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -1087,16 +1073,12 @@ class Split:
                 break
 
         if len(seen_conjunctions) > self.max_conjunctions_print:
-            lines.append(
-                f" - ... ({len(seen_conjunctions) - self.max_conjunctions_print} more)"
-            )
+            lines.append(f" - ... ({len(seen_conjunctions) - self.max_conjunctions_print} more)")
 
         return "\n".join(lines)
 
 
-def _combine_dnf_with_and(
-    dnf_a: list[list[int]], dnf_b: list[list[int]]
-) -> list[list[int]]:
+def _combine_dnf_with_and(dnf_a: list[list[int]], dnf_b: list[list[int]]) -> list[list[int]]:
     """
     Combine two DNF formulas with AND operation using distributive property.
 
@@ -1219,9 +1201,7 @@ def _compute_child_parent_sets(parent_a: Split, parent_b: Split) -> list[set[Spl
     return _deduplicate_parent_sets(combined_sets)
 
 
-def _align_filters_with_trades(
-    filters_df: pd.DataFrame, trades_df: pd.DataFrame
-) -> pd.DataFrame:
+def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -1290,9 +1270,7 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
 
     # Add premium column
     filters_df["premium"] = spread_width * 100 - trades_df["risk"]
@@ -1474,9 +1452,7 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Convert filter column to tensor for masking (original values)
-    col_tensor_original = torch.tensor(
-        filters_df[col_name].values, dtype=dtype, device=device
-    )
+    col_tensor_original = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
     # Check if this filter has a granularity
     granularity = filter_granularities.get(col_name)
@@ -1487,12 +1463,8 @@ def _create_splits_for_filter(
     if col_name not in right_only_filters:
         if granularity is not None:
             # Round values UP to nearest granularity multiple for left direction
-            rounded_vals = [
-                math.ceil(v / granularity) * granularity for v in filters_df[col_name]
-            ]
-            unique_vals_left = torch.tensor(
-                sorted(set(rounded_vals)), dtype=dtype, device=device
-            )
+            rounded_vals = [math.ceil(v / granularity) * granularity for v in filters_df[col_name]]
+            unique_vals_left = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
             col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
         else:
             # Use original unique values
@@ -1515,9 +1487,7 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold DOWN (opposite of left rounding) to nearest granularity
-                    threshold = (
-                        math.floor(threshold_avg.item() / granularity) * granularity
-                    )
+                    threshold = math.floor(threshold_avg.item() / granularity) * granularity
                 else:
                     threshold = threshold_avg.item()
 
@@ -1535,12 +1505,8 @@ def _create_splits_for_filter(
     if col_name not in left_only_filters:
         if granularity is not None:
             # Round values DOWN to nearest granularity multiple for right direction
-            rounded_vals = [
-                math.floor(v / granularity) * granularity for v in filters_df[col_name]
-            ]
-            unique_vals_right = torch.tensor(
-                sorted(set(rounded_vals)), dtype=dtype, device=device
-            )
+            rounded_vals = [math.floor(v / granularity) * granularity for v in filters_df[col_name]]
+            unique_vals_right = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
             col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
         else:
             # Use original unique values
@@ -1563,9 +1529,7 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold UP (opposite of right rounding) to nearest granularity
-                    threshold = (
-                        math.ceil(threshold_avg.item() / granularity) * granularity
-                    )
+                    threshold = math.ceil(threshold_avg.item() / granularity) * granularity
                 else:
                     threshold = threshold_avg.item()
 
@@ -1737,9 +1701,7 @@ def _build_tensor_state_from_splits(
         scores_tensor = _compute_scores_tensor(y, masks, score_func)
     else:
         # Initialize with existing scores or NaN
-        scores_list = [
-            split.score if split.score is not None else float("nan") for split in splits
-        ]
+        scores_list = [split.score if split.score is not None else float("nan") for split in splits]
         scores_tensor = torch.tensor(scores_list, dtype=torch.float32, device=device)
 
     return SplitTensorState(
@@ -1965,6 +1927,84 @@ def _compute_child_masks_tensor(
     return child_masks
 
 
+def _generate_child_splits_tensor_based(
+    state_previous: SplitTensorState,
+    state_depth1: SplitTensorState,
+    previous_indices: list[int] | None,
+    depth1_indices: list[int] | None,
+    device: torch.device,
+    min_samples: int,
+) -> tuple[torch.Tensor, torch.Tensor, list[list[list[int]]]]:
+    """
+    Generate child splits from parent states using tensor operations.
+
+    This function generates child splits by combining previous depth splits with
+    depth-1 splits, working directly with tensors and DNF representations.
+
+    Parameters
+    ----------
+    state_previous : SplitTensorState
+        State of previous depth splits
+    state_depth1 : SplitTensorState
+        State of depth-1 splits
+    previous_indices : list[int] | None
+        Indices of previous splits to use (or None for all)
+    depth1_indices : list[int] | None
+        Indices of depth-1 splits to use (or None for all)
+    device : torch.device
+        PyTorch device for tensors
+    min_samples : int
+        Minimum number of samples required
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, list[list[list[int]]]]
+        Child masks, indices of parent pairs (n_valid x 2), and DNF representations
+    """
+    # Select subset of masks if indices provided
+    if previous_indices is not None:
+        previous_masks = state_previous.masks[previous_indices]
+        previous_dnf = [state_previous.dnf[i] for i in previous_indices]
+    else:
+        previous_masks = state_previous.masks
+        previous_dnf = state_previous.dnf
+
+    if depth1_indices is not None:
+        depth1_masks = state_depth1.masks[depth1_indices]
+        depth1_dnf = [state_depth1.dnf[i] for i in depth1_indices]
+    else:
+        depth1_masks = state_depth1.masks
+        depth1_dnf = state_depth1.dnf
+
+    # Compute exclusion mask on GPU
+    exclusion_mask = _compute_exclusion_mask_tensor(previous_masks, depth1_masks, min_samples)
+
+    # Find valid (non-exclusive) pairs
+    valid_pairs = (~exclusion_mask).nonzero()  # Shape: (n_valid, 2)
+
+    if len(valid_pairs) == 0:
+        return (
+            torch.tensor([], dtype=torch.bool, device=device).reshape(0, previous_masks.shape[1]),
+            torch.tensor([], dtype=torch.long, device=device).reshape(0, 2),
+            [],
+        )
+
+    # Compute child masks using compiled function
+    child_masks = _compute_child_masks_tensor(previous_masks, depth1_masks, valid_pairs)
+
+    # Build DNF for each child (on CPU, metadata)
+    child_dnf_list: list[list[list[int]]] = []
+    for pair_idx in range(len(valid_pairs)):
+        prev_idx = int(valid_pairs[pair_idx, 0].item())
+        depth1_idx = int(valid_pairs[pair_idx, 1].item())
+
+        # Combine DNF from both parents with AND
+        combined_dnf = _combine_dnf_with_and(previous_dnf[prev_idx], depth1_dnf[depth1_idx])
+        child_dnf_list.append(combined_dnf)
+
+    return child_masks, valid_pairs, child_dnf_list
+
+
 def _generate_child_splits(
     parent_set_a: Iterable[Split],
     parent_set_b: Iterable[Split],
@@ -2046,12 +2086,8 @@ def _generate_child_splits(
 
         # Convert back to tensors
         if len(filtered_i) > 0:
-            valid_i = torch.tensor(
-                filtered_i, dtype=torch.long, device=exclusion_mask.device
-            )
-            valid_j = torch.tensor(
-                filtered_j, dtype=torch.long, device=exclusion_mask.device
-            )
+            valid_i = torch.tensor(filtered_i, dtype=torch.long, device=exclusion_mask.device)
+            valid_j = torch.tensor(filtered_j, dtype=torch.long, device=exclusion_mask.device)
         else:
             valid_i = torch.tensor([], dtype=torch.long, device=exclusion_mask.device)
             valid_j = torch.tensor([], dtype=torch.long, device=exclusion_mask.device)
@@ -2126,9 +2162,7 @@ def _find_redundant_mask_indices(
     return keep_mask
 
 
-def _remove_redundant_splits(
-    new_splits: list[Split], old_splits: list[Split]
-) -> list[Split]:
+def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -2160,9 +2194,7 @@ def _remove_redundant_splits(
 
 
 @torch.compile()
-def _compute_scores_tensor(
-    y: torch.Tensor, masks: torch.Tensor, score_func
-) -> torch.Tensor:
+def _compute_scores_tensor(y: torch.Tensor, masks: torch.Tensor, score_func) -> torch.Tensor:
     """
     Compute scores for all masks using the score function (compilable wrapper).
 
@@ -2424,9 +2456,7 @@ def prepare_splits(
         raise ValueError("score_func must be provided when keep_best_n is not None")
 
     if verbose not in ["no", "best", "all"]:
-        raise ValueError(
-            f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'"
-        )
+        raise ValueError(f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'")
 
     if verbose == "best" and score_func is None:
         raise ValueError("verbose='best' requires score_func to be not None")
@@ -2517,9 +2547,7 @@ def prepare_splits(
         previous_depth_splits = all_splits
 
         # Pre-stack masks for depth_1_splits to avoid redundant stacking in each iteration
-        depth_1_masks_stacked = torch.stack(
-            [split.mask for split in depth_1_splits], dim=0
-        )
+        depth_1_masks_stacked = torch.stack([split.mask for split in depth_1_splits], dim=0)
 
         for depth in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
@@ -2562,13 +2590,9 @@ def prepare_splits(
                 batch_size = 2 * keep_best_n
 
                 # Loop to ensure we get enough valid candidates
-                while len(candidate_splits) < keep_best_n and candidate_start_idx < len(
-                    new_splits
-                ):
+                while len(candidate_splits) < keep_best_n and candidate_start_idx < len(new_splits):
                     # Select next batch of candidates
-                    candidate_end_idx = min(
-                        candidate_start_idx + batch_size, len(new_splits)
-                    )
+                    candidate_end_idx = min(candidate_start_idx + batch_size, len(new_splits))
                     batch = new_splits[candidate_start_idx:candidate_end_idx]
 
                     # Remove redundant splits and merge identical ones on this batch
@@ -2646,8 +2670,6 @@ def prepare_splits(
                 _print_splits_for_depth(depth, all_splits, score_func)
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(
-        filters_df.values, dtype=dtype, device=device
-    )  # pylint: disable=invalid-name
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     return X, y, all_splits
