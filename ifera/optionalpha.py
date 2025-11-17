@@ -1516,49 +1516,12 @@ def _create_splits_for_filter(
     return splits
 
 
-@torch.compile()
-def _compute_mask_match_counts_for_row(
-    mask_row: torch.Tensor,
-    all_masks_float: torch.Tensor,
-    all_masks_inv_float: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Compute match counts for a single mask against all masks.
-
-    This is a helper function to be called row-by-row to avoid creating
-    large n_splits x n_splits tensors.
-
-    Parameters
-    ----------
-    mask_row : torch.Tensor
-        1D float tensor representing a single mask (n_samples,)
-    all_masks_float : torch.Tensor
-        2D float tensor of all masks (n_splits, n_samples)
-    all_masks_inv_float : torch.Tensor
-        2D float tensor of inverted masks (n_splits, n_samples)
-
-    Returns
-    -------
-    torch.Tensor
-        1D tensor of match counts (n_splits,)
-    """
-    # Compute number of positions where masks match
-    # match_count = sum of (both True) + sum of (both False)
-    mask_row_2d = mask_row.unsqueeze(0)  # Shape: (1, n_samples)
-    mask_row_inv = 1 - mask_row_2d
-
-    match_counts = torch.matmul(mask_row_2d, all_masks_float.T) + torch.matmul(
-        mask_row_inv, all_masks_inv_float.T
-    )
-    return match_counts.squeeze(0)
-
-
 def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
     """
-    Find groups of identical masks using row-by-row processing.
+    Find groups of identical masks using torch.unique.
 
-    Processes masks one at a time to avoid creating large n_splits x n_splits
-    tensors that would consume too much memory with 100k+ splits.
+    Uses torch.unique with return_inverse=True to efficiently identify
+    duplicate mask patterns without row-by-row processing.
 
     Parameters
     ----------
@@ -1572,35 +1535,9 @@ def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
         of the first occurrence of that mask pattern. Splits with the same
         value should be merged together.
     """
-    n_splits = masks.shape[0]
-    n_samples = masks.shape[1]
-
-    # Convert to float for matrix operations
-    masks_float = masks.float()
-    masks_inv_float = 1 - masks_float
-
-    # For each mask, find the index of its first occurrence
-    # Process row-by-row to avoid O(n_splits²) memory usage
-    group_ids = torch.zeros(n_splits, dtype=torch.long, device=masks.device)
-    processed = torch.zeros(n_splits, dtype=torch.bool, device=masks.device)
-
-    for i in range(n_splits):
-        if processed[i]:
-            # Already assigned to a group
-            continue
-
-        # Compute match counts for mask i against all masks
-        match_counts_i = _compute_mask_match_counts_for_row(
-            masks_float[i], masks_float, masks_inv_float
-        )
-
-        # Find all masks identical to mask i
-        identical_indices = (match_counts_i == n_samples).nonzero(as_tuple=True)[0]
-
-        # Assign all identical masks to the same group (using index i)
-        for idx in identical_indices:
-            group_ids[idx] = i
-            processed[idx] = True
+    # Use torch.unique to find unique masks and group identical ones
+    # return_inverse gives us the mapping from original indices to unique indices
+    _, group_ids = torch.unique(masks, dim=0, return_inverse=True)
 
     return group_ids
 
