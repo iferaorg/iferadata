@@ -1859,6 +1859,9 @@ def _find_redundant_mask_indices(
     """
     Find indices of new masks that are redundant (identical to old masks).
 
+    Uses torch.unique to efficiently identify which new masks already exist
+    in old masks without expensive matmul operations.
+
     Parameters
     ----------
     new_masks : torch.Tensor
@@ -1871,21 +1874,27 @@ def _find_redundant_mask_indices(
     torch.Tensor
         1D boolean tensor of shape (n_new,) where True means the mask should be kept
     """
-    # Convert to float for matrix operations
-    new_masks_float = new_masks.float()
-    old_masks_float = old_masks.float()
+    n_old = old_masks.shape[0]
 
-    n_samples = new_masks.shape[1]
+    # Concatenate old and new masks
+    combined_masks = torch.cat([old_masks, new_masks], dim=0)
 
-    # Compute pairwise equality: new_masks[i] == old_masks[j]
-    # Two masks are equal if they match at all positions
-    match_counts = torch.matmul(new_masks_float, old_masks_float.T) + torch.matmul(
-        1 - new_masks_float, (1 - old_masks_float).T
-    )
-    mask_equality = match_counts == n_samples
+    # Find unique masks and their indices
+    _, inverse_indices = torch.unique(combined_masks, dim=0, return_inverse=True)
 
-    # Find new splits that have no matching old split
-    has_match = mask_equality.any(dim=1)
+    # Split the inverse indices back into old and new parts
+    old_inverse = inverse_indices[:n_old]
+    new_inverse = inverse_indices[n_old:]
+
+    # A new mask is redundant if its unique index appears in old_inverse
+    # Use broadcasting to check membership
+    # Shape: (n_new, 1) compared with (n_old,) -> (n_new, n_old)
+    is_in_old = new_inverse.unsqueeze(1) == old_inverse.unsqueeze(0)
+
+    # A new mask is redundant if it matches ANY old mask
+    has_match = is_in_old.any(dim=1)
+
+    # Keep masks that have NO match in old masks
     keep_mask = ~has_match
 
     return keep_mask
