@@ -2566,35 +2566,33 @@ def prepare_splits(
     # Build tensor state from depth-1 splits
     state = _build_depth_1_tensor_state(depth_1_splits, device, dtype, score_func, y)
 
-    # Track indices for depth-1 splits (all of them)
+    # Track indices for depth-1 splits (all of them - needed for generating children)
     depth1_indices = list(range(len(state.masks)))
 
-    # Select top-k from depth-1 if keep_best_n is set
+    # Track current "best" splits indices - these are the ones we return
+    # If keep_best_n is set, this will be a subset of all splits
     if keep_best_n is not None and len(state.masks) > keep_best_n:
         top_indices = _select_top_k_indices(state.scores, keep_best_n)
-        # Keep only top splits in state
-        state.masks = state.masks[top_indices]
-        state.scores = state.scores[top_indices]
-        top_indices_list = top_indices.cpu().tolist()
-        state.dnf = [state.dnf[i] for i in top_indices_list]
-        # Update depth1_indices to the kept indices
-        # Create new mapping: old index -> new index
-        depth1_indices = list(range(len(state.masks)))
+        current_indices = top_indices.cpu().tolist()
+    else:
+        current_indices = list(range(len(state.masks)))
 
     # Print depth 1 splits if verbose is enabled
     if verbose == "best":
-        if len(state.masks) > 0:
-            best_idx = int(torch.argmax(state.scores).item())
+        if len(current_indices) > 0:
+            # Find best among current indices
+            best_idx = max(current_indices, key=lambda i: state.scores[i].item())
             best_split = state.get_split(best_idx)
             _print_splits_for_depth(1, [best_split], score_func)
     elif verbose == "all":
-        all_splits_for_print = [state.get_split(i) for i in range(len(state.masks))]
+        all_splits_for_print = [state.get_split(i) for i in current_indices]
         _print_splits_for_depth(1, all_splits_for_print, score_func)
 
     # Generate child splits if max_depth > 1
     if max_depth > 1:
-        # Track indices of previous depth splits (start with all depth-1)
-        previous_indices = depth1_indices.copy()
+        # Track indices of previous depth splits
+        # Start with current_indices (top-k depth-1 splits)
+        previous_indices = current_indices.copy()
 
         for depth in range(2, max_depth + 1):
             # Generate child splits using tensor state
@@ -2637,42 +2635,60 @@ def prepare_splits(
             state.dnf.extend(child_dnfs)
 
             # Prune top-k if keep_best_n is set
-            if keep_best_n is not None and len(state.masks) > keep_best_n:
-                top_indices = _select_top_k_indices(state.scores, keep_best_n)
-                state.masks = state.masks[top_indices]
-                state.scores = state.scores[top_indices]
-                top_indices_list = top_indices.cpu().tolist()
-                state.dnf = [state.dnf[i] for i in top_indices_list]
+            # We need to keep ALL depth-1 splits and only prune among current_indices + new splits
+            if keep_best_n is not None:
+                # Indices of newly added child splits
+                new_split_indices = list(range(new_split_start_idx, len(state.masks)))
 
-                # Update previous_indices: only keep indices of new splits that were kept
-                # Find which of the new splits were kept
+                # Combine current_indices with new_split_indices (excluding depth-1 splits)
+                # Current_indices already excludes depth-1 if they weren't in top-k initially
+                candidate_indices = current_indices + new_split_indices
+
+                # Get scores for candidates
+                if len(candidate_indices) > keep_best_n:
+                    candidate_scores = state.scores[candidate_indices]
+                    top_k = min(keep_best_n, len(candidate_scores))
+                    _, top_k_positions = torch.topk(
+                        candidate_scores, top_k, largest=True, sorted=True
+                    )
+
+                    # Map back to actual indices in state
+                    current_indices = [
+                        candidate_indices[i] for i in top_k_positions.cpu().tolist()
+                    ]
+                else:
+                    current_indices = candidate_indices
+
+                # Update previous_indices to only new splits that made it into current_indices
                 previous_indices = [
-                    i
-                    for i in range(len(state.masks))
-                    if top_indices_list[i] >= new_split_start_idx
+                    i for i in current_indices if i >= new_split_start_idx
                 ]
 
                 # If no new splits were kept, exit early
                 if len(previous_indices) == 0:
                     break
             else:
+                # No pruning - update current_indices to include all new splits
+                new_split_indices = list(range(new_split_start_idx, len(state.masks)))
+                current_indices.extend(new_split_indices)
                 # Update previous_indices to the newly added splits
-                previous_indices = list(range(new_split_start_idx, len(state.masks)))
+                previous_indices = new_split_indices
 
             # Print splits for this depth if verbose is enabled
             if verbose == "best":
-                if len(state.masks) > 0:
-                    best_idx = int(torch.argmax(state.scores).item())
+                if len(current_indices) > 0:
+                    # Find best among current indices
+                    best_idx = max(
+                        current_indices, key=lambda i: state.scores[i].item()
+                    )
                     best_split = state.get_split(best_idx)
                     _print_splits_for_depth(depth, [best_split], score_func)
             elif verbose == "all":
-                all_splits_for_print = [
-                    state.get_split(i) for i in range(len(state.masks))
-                ]
+                all_splits_for_print = [state.get_split(i) for i in current_indices]
                 _print_splits_for_depth(depth, all_splits_for_print, score_func)
 
-    # Build final list of Split objects from tensor state
-    all_splits = [state.get_split(i) for i in range(len(state.masks))]
+    # Build final list of Split objects from tensor state (only current_indices)
+    all_splits = [state.get_split(i) for i in current_indices]
 
     # Convert filters_df to torch tensor X
     X = torch.tensor(
