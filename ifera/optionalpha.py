@@ -5,6 +5,8 @@ This module provides functionality to parse HTML-formatted trade log grids
 from Option Alpha and convert them into pandas DataFrames.
 """
 
+from __future__ import annotations
+
 import math
 import re
 from dataclasses import dataclass
@@ -29,13 +31,79 @@ class SplitTensorState:
     Attributes
     ----------
     masks : torch.Tensor
-        2D boolean tensor of shape (n_splits, n_samples) containing split masks
-    split_objects : list[Split]
+        2D boolean tensor of shape (n_splits, n_samples) containing split masks on CUDA
+    scores : torch.Tensor
+        1D float tensor of shape (n_splits,) containing scores on CUDA (init with nan/-inf)
+    dnf : list[list[list[int]]]
+        Per split: list of conjunctions, each a sorted list of literal IDs (on CPU)
+        Each split has a DNF representation as a list of conjunctions (OR of ANDs)
+    all_literals : list[FilterInfo]
+        All unique FilterInfo from depth-1 splits (on CPU)
+    split_objects : list[Split] | None
         Corresponding Split objects (created lazily only when needed)
     """
 
     masks: torch.Tensor
-    split_objects: list["Split"]
+    scores: torch.Tensor
+    dnf: list[list[list[int]]]
+    all_literals: list[FilterInfo]
+    split_objects: list["Split"] | None = None
+
+    def get_split(self, idx: int) -> "Split":
+        """
+        Get a Split object for the given index, creating it lazily if needed.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the split to retrieve
+
+        Returns
+        -------
+        Split
+            Split object reconstructed from tensor state
+        """
+        # Transfer mask to CPU
+        mask = self.masks[idx].cpu()
+        score = self.scores[idx].item()
+
+        # Reconstruct filters and parents from DNF
+        dnf_terms = self.dnf[idx]
+
+        # For depth 1 splits, dnf is [[lit_id]] - single literal OR'd together
+        # Check if this is a depth-1 split (all conjunctions have length 1)
+        if all(len(conj) == 1 for conj in dnf_terms):
+            # Depth 1: extract filters directly
+            filters = [self.all_literals[conj[0]] for conj in dnf_terms]
+            parents = []
+        else:
+            # Higher depth: create parent structure
+            # Use empty filters and construct parent sets from DNF
+            filters = []
+            # Convert DNF to parent sets
+            # Each conjunction represents one parent set (AND of literals)
+            parent_sets = []
+            for conjunction in dnf_terms:
+                # Create dummy depth-1 Split objects for this conjunction
+                parent_set = set()
+                for lit_id in conjunction:
+                    lit = self.all_literals[lit_id]
+                    # Create a placeholder split for this literal
+                    # We need a mask but it's not stored - use a dummy
+                    dummy_mask = torch.zeros_like(mask, dtype=torch.bool)
+                    parent_split = Split(
+                        mask=dummy_mask,
+                        filters=[lit],
+                        parents=[],
+                    )
+                    parent_set.add(parent_split)
+                parent_sets.append(parent_set)
+            parents = parent_sets
+
+        split = Split(mask=mask, filters=filters, parents=parents)
+        split.score = score
+
+        return split
 
 
 class FilterInfo(NamedTuple):
@@ -2031,6 +2099,122 @@ def _keep_top_n_splits(splits: list[Split], keep_best_n: int) -> list[Split]:
 
     # Return splits in top-k order
     return [splits[i] for i in top_indices.tolist()]
+
+
+def _build_depth_1_tensor_state(
+    depth_1_splits: list[Split],
+    device: torch.device,
+    dtype: torch.dtype,
+    score_func,
+    y: torch.Tensor,
+) -> SplitTensorState:
+    """
+    Build tensor state from depth-1 splits.
+
+    Parameters
+    ----------
+    depth_1_splits : list[Split]
+        List of depth-1 Split objects
+    device : torch.device
+        PyTorch device for tensors
+    dtype : torch.dtype
+        PyTorch dtype for tensors
+    score_func : callable or None
+        Score function for splits
+    y : torch.Tensor
+        Target values for scoring
+
+    Returns
+    -------
+    SplitTensorState
+        Tensor state representation
+    """
+    if len(depth_1_splits) == 0:
+        return SplitTensorState(
+            masks=torch.empty((0, 0), dtype=torch.bool, device=device),
+            scores=torch.empty(0, dtype=dtype, device=device),
+            dnf=[],
+            all_literals=[],
+            split_objects=None,
+        )
+
+    # Stack masks
+    masks = torch.stack([split.mask for split in depth_1_splits], dim=0)
+
+    # Build all_literals from all unique filters
+    all_literals: list[FilterInfo] = []
+    filter_to_lit_id: dict[FilterInfo, int] = {}
+
+    for split in depth_1_splits:
+        for filter_info in split.filters:
+            if filter_info not in filter_to_lit_id:
+                lit_id = len(all_literals)
+                all_literals.append(filter_info)
+                filter_to_lit_id[filter_info] = lit_id
+
+    # Build DNF for each split
+    dnf: list[list[list[int]]] = []
+    for split in depth_1_splits:
+        # For depth 1, each filter is a separate conjunction (OR relationship)
+        split_dnf = []
+        for filter_info in split.filters:
+            lit_id = filter_to_lit_id[filter_info]
+            split_dnf.append([lit_id])  # Single literal conjunction
+        dnf.append(split_dnf)
+
+    # Score if needed
+    if score_func is not None:
+        scores = _compute_scores_tensor(y, masks, score_func)
+    else:
+        scores = torch.full((len(depth_1_splits),), float('nan'), dtype=dtype, device=device)
+
+    return SplitTensorState(
+        masks=masks,
+        scores=scores,
+        dnf=dnf,
+        all_literals=all_literals,
+        split_objects=None,
+    )
+
+
+def _merge_dnf_for_child(
+    parent_a_dnf: list[list[int]],
+    parent_b_dnf: list[list[int]],
+) -> list[list[int]]:
+    """
+    Merge DNF representations for a child split.
+
+    Combines two parent DNFs with AND using the distributive property.
+
+    Parameters
+    ----------
+    parent_a_dnf : list[list[int]]
+        DNF of first parent (list of conjunctions)
+    parent_b_dnf : list[list[int]]
+        DNF of second parent (list of conjunctions)
+
+    Returns
+    -------
+    list[list[int]]
+        Merged DNF (unique conjunctions)
+    """
+    merged_conjunctions = []
+    for conj_a in parent_a_dnf:
+        for conj_b in parent_b_dnf:
+            # Merge the two conjunctions
+            merged_conj = sorted(set(conj_a + conj_b))
+            merged_conjunctions.append(merged_conj)
+
+    # Deduplicate conjunctions
+    unique_conjunctions = []
+    seen = set()
+    for conj in merged_conjunctions:
+        conj_tuple = tuple(conj)
+        if conj_tuple not in seen:
+            seen.add(conj_tuple)
+            unique_conjunctions.append(conj)
+
+    return unique_conjunctions
 
 
 def _print_splits_for_depth(
