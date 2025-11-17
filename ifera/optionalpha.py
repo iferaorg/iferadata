@@ -5,6 +5,8 @@ This module provides functionality to parse HTML-formatted trade log grids
 from Option Alpha and convert them into pandas DataFrames.
 """
 
+from __future__ import annotations
+
 import math
 import re
 from dataclasses import dataclass
@@ -25,17 +27,84 @@ class SplitTensorState:
 
     This class stores split information in tensor format to minimize context
     switching between tensors and Python objects during split generation.
+    Most data (masks, scores) stays on CUDA, while metadata (DNF, literals)
+    is kept on CPU.
 
     Attributes
     ----------
     masks : torch.Tensor
-        2D boolean tensor of shape (n_splits, n_samples) containing split masks
-    split_objects : list[Split]
-        Corresponding Split objects (created lazily only when needed)
+        2D boolean tensor of shape (n_splits, n_samples) containing split masks on CUDA
+    scores : torch.Tensor
+        1D float tensor of shape (n_splits,) containing scores on CUDA
+    dnf : list[list[list[int]]]
+        DNF representation for each split as list of conjunctions.
+        Each conjunction is a sorted list of literal IDs (indices into all_literals).
+        On CPU.
+    all_literals : list[FilterInfo]
+        All unique depth-1 FilterInfo objects (base literals). On CPU.
+    split_objects : list[Split] | None
+        Corresponding Split objects (created lazily only when needed). Optional.
     """
 
     masks: torch.Tensor
-    split_objects: list["Split"]
+    scores: torch.Tensor
+    dnf: list[list[list[int]]]
+    all_literals: list[FilterInfo]
+    split_objects: list["Split"] | None = None
+
+    def get_split(self, idx: int) -> "Split":
+        """
+        Get a Split object for a given index, constructing it lazily if needed.
+
+        Parameters
+        ----------
+        idx : int
+            Index of the split to retrieve
+
+        Returns
+        -------
+        Split
+            The Split object at the given index
+        """
+        # If we have pre-built split objects, return directly
+        if self.split_objects is not None:
+            return self.split_objects[idx]
+
+        # Otherwise, construct the split lazily
+        mask = self.masks[idx].cpu()
+        score = float(self.scores[idx].item())
+
+        # Reconstruct filters and parents from DNF
+        dnf_terms = self.dnf[idx]
+
+        # If all terms are single-literal (depth 1), extract filters
+        if all(len(conj) == 1 for conj in dnf_terms):
+            filters = [self.all_literals[lit_id] for conj in dnf_terms for lit_id in conj]
+            parents = []
+        else:
+            # Child split: empty filters, construct parents from DNF
+            filters = []
+            # For child splits, we need to construct parent sets
+            # Each conjunction in DNF represents a parent set
+            parent_sets: list[set[Split]] = []
+            for conj in dnf_terms:
+                parent_set: set[Split] = set()
+                for lit_id in conj:
+                    # Create a dummy depth-1 Split for each literal
+                    lit_info = self.all_literals[lit_id]
+                    # Use a placeholder mask (empty tensor) since we only need the filter info
+                    dummy_split = Split(
+                        mask=torch.tensor([], dtype=torch.bool),
+                        filters=[lit_info],
+                        parents=[],
+                    )
+                    parent_set.add(dummy_split)
+                parent_sets.append(parent_set)
+            parents = parent_sets
+
+        split = Split(mask=mask, filters=filters, parents=parents)
+        split.score = score
+        return split
 
 
 class FilterInfo(NamedTuple):
@@ -1025,6 +1094,71 @@ class Split:
         return "\n".join(lines)
 
 
+def _combine_dnf_with_and(
+    dnf_a: list[list[int]], dnf_b: list[list[int]]
+) -> list[list[int]]:
+    """
+    Combine two DNF formulas with AND operation using distributive property.
+
+    Given two DNF formulas (each a list of conjunctions), returns a new DNF
+    representing the AND of the two formulas.
+
+    Parameters
+    ----------
+    dnf_a : list[list[int]]
+        First DNF formula as list of conjunctions
+    dnf_b : list[list[int]]
+        Second DNF formula as list of conjunctions
+
+    Returns
+    -------
+    list[list[int]]
+        Combined DNF formula with duplicates removed
+    """
+    result_dnf: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+
+    for conj_a in dnf_a:
+        for conj_b in dnf_b:
+            # Combine the two conjunctions (union of literals)
+            combined = sorted(list(set(conj_a + conj_b)))
+            combined_tuple = tuple(combined)
+
+            # Dedup
+            if combined_tuple not in seen:
+                seen.add(combined_tuple)
+                result_dnf.append(combined)
+
+    return result_dnf
+
+
+def _merge_dnf_with_or(dnf_list: list[list[list[int]]]) -> list[list[int]]:
+    """
+    Merge multiple DNF formulas with OR operation.
+
+    Parameters
+    ----------
+    dnf_list : list[list[list[int]]]
+        List of DNF formulas to merge
+
+    Returns
+    -------
+    list[list[int]]
+        Merged DNF formula with duplicates removed
+    """
+    result_dnf: list[list[int]] = []
+    seen: set[tuple[int, ...]] = set()
+
+    for dnf in dnf_list:
+        for conj in dnf:
+            conj_tuple = tuple(sorted(conj))
+            if conj_tuple not in seen:
+                seen.add(conj_tuple)
+                result_dnf.append(list(conj_tuple))
+
+    return result_dnf
+
+
 def _deduplicate_parent_sets(parent_sets: list[set[Split]]) -> list[set[Split]]:
     """
     Remove duplicate parent sets while preserving order.
@@ -1535,6 +1669,112 @@ def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
             processed[idx] = True
 
     return group_ids
+
+
+def _build_tensor_state_from_splits(
+    splits: list[Split], device: torch.device, score_func=None, y=None
+) -> SplitTensorState:
+    """
+    Build a SplitTensorState from a list of Split objects.
+
+    This function converts a list of depth-1 Split objects into a tensor-based
+    representation for efficient GPU operations.
+
+    Parameters
+    ----------
+    splits : list[Split]
+        List of Split objects (typically depth-1 splits)
+    device : torch.device
+        PyTorch device for tensors
+    score_func : callable, optional
+        Score function to use for scoring splits
+    y : torch.Tensor, optional
+        Target values for scoring
+
+    Returns
+    -------
+    SplitTensorState
+        Tensor-based state representation
+    """
+    if len(splits) == 0:
+        return SplitTensorState(
+            masks=torch.tensor([], dtype=torch.bool, device=device),
+            scores=torch.tensor([], dtype=torch.float32, device=device),
+            dnf=[],
+            all_literals=[],
+            split_objects=splits,
+        )
+
+    # Stack masks into 2D tensor
+    masks = torch.stack([split.mask for split in splits], dim=0)
+
+    # Collect all unique FilterInfo objects as literals
+    all_literals: list[FilterInfo] = []
+    literal_to_id: dict[FilterInfo, int] = {}
+
+    for split in splits:
+        for filter_info in split.filters:
+            if filter_info not in literal_to_id:
+                literal_to_id[filter_info] = len(all_literals)
+                all_literals.append(filter_info)
+
+    # Build DNF for each split
+    dnf: list[list[list[int]]] = []
+    for split in splits:
+        if len(split.filters) > 0:
+            # Depth-1 split with filters: each filter becomes a separate conjunction (OR)
+            split_dnf: list[list[int]] = []
+            for filter_info in split.filters:
+                lit_id = literal_to_id[filter_info]
+                split_dnf.append([lit_id])
+            dnf.append(split_dnf)
+        else:
+            # Child split: should not happen in depth-1, but handle gracefully
+            dnf.append([])
+
+    # Score splits if score_func provided
+    if score_func is not None and y is not None:
+        scores_tensor = _compute_scores_tensor(y, masks, score_func)
+    else:
+        # Initialize with existing scores or NaN
+        scores_list = [
+            split.score if split.score is not None else float("nan") for split in splits
+        ]
+        scores_tensor = torch.tensor(scores_list, dtype=torch.float32, device=device)
+
+    return SplitTensorState(
+        masks=masks,
+        scores=scores_tensor,
+        dnf=dnf,
+        all_literals=all_literals,
+        split_objects=splits,
+    )
+
+
+def _splits_from_tensor_state(state: SplitTensorState) -> list[Split]:
+    """
+    Convert SplitTensorState back to list of Split objects.
+
+    Parameters
+    ----------
+    state : SplitTensorState
+        Tensor state to convert
+
+    Returns
+    -------
+    list[Split]
+        List of Split objects
+    """
+    if state.split_objects is not None:
+        return state.split_objects
+
+    # Build splits lazily
+    splits = []
+    for idx in range(len(state.masks)):
+        split = state.get_split(idx)
+        splits.append(split)
+
+    return splits
 
 
 def _merge_identical_splits(splits: list[Split]) -> list[Split]:
