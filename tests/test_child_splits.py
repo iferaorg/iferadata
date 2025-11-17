@@ -5,6 +5,7 @@ import pytest
 import torch
 
 from ifera.optionalpha import Split, prepare_splits
+from ifera.optionalpha import FilterInfo, _generate_child_splits
 
 
 def test_max_depth_1_no_child_splits():
@@ -33,7 +34,9 @@ def test_max_depth_1_no_child_splits():
     # All splits should have empty parents list (tier 1 splits)
     for split in splits:
         assert len(split.parents) == 0, "Tier 1 splits should have empty parents list"
-        assert len(split.filters) > 0, "Tier 1 splits should have non-empty filters list"
+        assert (
+            len(split.filters) > 0
+        ), "Tier 1 splits should have non-empty filters list"
 
 
 def test_max_depth_2_generates_child_splits():
@@ -115,10 +118,11 @@ def test_child_split_mask_is_and_of_parents():
 
     # Verify child masks are AND of parent masks
     for child in child_splits:
-        for parent_list in child.parents:
-            parent_a, parent_b = parent_list[0], parent_list[1]
-            # The child mask should be the AND of the two parent masks
-            expected_mask = parent_a.mask & parent_b.mask
+        for parent_set in child.parents:
+            expected_mask = torch.ones_like(child.mask, dtype=torch.bool)
+            for parent in parent_set:
+                expected_mask = expected_mask & parent.mask
+
             assert torch.equal(
                 child.mask, expected_mask
             ), "Child mask should be AND of parent masks"
@@ -156,11 +160,8 @@ def test_no_duplicate_parent_pairs():
     # Check that no two child splits have the same parent pair (in any order)
     seen_pairs = set()
     for child in child_splits:
-        for parent_list in child.parents:
-            parent_a, parent_b = parent_list[0], parent_list[1]
-            # Use id() to create unique identifiers for Split objects
-            # Normalize pair order (smaller id first)
-            pair = tuple(sorted([id(parent_a), id(parent_b)]))
+        for parent_set in child.parents:
+            pair = frozenset(parent_set)
             # Each pair should be unique
             assert pair not in seen_pairs, f"Duplicate parent pair found: {pair}"
             seen_pairs.add(pair)
@@ -402,13 +403,14 @@ def test_child_splits_respect_exclusion_mask():
         # Child mask should have at least one True value
         assert child.mask.any(), "Child split should have at least one True value"
         # Verify parents are Split objects
-        for parent_list in child.parents:
-            parent_a, parent_b = parent_list[0], parent_list[1]
-            assert isinstance(parent_a, Split), "Parent should be a Split object"
-            assert isinstance(parent_b, Split), "Parent should be a Split object"
-            # Verify the child mask is the AND of parent masks
-            expected_mask = parent_a.mask & parent_b.mask
-            assert torch.equal(child.mask, expected_mask), "Child mask should be AND of parents"
+        for parent_set in child.parents:
+            assert all(isinstance(parent, Split) for parent in parent_set)
+            expected_mask = torch.ones_like(child.mask, dtype=torch.bool)
+            for parent in parent_set:
+                expected_mask = expected_mask & parent.mask
+            assert torch.equal(
+                child.mask, expected_mask
+            ), "Child mask should be AND of parents"
 
 
 def test_max_depth_with_max_splits_per_filter():
@@ -441,8 +443,12 @@ def test_max_depth_with_max_splits_per_filter():
     child_splits = [s for s in splits if len(s.parents) > 0]
 
     # Each filter should have at most 3 splits per direction
-    filter_a_tier1 = sum(1 for s in tier1_splits for f in s.filters if f.filter_name == "filter_a")
-    assert filter_a_tier1 <= 6, "filter_a should have at most 6 tier1 splits (3 left + 3 right)"
+    filter_a_tier1 = sum(
+        1 for s in tier1_splits for f in s.filters if f.filter_name == "filter_a"
+    )
+    assert (
+        filter_a_tier1 <= 6
+    ), "filter_a should have at most 6 tier1 splits (3 left + 3 right)"
 
     # Should have some child splits
     assert len(child_splits) > 0, "Should generate child splits"
@@ -479,14 +485,37 @@ def test_parent_indices_valid():
     child_splits = [s for s in splits if len(s.parents) > 0]
 
     # All parents should be Split objects from tier 1
+    tier1_set = set(tier1_splits)
     for child in child_splits:
-        for parent_list in child.parents:
-            parent_a, parent_b = parent_list[0], parent_list[1]
-            assert isinstance(parent_a, Split), "Parent should be a Split object"
-            assert isinstance(parent_b, Split), "Parent should be a Split object"
-            # Verify parents are tier 1 splits (have no parents themselves)
-            assert len(parent_a.parents) == 0, "Parents should be tier 1 splits"
-            assert len(parent_b.parents) == 0, "Parents should be tier 1 splits"
-            # Verify parents exist in tier1_splits list
-            assert parent_a in tier1_splits, "Parent should be in tier 1 splits"
-            assert parent_b in tier1_splits, "Parent should be in tier 1 splits"
+        for parent_set in child.parents:
+            assert parent_set.issubset(tier1_set), "Parents should be in tier 1 splits"
+            assert all(
+                len(parent.parents) == 0 for parent in parent_set
+            ), "Parents should be tier 1 splits"
+
+
+def test_generate_child_splits_accepts_iterables():
+    """_generate_child_splits should accept any iterable of parents without errors."""
+
+    parent_a = Split(
+        mask=torch.tensor([True, False, True]),
+        filters=[FilterInfo(0, "a", 1.0, "left")],
+        parents=[],
+    )
+    parent_b = Split(
+        mask=torch.tensor([True, True, False]),
+        filters=[FilterInfo(1, "b", 2.0, "right")],
+        parents=[],
+    )
+
+    parent_iterable = (parent_a, parent_b)
+    exclusion_mask = torch.zeros((2, 2), dtype=torch.bool)
+
+    children = _generate_child_splits(parent_iterable, parent_iterable, exclusion_mask)
+
+    assert len(children) == 1
+    child = children[0]
+    assert torch.equal(child.mask, parent_a.mask & parent_b.mask)
+    assert len(child.parents) == 1
+    assert next(iter(child.parents[0])) in {parent_a, parent_b}
+    assert child.parents[0] == {parent_a, parent_b}
