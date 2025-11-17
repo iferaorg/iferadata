@@ -2217,6 +2217,136 @@ def _merge_dnf_for_child(
     return unique_conjunctions
 
 
+def _generate_child_splits_tensor_state(
+    state: SplitTensorState,
+    previous_indices: list[int],
+    depth1_indices: list[int],
+    device: torch.device,
+    dtype: torch.dtype,
+    min_samples: int,
+    y: torch.Tensor,
+    score_func,
+) -> tuple[torch.Tensor, torch.Tensor, list[list[list[int]]]]:
+    """
+    Generate child splits using tensor state, returning tensors and DNF.
+
+    Parameters
+    ----------
+    state : SplitTensorState
+        Current tensor state
+    previous_indices : list[int]
+        Indices of previous depth splits
+    depth1_indices : list[int]
+        Indices of depth-1 splits
+    device : torch.device
+        PyTorch device
+    dtype : torch.dtype
+        PyTorch dtype
+    min_samples : int
+        Minimum samples for valid combinations
+    y : torch.Tensor
+        Target values for scoring
+    score_func : callable or None
+        Score function
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, list[list[list[int]]]]
+        Child masks, child scores, and child DNFs
+    """
+    if len(previous_indices) == 0 or len(depth1_indices) == 0:
+        return (
+            torch.empty((0, state.masks.shape[1]), dtype=torch.bool, device=device),
+            torch.empty(0, dtype=dtype, device=device),
+            [],
+        )
+
+    # Get previous and depth-1 masks
+    previous_masks = state.masks[previous_indices]
+    depth1_masks = state.masks[depth1_indices]
+
+    # Compute exclusion mask
+    exclusion_mask = _compute_exclusion_mask_tensor(
+        previous_masks, depth1_masks, min_samples
+    )
+
+    # Find valid pairs
+    valid_pairs = (~exclusion_mask).nonzero(as_tuple=False)
+
+    if len(valid_pairs) == 0:
+        return (
+            torch.empty((0, state.masks.shape[1]), dtype=torch.bool, device=device),
+            torch.empty(0, dtype=dtype, device=device),
+            [],
+        )
+
+    # Compute child masks
+    child_masks = _compute_child_masks_tensor(previous_masks, depth1_masks, valid_pairs)
+
+    # Compute DNFs for children
+    child_dnfs = []
+    for pair_idx in range(len(valid_pairs)):
+        prev_idx = previous_indices[valid_pairs[pair_idx, 0].item()]
+        depth1_idx = depth1_indices[valid_pairs[pair_idx, 1].item()]
+
+        parent_a_dnf = state.dnf[prev_idx]
+        parent_b_dnf = state.dnf[depth1_idx]
+
+        child_dnf = _merge_dnf_for_child(parent_a_dnf, parent_b_dnf)
+        child_dnfs.append(child_dnf)
+
+    # Find identical children and merge
+    if len(child_masks) > 0:
+        child_group_ids = _find_identical_mask_groups(child_masks)
+        unique_groups = torch.unique(child_group_ids, sorted=True)
+
+        # Build merged masks, scores, and DNFs
+        n_samples = child_masks.shape[1]
+        merged_masks = torch.empty(
+            (len(unique_groups), n_samples), dtype=torch.bool, device=device
+        )
+        merged_dnfs = []
+
+        for g_idx, group_id in enumerate(unique_groups):
+            group_mask = child_group_ids == group_id
+            group_indices = group_mask.nonzero(as_tuple=True)[0]
+
+            # Use first mask from group
+            merged_masks[g_idx] = child_masks[group_indices[0]]
+
+            # Merge DNFs from all members of the group
+            group_dnf_all = []
+            for local_idx in group_indices:
+                group_dnf_all.extend(child_dnfs[local_idx.item()])
+
+            # Deduplicate conjunctions
+            unique_conjunctions = []
+            seen = set()
+            for conj in group_dnf_all:
+                conj_tuple = tuple(conj)
+                if conj_tuple not in seen:
+                    seen.add(conj_tuple)
+                    unique_conjunctions.append(conj)
+
+            merged_dnfs.append(unique_conjunctions)
+
+        # Score merged masks
+        if score_func is not None:
+            merged_scores = _compute_scores_tensor(y, merged_masks, score_func)
+        else:
+            merged_scores = torch.full(
+                (len(merged_masks),), float('nan'), dtype=dtype, device=device
+            )
+
+        return merged_masks, merged_scores, merged_dnfs
+    else:
+        return (
+            torch.empty((0, state.masks.shape[1]), dtype=torch.bool, device=device),
+            torch.empty(0, dtype=dtype, device=device),
+            [],
+        )
+
+
 def _print_splits_for_depth(
     depth: int, splits: list[Split], score_func: Optional[object] = None
 ) -> None:
