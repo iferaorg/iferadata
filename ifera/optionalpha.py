@@ -1354,7 +1354,7 @@ def _create_splits_for_filter(
     return splits
 
 
-@torch.compile(mode="max-autotune")
+@torch.compile()
 def _compute_mask_match_counts_for_row(
     mask_row: torch.Tensor, all_masks_float: torch.Tensor, all_masks_inv_float: torch.Tensor
 ) -> torch.Tensor:
@@ -1493,7 +1493,7 @@ def _merge_identical_splits(splits: list[Split]) -> list[Split]:
     return merged_splits
 
 
-@torch.compile(mode="max-autotune")
+@torch.compile()
 def _compute_exclusion_mask_tensor(
     masks_a: torch.Tensor,
     masks_b: torch.Tensor,
@@ -1592,7 +1592,7 @@ def _calculate_exclusion_mask(
     return _compute_exclusion_mask_tensor(masks_a, masks_b, min_samples)
 
 
-@torch.compile(mode="max-autotune")
+@torch.compile()
 def _compute_child_masks_tensor(
     masks_a: torch.Tensor,
     masks_b: torch.Tensor,
@@ -1738,7 +1738,7 @@ def _generate_child_splits(
     return child_splits
 
 
-@torch.compile(mode="max-autotune")
+@torch.compile()
 def _find_redundant_mask_indices(
     new_masks: torch.Tensor,
     old_masks: torch.Tensor,
@@ -1809,7 +1809,7 @@ def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -
     return [new_splits[i] for i in keep_indices.tolist()]
 
 
-@torch.compile(mode="max-autotune")
+@torch.compile()
 def _compute_scores_tensor(y: torch.Tensor, masks: torch.Tensor, score_func) -> torch.Tensor:
     """
     Compute scores for all masks using the score function (compilable wrapper).
@@ -1865,7 +1865,7 @@ def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
         split.score = float(scores[i].item())
 
 
-@torch.compile(mode="max-autotune")
+@torch.compile()
 def _select_top_k_indices(scores: torch.Tensor, k: int) -> torch.Tensor:
     """
     Select indices of top k scores (pure tensor operation).
