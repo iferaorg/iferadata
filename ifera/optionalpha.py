@@ -1521,7 +1521,8 @@ def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
     Find groups of identical masks using torch.unique.
 
     Uses torch.unique with return_inverse=True to efficiently identify
-    duplicate mask patterns without row-by-row processing.
+    duplicate mask patterns, then computes the minimum index for each
+    group.
 
     Parameters
     ----------
@@ -1535,9 +1536,22 @@ def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
         of the first occurrence of that mask pattern. Splits with the same
         value should be merged together.
     """
-    # Use torch.unique to find unique masks and group identical ones
-    # return_inverse gives us the mapping from original indices to unique indices
-    _, group_ids = torch.unique(masks, dim=0, return_inverse=True)
+    n_splits = masks.shape[0]
+    device = masks.device
+
+    unique_masks, inverse = torch.unique(masks, dim=0, return_inverse=True)
+    num_unique = unique_masks.shape[0]
+
+    original_indices = torch.arange(n_splits, device=device)
+
+    # Initialize with a value larger than any index
+    min_indices = torch.full((num_unique,), n_splits, dtype=torch.long, device=device)
+
+    # Compute min index per group
+    min_indices.scatter_reduce_(0, inverse, original_indices, reduce='amin')
+
+    # Map back to original positions
+    group_ids = min_indices[inverse]
 
     return group_ids
 
