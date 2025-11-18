@@ -1548,7 +1548,7 @@ def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
     min_indices = torch.full((num_unique,), n_splits, dtype=torch.long, device=device)
 
     # Compute min index per group
-    min_indices.scatter_reduce_(0, inverse, original_indices, reduce='amin')
+    min_indices.scatter_reduce_(0, inverse, original_indices, reduce="amin")
 
     # Map back to original positions
     group_ids = min_indices[inverse]
@@ -2246,16 +2246,18 @@ def _generate_child_splits_tensor_state(
     child_masks = _compute_child_masks_tensor(previous_masks, depth1_masks, valid_pairs)
 
     # Compute DNFs for children
-    child_dnfs = []
-    for pair_idx in range(len(valid_pairs)):
-        prev_idx = previous_indices[int(valid_pairs[pair_idx, 0].item())]
-        depth1_idx = depth1_indices[int(valid_pairs[pair_idx, 1].item())]
-
-        parent_a_dnf = state.dnf[prev_idx]
-        parent_b_dnf = state.dnf[depth1_idx]
-
-        child_dnf = _merge_dnf_for_child(parent_a_dnf, parent_b_dnf)
-        child_dnfs.append(child_dnf)
+    # Batch convert tensor indices to avoid repeated .item() calls
+    if len(valid_pairs) > 0:
+        valid_pairs_cpu = valid_pairs.cpu().tolist()
+        child_dnfs = [
+            _merge_dnf_for_child(
+                state.dnf[previous_indices[pair[0]]],
+                state.dnf[depth1_indices[pair[1]]],
+            )
+            for pair in valid_pairs_cpu
+        ]
+    else:
+        child_dnfs = []
 
     # Find identical children and merge
     if len(child_masks) > 0:
@@ -2269,7 +2271,10 @@ def _generate_child_splits_tensor_state(
         )
         merged_dnfs = []
 
-        for g_idx, group_id in enumerate(unique_groups):
+        # Convert group_ids to list once for reuse
+        unique_groups_list = unique_groups.cpu().tolist()
+
+        for g_idx, group_id in enumerate(unique_groups_list):
             group_mask = child_group_ids == group_id
             group_indices = group_mask.nonzero(as_tuple=True)[0]
 
@@ -2277,11 +2282,13 @@ def _generate_child_splits_tensor_state(
             merged_masks[g_idx] = child_masks[group_indices[0]]
 
             # Merge DNFs from all members of the group
+            # Convert indices to list once
+            group_indices_list = group_indices.cpu().tolist()
             group_dnf_all = []
-            for local_idx in group_indices:
-                group_dnf_all.extend(child_dnfs[local_idx.item()])
+            for local_idx in group_indices_list:
+                group_dnf_all.extend(child_dnfs[local_idx])
 
-            # Deduplicate conjunctions
+            # Deduplicate conjunctions using set directly on tuples
             unique_conjunctions = []
             seen = set()
             for conj in group_dnf_all:
