@@ -2262,31 +2262,43 @@ def _generate_child_splits_tensor_state(
     # Find identical children and merge
     if len(child_masks) > 0:
         child_group_ids = _find_identical_mask_groups(child_masks)
-        unique_groups = torch.unique(child_group_ids, sorted=True)
+        unique_groups, inverse_indices = torch.unique(
+            child_group_ids, sorted=True, return_inverse=True
+        )
 
         # Build merged masks, scores, and DNFs
         n_samples = child_masks.shape[1]
-        merged_masks = torch.empty(
-            (len(unique_groups), n_samples), dtype=torch.bool, device=device
+        n_unique = len(unique_groups)
+
+        # Vectorized: find first occurrence of each group using scatter_reduce (min)
+        # Create indices tensor and use scatter to find min index per group
+        indices_range = torch.arange(len(child_group_ids), device=device)
+        first_occurrence_idx = torch.full(
+            (n_unique,), len(child_group_ids), dtype=torch.long, device=device
         )
+        first_occurrence_idx.scatter_reduce_(
+            0, inverse_indices, indices_range, reduce="amin", include_self=False
+        )
+
+        # Vectorized: select all merged masks at once
+        merged_masks = child_masks[first_occurrence_idx]
+
+        # Now handle DNFs (CPU-bound, keep in Python)
         merged_dnfs = []
+        inverse_indices_cpu = inverse_indices.cpu().tolist()
 
-        # Convert group_ids to list once for reuse
-        unique_groups_list = unique_groups.cpu().tolist()
-
-        for g_idx, group_id in enumerate(unique_groups_list):
-            group_mask = child_group_ids == group_id
-            group_indices = group_mask.nonzero(as_tuple=True)[0]
-
-            # Use first mask from group
-            merged_masks[g_idx] = child_masks[group_indices[0]]
+        for group_idx in range(n_unique):
+            # Find all child indices for this group using inverse_indices
+            group_child_indices = [
+                i
+                for i, inv_idx in enumerate(inverse_indices_cpu)
+                if inv_idx == group_idx
+            ]
 
             # Merge DNFs from all members of the group
-            # Convert indices to list once
-            group_indices_list = group_indices.cpu().tolist()
             group_dnf_all = []
-            for local_idx in group_indices_list:
-                group_dnf_all.extend(child_dnfs[local_idx])
+            for child_idx in group_child_indices:
+                group_dnf_all.extend(child_dnfs[child_idx])
 
             # Deduplicate conjunctions using set directly on tuples
             unique_conjunctions = []
