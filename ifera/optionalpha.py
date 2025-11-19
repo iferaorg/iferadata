@@ -2156,6 +2156,8 @@ def _evaluate_filters(
     score_func,
     filter_eval_folds: int,
     filter_eval_repeats: int,
+    verbose: str = "no",
+    min_score_improvement: float | None = None,
 ) -> dict[tuple[str, str], float]:
     """
     Evaluate filters using n-fold cross-validation with k repeats.
@@ -2177,6 +2179,11 @@ def _evaluate_filters(
         Number of folds for cross-validation
     filter_eval_repeats : int
         Number of times to repeat cross-validation
+    verbose : str, optional
+        Controls printing. Default is "no". If not "no", prints the evaluation table.
+    min_score_improvement : float | None, optional
+        Threshold for filtering. Used to calculate summary statistics for filters
+        above threshold. Default is None.
 
     Returns
     -------
@@ -2335,8 +2342,8 @@ def _evaluate_filters(
         avg_improvement = sum(all_improvements) / len(all_improvements)
         score_improvements[key] = avg_improvement
 
-    # Step 6: Print results using rich table
-    if len(score_improvements) > 0:
+    # Step 6: Print results using rich table (only if verbose is not "no")
+    if len(score_improvements) > 0 and verbose != "no":
         # Sort by score improvement (descending)
         sorted_items = sorted(score_improvements.items(), key=lambda x: x[1], reverse=True)
 
@@ -2347,6 +2354,68 @@ def _evaluate_filters(
 
         for (filter_name, direction), improvement in sorted_items:
             table.add_row(filter_name, direction, f"{improvement:.6f}")
+
+        # Add summary statistics
+        table.add_section()
+
+        # Calculate summary statistics
+        all_improvements = list(score_improvements.values())
+        avg_improvement = sum(all_improvements) / len(all_improvements)
+
+        # Calculate weighted average (weighted by number of splits per filter)
+        total_splits = 0
+        weighted_sum = 0.0
+        for key, improvement in score_improvements.items():
+            n_splits = len(filter_splits_dict[key])
+            weighted_sum += improvement * n_splits
+            total_splits += n_splits
+        weighted_avg_improvement = weighted_sum / total_splits if total_splits > 0 else 0.0
+
+        # Add summary rows
+        table.add_row(
+            "[bold]Average (all filters)[/bold]",
+            "",
+            f"[bold]{avg_improvement:.6f}[/bold]",
+        )
+        table.add_row(
+            "[bold]Weighted Avg (all filters)[/bold]",
+            "",
+            f"[bold]{weighted_avg_improvement:.6f}[/bold]",
+        )
+
+        # Add statistics for filters above threshold if min_score_improvement is set
+        if min_score_improvement is not None:
+            above_threshold = [
+                (key, imp)
+                for key, imp in score_improvements.items()
+                if imp >= min_score_improvement
+            ]
+
+            if len(above_threshold) > 0:
+                improvements_above = [imp for _, imp in above_threshold]
+                avg_above = sum(improvements_above) / len(improvements_above)
+
+                # Weighted average for above threshold
+                weighted_sum_above = 0.0
+                total_splits_above = 0
+                for key, improvement in above_threshold:
+                    n_splits = len(filter_splits_dict[key])
+                    weighted_sum_above += improvement * n_splits
+                    total_splits_above += n_splits
+                weighted_avg_above = (
+                    weighted_sum_above / total_splits_above if total_splits_above > 0 else 0.0
+                )
+
+                table.add_row(
+                    f"[bold]Average (>= {min_score_improvement:.6f})[/bold]",
+                    "",
+                    f"[bold]{avg_above:.6f}[/bold]",
+                )
+                table.add_row(
+                    f"[bold]Weighted Avg (>= {min_score_improvement:.6f})[/bold]",
+                    "",
+                    f"[bold]{weighted_avg_above:.6f}[/bold]",
+                )
 
         console.print()
         console.print(table)
@@ -2544,7 +2613,13 @@ def prepare_splits(
     if score_func is not None:
         # Evaluate filters before scoring to get score improvements
         filter_score_improvements = _evaluate_filters(
-            depth_1_splits, y, score_func, filter_eval_folds, filter_eval_repeats
+            depth_1_splits,
+            y,
+            score_func,
+            filter_eval_folds,
+            filter_eval_repeats,
+            verbose,
+            min_score_improvement,
         )
 
         # Remove splits with insufficient score improvement if min_score_improvement is set
