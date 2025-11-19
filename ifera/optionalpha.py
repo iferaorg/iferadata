@@ -14,6 +14,7 @@ from typing import Iterable, NamedTuple, Optional
 import pandas as pd
 import torch
 from bs4 import BeautifulSoup
+from einops import rearrange
 from rich.console import Console
 from rich.panel import Panel
 
@@ -2219,99 +2220,120 @@ def _evaluate_filters(
     )
 
     # Step 4: Create base mask (True for actual samples, False for padding)
-    # and calculate base_validation_score
+    # and calculate base_validation_score using vectorized operations
     base_mask = torch.ones(n_samples_padded, dtype=torch.bool, device=device)
     if n_samples_padded > n_samples:
         base_mask[n_samples:] = False
 
+    # Vectorize base validation score calculation across all repeats and folds
+    # Shape: (repeats, padded) -> (repeats, folds, valid_size)
+    base_masks_all = base_mask[randperm]  # Shape: (repeats, padded)
+    base_masks_all = base_masks_all.reshape(filter_eval_repeats, filter_eval_folds, n_samples_valid)
+
+    # Calculate base scores for all CV buckets
+    # We need to loop over buckets since score_func expects single y tensor
     base_validation_scores = torch.zeros(
         (filter_eval_repeats, filter_eval_folds), dtype=y.dtype, device=device
     )
     for k in range(filter_eval_repeats):
-        perm_k = randperm[k]
-        base_mask_shuffled = base_mask[perm_k]
-
         for fold in range(filter_eval_folds):
-            # Get validation indices for this fold
-            valid_start = fold * n_samples_valid
-            valid_end = valid_start + n_samples_valid
-
-            # Get base validation mask for this fold
-            base_valid_mask = base_mask_shuffled[valid_start:valid_end].unsqueeze(0)
-            base_score = score_func(y_valid[k, fold], base_valid_mask)
+            base_score = score_func(y_valid[k, fold], base_masks_all[k, fold].unsqueeze(0))
             base_validation_scores[k, fold] = base_score[0]
 
     # Step 5: Evaluate each filter+direction
     score_improvements: dict[tuple[str, str], float] = {}
 
     for key, splits in filter_splits_dict.items():
-        improvements = []
+        # Pad all masks for these splits
+        masks_padded_list = []
+        for split in splits:
+            if n_samples_padded > n_samples:
+                mask_padded = torch.cat(
+                    [
+                        split.mask,
+                        torch.zeros(n_samples_padded - n_samples, dtype=torch.bool, device=device),
+                    ]
+                )
+            else:
+                mask_padded = split.mask
+            masks_padded_list.append(mask_padded)
 
+        if len(masks_padded_list) == 0:
+            continue
+
+        # Stack masks: (n_splits, padded)
+        masks_padded = torch.stack(masks_padded_list, dim=0)
+
+        # Shuffle all masks for all repeats: (n_splits, padded) -> (n_splits, repeats, padded)
+        masks_shuffled = masks_padded[:, None, :].expand(-1, filter_eval_repeats, -1)
+        # Apply permutations: gather along last dim using randperm indices
+        # We need to index each mask with each permutation
+        masks_shuffled = torch.stack(
+            [masks_padded[i][randperm] for i in range(len(masks_padded_list))], dim=0
+        )  # Shape: (n_splits, repeats, padded)
+
+        # Reshape to separate folds: (n_splits, repeats, padded) -> (n_splits, repeats, folds, valid)
+        masks_shuffled = masks_shuffled.reshape(
+            len(masks_padded_list), filter_eval_repeats, filter_eval_folds, n_samples_valid
+        )
+
+        # Extract validation masks: already have the right shape
+        valid_masks = masks_shuffled  # Shape: (n_splits, repeats, folds, valid_size)
+
+        # Extract training masks (exclude validation fold)
+        # This is more complex, need to handle each fold separately
+        train_masks_list = []
+        for fold in range(filter_eval_folds):
+            if fold == 0:
+                # Training is folds 1 to end
+                train_data = masks_shuffled[:, :, 1:, :].reshape(
+                    len(masks_padded_list), filter_eval_repeats, n_samples_train
+                )
+            elif fold == filter_eval_folds - 1:
+                # Training is folds 0 to end-1
+                train_data = masks_shuffled[:, :, :-1, :].reshape(
+                    len(masks_padded_list), filter_eval_repeats, n_samples_train
+                )
+            else:
+                # Training is folds before and after current fold
+                train_data = torch.cat(
+                    [
+                        masks_shuffled[:, :, :fold, :],
+                        masks_shuffled[:, :, fold + 1 :, :],
+                    ],
+                    dim=2,
+                ).reshape(len(masks_padded_list), filter_eval_repeats, n_samples_train)
+            train_masks_list.append(train_data)
+
+        # Stack: (folds, n_splits, repeats, train_size) -> (n_splits, repeats, folds, train_size)
+        train_masks = torch.stack(train_masks_list, dim=2)
+
+        # Score all splits across all CV buckets
+        # Vectorized mask preparation but loop over buckets for scoring
+        all_improvements = []
         for k in range(filter_eval_repeats):
-            perm_k = randperm[k]
-
             for fold in range(filter_eval_folds):
-                # Create masks for training and validation sets
-                valid_start = fold * n_samples_valid
-                valid_end = valid_start + n_samples_valid
+                # Get train and validation masks for this bucket
+                # train_masks shape: (n_splits, repeats, folds, train_size)
+                # valid_masks shape: (n_splits, repeats, folds, valid_size)
+                train_masks_bucket = train_masks[:, k, fold, :]  # (n_splits, train_size)
+                valid_masks_bucket = valid_masks[:, k, fold, :]  # (n_splits, valid_size)
 
-                # Stack training and validation masks for all splits
-                train_masks_list = []
-                valid_masks_list = []
-                for split in splits:
-                    # Pad mask if necessary
-                    if n_samples_padded > n_samples:
-                        mask_padded = torch.cat(
-                            [
-                                split.mask,
-                                torch.zeros(
-                                    n_samples_padded - n_samples, dtype=torch.bool, device=device
-                                ),
-                            ]
-                        )
-                    else:
-                        mask_padded = split.mask
-
-                    # Shuffle the padded mask
-                    mask_shuffled = mask_padded[perm_k]
-
-                    # Get training indices
-                    if fold == 0:
-                        train_mask = mask_shuffled[valid_end:]
-                    elif fold == filter_eval_folds - 1:
-                        train_mask = mask_shuffled[:valid_start]
-                    else:
-                        train_mask = torch.cat(
-                            [mask_shuffled[:valid_start], mask_shuffled[valid_end:]]
-                        )
-                    train_masks_list.append(train_mask)
-
-                    # Get validation mask
-                    valid_mask = mask_shuffled[valid_start:valid_end]
-                    valid_masks_list.append(valid_mask)
-
-                if len(train_masks_list) == 0:
-                    continue
-
-                train_masks_stacked = torch.stack(train_masks_list, dim=0)
-                valid_masks_stacked = torch.stack(valid_masks_list, dim=0)
-
-                # Find best split on training set
-                train_scores = score_func(y_train[k, fold], train_masks_stacked)
+                # Score all splits on training set
+                train_scores = score_func(y_train[k, fold], train_masks_bucket)
                 best_split_idx = torch.argmax(train_scores).item()
 
                 # Evaluate best split on validation set
-                best_valid_mask = valid_masks_stacked[best_split_idx : best_split_idx + 1]
+                best_valid_mask = valid_masks_bucket[best_split_idx : best_split_idx + 1]
                 valid_score = score_func(y_valid[k, fold], best_valid_mask)
 
                 # Calculate score improvement
                 improvement = valid_score[0].item() - base_validation_scores[k, fold].item()
-                improvements.append(improvement)
+                all_improvements.append(improvement)
 
         # Calculate average score improvement
-        if len(improvements) > 0:
-            avg_improvement = sum(improvements) / len(improvements)
-            score_improvements[key] = avg_improvement
+        avg_improvement = sum(all_improvements) / len(all_improvements)
+        score_improvements[key] = avg_improvement
 
     # Step 6: Print results using rich table
     if len(score_improvements) > 0:
