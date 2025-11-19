@@ -2064,14 +2064,11 @@ def _create_cv_indices(
     n_samples_train = n_samples_padded - n_samples_valid
 
     # Create k batches of random permutations
+    # Generate permutations for the full range up to n_samples_padded
     randperm = torch.zeros((n_repeats, n_samples_padded), dtype=torch.long, device=device)
     for k in range(n_repeats):
-        # Create random permutation of actual samples
-        perm = torch.randperm(n_samples, device=device)
-        # Pad with zeros (will be masked out later)
-        if n_samples_padded > n_samples:
-            padding = torch.zeros(n_samples_padded - n_samples, dtype=torch.long, device=device)
-            perm = torch.cat([perm, padding])
+        # Create random permutation of the padded range
+        perm = torch.randperm(n_samples_padded, device=device)
         randperm[k] = perm
 
     return randperm, n_samples_padded, n_samples_train, n_samples_valid
@@ -2221,15 +2218,27 @@ def _evaluate_filters(
         n_samples,
     )
 
-    # Step 4: Calculate base_validation_score (all-true mask)
+    # Step 4: Create base mask (True for actual samples, False for padding)
+    # and calculate base_validation_score
+    base_mask = torch.ones(n_samples_padded, dtype=torch.bool, device=device)
+    if n_samples_padded > n_samples:
+        base_mask[n_samples:] = False
+
     base_validation_scores = torch.zeros(
         (filter_eval_repeats, filter_eval_folds), dtype=y.dtype, device=device
     )
     for k in range(filter_eval_repeats):
+        perm_k = randperm[k]
+        base_mask_shuffled = base_mask[perm_k]
+
         for fold in range(filter_eval_folds):
-            # All-true mask for validation set
-            all_true_mask = torch.ones((1, n_samples_valid), dtype=torch.bool, device=device)
-            base_score = score_func(y_valid[k, fold], all_true_mask)
+            # Get validation indices for this fold
+            valid_start = fold * n_samples_valid
+            valid_end = valid_start + n_samples_valid
+
+            # Get base validation mask for this fold
+            base_valid_mask = base_mask_shuffled[valid_start:valid_end].unsqueeze(0)
+            base_score = score_func(y_valid[k, fold], base_valid_mask)
             base_validation_scores[k, fold] = base_score[0]
 
     # Step 5: Evaluate each filter+direction
@@ -2246,33 +2255,39 @@ def _evaluate_filters(
                 valid_start = fold * n_samples_valid
                 valid_end = valid_start + n_samples_valid
 
-                # Get training indices
-                if fold == 0:
-                    train_indices = perm_k[valid_end:]
-                elif fold == filter_eval_folds - 1:
-                    train_indices = perm_k[:valid_start]
-                else:
-                    train_indices = torch.cat([perm_k[:valid_start], perm_k[valid_end:]])
-
-                # Get validation indices
-                valid_indices = perm_k[valid_start:valid_end]
-
-                # Stack training masks for all splits
+                # Stack training and validation masks for all splits
                 train_masks_list = []
                 valid_masks_list = []
                 for split in splits:
-                    # Create training mask
-                    train_mask = split.mask[train_indices]
-                    # Trim to actual n_samples_train if we have padding
-                    if len(train_mask) > n_samples_train:
-                        train_mask = train_mask[:n_samples_train]
+                    # Pad mask if necessary
+                    if n_samples_padded > n_samples:
+                        mask_padded = torch.cat(
+                            [
+                                split.mask,
+                                torch.zeros(
+                                    n_samples_padded - n_samples, dtype=torch.bool, device=device
+                                ),
+                            ]
+                        )
+                    else:
+                        mask_padded = split.mask
+
+                    # Shuffle the padded mask
+                    mask_shuffled = mask_padded[perm_k]
+
+                    # Get training indices
+                    if fold == 0:
+                        train_mask = mask_shuffled[valid_end:]
+                    elif fold == filter_eval_folds - 1:
+                        train_mask = mask_shuffled[:valid_start]
+                    else:
+                        train_mask = torch.cat(
+                            [mask_shuffled[:valid_start], mask_shuffled[valid_end:]]
+                        )
                     train_masks_list.append(train_mask)
 
-                    # Create validation mask
-                    valid_mask = split.mask[valid_indices]
-                    # Trim to actual n_samples_valid if we have padding
-                    if len(valid_mask) > n_samples_valid:
-                        valid_mask = valid_mask[:n_samples_valid]
+                    # Get validation mask
+                    valid_mask = mask_shuffled[valid_start:valid_end]
                     valid_masks_list.append(valid_mask)
 
                 if len(train_masks_list) == 0:
