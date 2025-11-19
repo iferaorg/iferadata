@@ -150,7 +150,9 @@ def test_prepare_splits_keep_best_n_filters_splits():
         scores = [split.score for split in top_splits]
         assert all(s is not None for s in scores), "All splits should have scores"
         scores_typed = [s for s in scores if s is not None]  # Type guard
-        assert scores_typed == sorted(scores_typed, reverse=True), "Splits should be sorted by score"
+        assert scores_typed == sorted(
+            scores_typed, reverse=True
+        ), "Splits should be sorted by score"
 
         # Verify that all top_splits have higher scores than any non-selected split
         top_min_score = min(scores_typed)
@@ -323,7 +325,9 @@ def test_prepare_splits_score_ordering():
     scores = [split.score for split in splits]
     assert all(s is not None for s in scores), "All splits should have scores"
     scores_typed = [s for s in scores if s is not None]  # Type guard
-    assert scores_typed == sorted(scores_typed, reverse=True), "Splits should be ordered by score descending"
+    assert scores_typed == sorted(
+        scores_typed, reverse=True
+    ), "Splits should be ordered by score descending"
 
 
 def test_prepare_splits_early_exit_with_keep_best_n():
@@ -413,9 +417,14 @@ def test_score_func_receives_correct_parameters():
     assert len(received_shapes) > 0, "score_func should have been called"
 
     # Verify shapes
+    # Note: With filter evaluation, score_func is called with different y sizes
+    # (train/validation splits during CV), so we check that:
+    # 1. y is always 1D
+    # 2. masks is always 2D
+    # 3. masks second dimension matches y size
     for y_shape, masks_shape in received_shapes:
-        assert y_shape == (n_samples,), f"y should have shape ({n_samples},), got {y_shape}"
+        assert len(y_shape) == 1, f"y should be 1D, got {y_shape}"
         assert len(masks_shape) == 2, f"masks should be 2D, got {masks_shape}"
         assert (
-            masks_shape[1] == n_samples
-        ), f"masks second dimension should be {n_samples}, got {masks_shape[1]}"
+            masks_shape[1] == y_shape[0]
+        ), f"masks second dimension should match y size, got {masks_shape[1]} vs {y_shape[0]}"
