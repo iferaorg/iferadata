@@ -1,7 +1,7 @@
 numpy==2.2.4
 pandas==2.3.3
 tqdm==4.67.1
-boto3==1.40.63 
+boto3==1.40.76 
 pydantic==2.12.3
 pydantic-settings==2.11.0 
 torch==2.9.0
