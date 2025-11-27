@@ -2437,7 +2437,7 @@ def _evaluate_filters(
 
         # Calculate average sample count of best splits across CV folds
         avg_best_samples = (
-            sum(all_best_sample_counts) // len(all_best_sample_counts)
+            int(sum(all_best_sample_counts) / len(all_best_sample_counts) + 0.5)
             if len(all_best_sample_counts) > 0
             else 0
         )
