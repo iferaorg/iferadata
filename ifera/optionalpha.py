@@ -6,17 +6,19 @@ from Option Alpha and convert them into pandas DataFrames.
 """
 
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Iterable, NamedTuple, Optional
+from functools import reduce
 
 import pandas as pd
 import torch
 from bs4 import BeautifulSoup
 from rich.console import Console
 from rich.panel import Panel
-
+from tqdm.rich import tqdm
 
 @dataclass
 class SplitTensorState:
@@ -453,6 +455,8 @@ def _read_filter_file(file_name: str) -> pd.DataFrame | None:
         return parse_filter_log(html)
     except FileNotFoundError:
         return None
+    except Exception as e:
+        raise ValueError(f"Error reading filter file '{file_name}': {e}") from e
 
 
 def _parse_description_with_regex(
@@ -562,9 +566,7 @@ def parse_moving_average(file_name: str) -> pd.DataFrame | None:
         return None
 
     def _parse_moving_average(description):
-        match = re.search(
-            r"Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)", description
-        )
+        match = re.search(r"Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)", description)
         if match:
             price = float(match.group(1).replace(",", ""))
             ma = float(match.group(2).replace(",", ""))
@@ -595,14 +597,19 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
     return df[["date", "range_width"]]  # type: ignore
 
 
+def parse_gex(file_name: str) -> pd.DataFrame | None:
+    df = _read_filter_file(file_name)
+    if df is None:
+        return None
+    return _parse_description_with_regex(df, "gex", r":\s+(\-?[\d,]+(?:\.\d+)?)")
+
+
 def parse_change_percent(prefix: str) -> pd.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_PERCENT.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(
-        df, "change_percent", r"Below min: (\-?[\d,]+\.\d+)"
-    )
+    return _parse_description_with_regex(df, "change_percent", r"Below min: (\-?[\d,]+\.\d+)")
 
 
 def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
@@ -610,9 +617,7 @@ def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(
-        df, "change_stdev", r"Change Std Devs: (\-?[\d,]+\.\d+)"
-    )
+    return _parse_description_with_regex(df, "change_stdev", r"Change Std Devs: (\-?[\d,]+\.\d+)")
 
 
 def parse_gap(prefix: str) -> pd.DataFrame | None:
@@ -628,9 +633,7 @@ def parse_open_change(prefix: str) -> pd.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(
-        df, "open_change", r"Open Chg %: (\-?[\d,]+\.\d+)"
-    )
+    return _parse_description_with_regex(df, "open_change", r"Open Chg %: (\-?[\d,]+\.\d+)")
 
 
 def parse_vixc(prefix: str) -> pd.DataFrame | None:
@@ -725,13 +728,9 @@ def get_filters(prefix: str) -> pd.DataFrame:
         "VIX",
     ]
     for indicator_name in indicator_names:
-        indicator_df = parse_simple_indicator(
-            f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt"
-        )
+        indicator_df = parse_simple_indicator(f"{FILTERS_FOLDER}{prefix}-{indicator_name}.txt")
         if indicator_df is not None:
-            indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
-            )
+            indicator_df = indicator_df.rename(columns={"indicator": f"{indicator_name.lower()}"})
             dfs.append(indicator_df)
 
     # Moving averages
@@ -755,12 +754,21 @@ def get_filters(prefix: str) -> pd.DataFrame:
             ma_df = ma_df.rename(columns={"moving_average": f"{ma.lower()}"})
             dfs.append(ma_df)
 
-    if dfs:
-        from functools import reduce
+    file_names = []
+    for file in os.listdir(FILTERS_FOLDER):
+        if file.startswith(f"{prefix}-GEX-") and file.endswith(".txt"):
+            file_names.append(os.path.join(FILTERS_FOLDER, file))
 
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
+    for file_name in file_names:
+        gex_df = parse_gex(file_name)
+        if gex_df is not None:
+            # Extract suffix from file name for column naming
+            suffix = file_name.split(f"{prefix}-GEX-")[-1].replace(".txt", "").replace("-", "_").lower()
+            gex_df = gex_df.rename(columns={"gex": f"gex_{suffix}"})
+            dfs.append(gex_df)
+
+    if dfs:
+        df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
             if col != "date":
@@ -771,9 +779,9 @@ def get_filters(prefix: str) -> pd.DataFrame:
         df_merged.index.name = "date"
 
         return df_merged
-    else:
-        # Return empty DataFrame with DatetimeIndex
-        return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
+
+    # Return empty DataFrame with DatetimeIndex
+    return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
 
 
 class Split:
@@ -1018,9 +1026,7 @@ class Split:
                 break
 
         if len(seen_conjunctions) > self.max_conjunctions_print:
-            lines.append(
-                f" - ... ({len(seen_conjunctions) - self.max_conjunctions_print} more)"
-            )
+            lines.append(f" - ... ({len(seen_conjunctions) - self.max_conjunctions_print} more)")
 
         return "\n".join(lines)
 
@@ -1085,9 +1091,7 @@ def _compute_child_parent_sets(parent_a: Split, parent_b: Split) -> list[set[Spl
     return _deduplicate_parent_sets(combined_sets)
 
 
-def _align_filters_with_trades(
-    filters_df: pd.DataFrame, trades_df: pd.DataFrame
-) -> pd.DataFrame:
+def _align_filters_with_trades(filters_df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -1156,9 +1160,7 @@ def _add_computed_columns(
         Updated filters DataFrame and updated left_only_filters list
     """
     # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
+    filters_df["reward_per_risk"] = (spread_width * 100 - trades_df["risk"]) / trades_df["risk"]
 
     # Add premium column
     filters_df["premium"] = spread_width * 100 - trades_df["risk"]
@@ -1340,32 +1342,19 @@ def _create_splits_for_filter(
         List of Split objects for this filter
     """
     # Convert filter column to tensor for masking (original values)
-    col_tensor_original = torch.tensor(
-        filters_df[col_name].values, dtype=dtype, device=device
-    )
+    col_tensor_original = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
     # Check if this filter has a granularity
-    granularity = filter_granularities.get(col_name)
+    granularity = filter_granularities.get(col_name, 0.01)
 
     splits = []
 
     # Create left splits if not in right_only_filters
     if col_name not in right_only_filters:
-        if granularity is not None:
-            # Round values UP to nearest granularity multiple for left direction
-            rounded_vals = [
-                math.ceil(v / granularity) * granularity for v in filters_df[col_name]
-            ]
-            unique_vals_left = torch.tensor(
-                sorted(set(rounded_vals)), dtype=dtype, device=device
-            )
-            col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
-        else:
-            # Use original unique values
-            unique_vals_left = torch.tensor(
-                sorted(filters_df[col_name].unique()), dtype=dtype, device=device
-            )
-            col_tensor_left = col_tensor_original
+        # Round values UP to nearest granularity multiple for left direction
+        rounded_vals = [math.ceil(v / granularity) * granularity for v in filters_df[col_name]]
+        unique_vals_left = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
+        col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
 
         if len(unique_vals_left) > 1:
             left_split_indices = _select_split_indices(
@@ -1381,9 +1370,7 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold DOWN (opposite of left rounding) to nearest granularity
-                    threshold = (
-                        math.floor(threshold_avg.item() / granularity) * granularity
-                    )
+                    threshold = math.floor(threshold_avg.item() / granularity) * granularity
                 else:
                     threshold = threshold_avg.item()
 
@@ -1399,21 +1386,10 @@ def _create_splits_for_filter(
 
     # Create right splits if not in left_only_filters
     if col_name not in left_only_filters:
-        if granularity is not None:
-            # Round values DOWN to nearest granularity multiple for right direction
-            rounded_vals = [
-                math.floor(v / granularity) * granularity for v in filters_df[col_name]
-            ]
-            unique_vals_right = torch.tensor(
-                sorted(set(rounded_vals)), dtype=dtype, device=device
-            )
-            col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
-        else:
-            # Use original unique values
-            unique_vals_right = torch.tensor(
-                sorted(filters_df[col_name].unique()), dtype=dtype, device=device
-            )
-            col_tensor_right = col_tensor_original
+        # Round values DOWN to nearest granularity multiple for right direction
+        rounded_vals = [math.floor(v / granularity) * granularity for v in filters_df[col_name]]
+        unique_vals_right = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
+        col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
 
         if len(unique_vals_right) > 1:
             right_split_indices = _select_split_indices(
@@ -1429,9 +1405,7 @@ def _create_splits_for_filter(
 
                 if granularity is not None:
                     # Round threshold UP (opposite of right rounding) to nearest granularity
-                    threshold = (
-                        math.ceil(threshold_avg.item() / granularity) * granularity
-                    )
+                    threshold = math.ceil(threshold_avg.item() / granularity) * granularity
                 else:
                     threshold = threshold_avg.item()
 
@@ -1806,12 +1780,8 @@ def _generate_child_splits(
 
         # Convert back to tensors
         if len(filtered_i) > 0:
-            valid_i = torch.tensor(
-                filtered_i, dtype=torch.long, device=exclusion_mask.device
-            )
-            valid_j = torch.tensor(
-                filtered_j, dtype=torch.long, device=exclusion_mask.device
-            )
+            valid_i = torch.tensor(filtered_i, dtype=torch.long, device=exclusion_mask.device)
+            valid_j = torch.tensor(filtered_j, dtype=torch.long, device=exclusion_mask.device)
         else:
             valid_i = torch.tensor([], dtype=torch.long, device=exclusion_mask.device)
             valid_j = torch.tensor([], dtype=torch.long, device=exclusion_mask.device)
@@ -1886,9 +1856,7 @@ def _find_redundant_mask_indices(
     return keep_mask
 
 
-def _remove_redundant_splits(
-    new_splits: list[Split], old_splits: list[Split]
-) -> list[Split]:
+def _remove_redundant_splits(new_splits: list[Split], old_splits: list[Split]) -> list[Split]:
     """
     Remove new splits that have identical masks to old splits.
 
@@ -1920,9 +1888,7 @@ def _remove_redundant_splits(
 
 
 @torch.compile()
-def _compute_scores_tensor(
-    y: torch.Tensor, masks: torch.Tensor, score_func
-) -> torch.Tensor:
+def _compute_scores_tensor(y: torch.Tensor, masks: torch.Tensor, score_func) -> torch.Tensor:
     """
     Compute scores for all masks using the score function (compilable wrapper).
 
@@ -2073,6 +2039,402 @@ def _print_splits_for_depth(
     console.print()
 
 
+def _create_cv_indices(
+    n_samples: int, n_folds: int, n_repeats: int, device: torch.device
+) -> tuple[torch.Tensor, int, int, int]:
+    """
+    Create cross-validation indices for n-fold CV with k repeats.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of samples in the dataset
+    n_folds : int
+        Number of folds for cross-validation
+    n_repeats : int
+        Number of times to repeat the cross-validation
+    device : torch.device
+        PyTorch device for tensors
+
+    Returns
+    -------
+    tuple[torch.Tensor, int, int, int]
+        - randperm: Tensor of shape (n_repeats, n_samples_padded) with random indices
+        - n_samples_padded: Padded number of samples divisible by n_folds
+        - n_samples_train: Number of samples in training set
+        - n_samples_valid: Number of samples in validation set
+    """
+    # Calculate n_samples_padded: smallest int >= n_samples divisible by n_folds
+    n_samples_padded = ((n_samples + n_folds - 1) // n_folds) * n_folds
+
+    # Calculate train and validation set sizes
+    n_samples_valid = n_samples_padded // n_folds
+    n_samples_train = n_samples_padded - n_samples_valid
+
+    # Create k batches of random permutations
+    # Generate permutations for the full range up to n_samples_padded
+    randperm = torch.zeros((n_repeats, n_samples_padded), dtype=torch.long, device=device)
+    for k in range(n_repeats):
+        # Create random permutation of the padded range
+        perm = torch.randperm(n_samples_padded, device=device)
+        randperm[k] = perm
+
+    return randperm, n_samples_padded, n_samples_train, n_samples_valid
+
+
+def _create_cv_splits(
+    y: torch.Tensor,
+    randperm: torch.Tensor,
+    n_folds: int,
+    n_samples_padded: int,
+    n_samples_train: int,
+    n_samples_valid: int,
+    n_samples: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Create train/validation splits for cross-validation.
+
+    Parameters
+    ----------
+    y : torch.Tensor
+        1-D tensor of target values (n_samples,)
+    randperm : torch.Tensor
+        Random permutation tensor of shape (n_repeats, n_samples_padded)
+    n_folds : int
+        Number of folds
+    n_samples_padded : int
+        Padded number of samples
+    n_samples_train : int
+        Number of samples in training set
+    n_samples_valid : int
+        Number of samples in validation set
+    n_samples : int
+        Original number of samples
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        - y_train: Tensor of shape (n_repeats, n_folds, n_samples_train)
+        - y_valid: Tensor of shape (n_repeats, n_folds, n_samples_valid)
+    """
+    n_repeats = randperm.shape[0]
+    device = y.device
+    dtype = y.dtype
+
+    # Pad y with zeros if needed
+    if n_samples_padded > n_samples:
+        y_padded = torch.cat(
+            [y, torch.zeros(n_samples_padded - n_samples, dtype=dtype, device=device)]
+        )
+    else:
+        y_padded = y
+
+    # Initialize output tensors
+    y_train = torch.zeros((n_repeats, n_folds, n_samples_train), dtype=dtype, device=device)
+    y_valid = torch.zeros((n_repeats, n_folds, n_samples_valid), dtype=dtype, device=device)
+
+    # Create train/validation splits for each repeat and fold
+    for k in range(n_repeats):
+        perm_k = randperm[k]
+        y_shuffled = y_padded[perm_k]
+
+        for fold in range(n_folds):
+            # Validation indices for this fold
+            valid_start = fold * n_samples_valid
+            valid_end = valid_start + n_samples_valid
+
+            # Create validation set
+            y_valid[k, fold] = y_shuffled[valid_start:valid_end]
+
+            # Create training set (all except validation fold)
+            if fold == 0:
+                y_train[k, fold] = y_shuffled[valid_end:]
+            elif fold == n_folds - 1:
+                y_train[k, fold] = y_shuffled[:valid_start]
+            else:
+                y_train[k, fold] = torch.cat([y_shuffled[:valid_start], y_shuffled[valid_end:]])
+
+    return y_train, y_valid
+
+
+def _evaluate_filters(
+    depth_1_splits: list[Split],
+    y: torch.Tensor,
+    score_func,
+    filter_eval_folds: int,
+    filter_eval_repeats: int,
+    verbose: str = "no",
+    min_score_improvement: float | None = None,
+) -> dict[tuple[str, str], float]:
+    """
+    Evaluate filters using n-fold cross-validation with k repeats.
+
+    This function evaluates each filter+direction combination by computing score
+    improvements via cross-validation. For each fold, it finds the best split
+    on the training set and evaluates it on the validation set, comparing against
+    a baseline (all-true mask).
+
+    Parameters
+    ----------
+    depth_1_splits : list[Split]
+        List of depth 1 Split objects to evaluate
+    y : torch.Tensor
+        1-D tensor of target values (n_samples,)
+    score_func : callable
+        Function that takes y and masks and returns scores
+    filter_eval_folds : int
+        Number of folds for cross-validation
+    filter_eval_repeats : int
+        Number of times to repeat cross-validation
+    verbose : str, optional
+        Controls printing. Default is "no". If not "no", prints the evaluation table.
+    min_score_improvement : float | None, optional
+        Threshold for filtering. Used to calculate summary statistics for filters
+        above threshold. Default is None.
+
+    Returns
+    -------
+    dict[tuple[str, str], float]
+        Dictionary mapping (filter_name, direction) to average score improvement
+    """
+    from rich.table import Table
+
+    console = Console()
+    n_samples = len(y)
+    device = y.device
+
+    # Step 1: Sort depth_1_splits into dict keyed by filter_id + direction
+    filter_splits_dict: dict[tuple[str, str], list[Split]] = {}
+    for split in depth_1_splits:
+        if len(split.filters) > 0:
+            # Get the first filter (depth 1 splits should have only one filter)
+            filter_info = split.filters[0]
+            key = (filter_info.filter_name, filter_info.direction)
+            if key not in filter_splits_dict:
+                filter_splits_dict[key] = []
+            filter_splits_dict[key].append(split)
+
+    if len(filter_splits_dict) == 0:
+        return {}
+
+    # Step 2: Create CV indices
+    randperm, n_samples_padded, n_samples_train, n_samples_valid = _create_cv_indices(
+        n_samples, filter_eval_folds, filter_eval_repeats, device
+    )
+
+    # Step 3: Create y_train and y_valid tensors
+    y_train, y_valid = _create_cv_splits(
+        y,
+        randperm,
+        filter_eval_folds,
+        n_samples_padded,
+        n_samples_train,
+        n_samples_valid,
+        n_samples,
+    )
+
+    # Step 4: Create base mask (True for actual samples, False for padding)
+    # and calculate base_validation_score using vectorized operations
+    base_mask = torch.ones(n_samples_padded, dtype=torch.bool, device=device)
+    if n_samples_padded > n_samples:
+        base_mask[n_samples:] = False
+
+    # Vectorize base validation score calculation across all repeats and folds
+    # Shape: (repeats, padded) -> (repeats, folds, valid_size)
+    base_masks_all = base_mask[randperm]  # Shape: (repeats, padded)
+    base_masks_all = base_masks_all.reshape(filter_eval_repeats, filter_eval_folds, n_samples_valid)
+
+    # Calculate base scores for all CV buckets
+    # We need to loop over buckets since score_func expects single y tensor
+    base_validation_scores = torch.zeros(
+        (filter_eval_repeats, filter_eval_folds), dtype=y.dtype, device=device
+    )
+    total_steps = filter_eval_repeats * filter_eval_folds
+    
+    with tqdm(total=total_steps, desc="Base validation scores") as pbar:
+        for k in range(filter_eval_repeats):
+            for fold in range(filter_eval_folds):
+                base_score = score_func(y_valid[k, fold], base_masks_all[k, fold].unsqueeze(0))
+                base_validation_scores[k, fold] = base_score[0]
+                pbar.update(1)
+                
+    # Step 5: Evaluate each filter+direction
+    score_improvements: dict[tuple[str, str], float] = {}
+
+    for key, splits in tqdm(filter_splits_dict.items(), desc="Evaluating filters"):
+        # Pad all masks for these splits
+        masks_padded_list = []
+        for split in splits:
+            if n_samples_padded > n_samples:
+                mask_padded = torch.cat(
+                    [
+                        split.mask,
+                        torch.zeros(n_samples_padded - n_samples, dtype=torch.bool, device=device),
+                    ]
+                )
+            else:
+                mask_padded = split.mask
+            masks_padded_list.append(mask_padded)
+
+        if len(masks_padded_list) == 0:
+            continue
+
+        # Stack masks: (n_splits, padded)
+        masks_padded = torch.stack(masks_padded_list, dim=0)
+
+        # Shuffle all masks for all repeats: (n_splits, padded) -> (n_splits, repeats, padded)
+        masks_shuffled = masks_padded[:, None, :].expand(-1, filter_eval_repeats, -1)
+        # Apply permutations: gather along last dim using randperm indices
+        # We need to index each mask with each permutation
+        masks_shuffled = torch.stack(
+            [masks_padded[i][randperm] for i in range(len(masks_padded_list))], dim=0
+        )  # Shape: (n_splits, repeats, padded)
+
+        # Reshape to separate folds: (n_splits, repeats, padded) -> (n_splits, repeats, folds, valid)
+        masks_shuffled = masks_shuffled.reshape(
+            len(masks_padded_list), filter_eval_repeats, filter_eval_folds, n_samples_valid
+        )
+
+        # Extract validation masks: already have the right shape
+        valid_masks = masks_shuffled  # Shape: (n_splits, repeats, folds, valid_size)
+
+        # Extract training masks (exclude validation fold)
+        # This is more complex, need to handle each fold separately
+        train_masks_list = []
+        for fold in range(filter_eval_folds):
+            if fold == 0:
+                # Training is folds 1 to end
+                train_data = masks_shuffled[:, :, 1:, :].reshape(
+                    len(masks_padded_list), filter_eval_repeats, n_samples_train
+                )
+            elif fold == filter_eval_folds - 1:
+                # Training is folds 0 to end-1
+                train_data = masks_shuffled[:, :, :-1, :].reshape(
+                    len(masks_padded_list), filter_eval_repeats, n_samples_train
+                )
+            else:
+                # Training is folds before and after current fold
+                train_data = torch.cat(
+                    [
+                        masks_shuffled[:, :, :fold, :],
+                        masks_shuffled[:, :, fold + 1 :, :],
+                    ],
+                    dim=2,
+                ).reshape(len(masks_padded_list), filter_eval_repeats, n_samples_train)
+            train_masks_list.append(train_data)
+
+        # Stack: (folds, n_splits, repeats, train_size) -> (n_splits, repeats, folds, train_size)
+        train_masks = torch.stack(train_masks_list, dim=2)
+
+        # Score all splits across all CV buckets
+        # Vectorized mask preparation but loop over buckets for scoring
+        all_improvements = []
+        for k in range(filter_eval_repeats):
+            for fold in range(filter_eval_folds):
+                # Get train and validation masks for this bucket
+                # train_masks shape: (n_splits, repeats, folds, train_size)
+                # valid_masks shape: (n_splits, repeats, folds, valid_size)
+                train_masks_bucket = train_masks[:, k, fold, :]  # (n_splits, train_size)
+                valid_masks_bucket = valid_masks[:, k, fold, :]  # (n_splits, valid_size)
+
+                # Score all splits on training set
+                train_scores = score_func(y_train[k, fold], train_masks_bucket)
+                best_split_idx = torch.argmax(train_scores).item()
+
+                # Evaluate best split on validation set
+                best_valid_mask = valid_masks_bucket[best_split_idx : best_split_idx + 1]
+                valid_score = score_func(y_valid[k, fold], best_valid_mask)
+
+                # Calculate score improvement
+                improvement = valid_score[0].item() - base_validation_scores[k, fold].item()
+                all_improvements.append(improvement)
+
+        # Calculate average score improvement
+        avg_improvement = sum(all_improvements) / len(all_improvements)
+        score_improvements[key] = avg_improvement
+
+    # Step 6: Print results using rich table (only if verbose is not "no")
+    if len(score_improvements) > 0 and verbose != "no":
+        # Sort by score improvement (descending)
+        sorted_items = sorted(score_improvements.items(), key=lambda x: x[1], reverse=True)
+
+        table = Table(title="Filter Evaluation Results")
+        table.add_column("Filter", style="cyan")
+        table.add_column("Direction", style="magenta")
+        table.add_column("Avg Score Improvement", style="green", justify="right")
+
+        for (filter_name, direction), improvement in sorted_items:
+            table.add_row(filter_name, direction, f"{improvement:.6f}")
+
+        # Add summary statistics
+        table.add_section()
+
+        # Calculate summary statistics
+        all_improvements = list(score_improvements.values())
+        avg_improvement = sum(all_improvements) / len(all_improvements)
+
+        # Calculate weighted average (weighted by number of splits per filter)
+        total_splits = 0
+        weighted_sum = 0.0
+        for key, improvement in score_improvements.items():
+            n_splits = len(filter_splits_dict[key])
+            weighted_sum += improvement * n_splits
+            total_splits += n_splits
+        weighted_avg_improvement = weighted_sum / total_splits if total_splits > 0 else 0.0
+
+        # Add summary rows
+        table.add_row(
+            "[bold]Average (all filters)[/bold]",
+            "",
+            f"[bold]{avg_improvement:.6f}[/bold]",
+        )
+        table.add_row(
+            "[bold]Weighted Avg (all filters)[/bold]",
+            "",
+            f"[bold]{weighted_avg_improvement:.6f}[/bold]",
+        )
+
+        # Add statistics for filters above threshold if min_score_improvement is set
+        if min_score_improvement is not None:
+            above_threshold = [
+                (key, imp)
+                for key, imp in score_improvements.items()
+                if imp >= min_score_improvement
+            ]
+
+            if len(above_threshold) > 0:
+                improvements_above = [imp for _, imp in above_threshold]
+                avg_above = sum(improvements_above) / len(improvements_above)
+
+                # Weighted average for above threshold
+                weighted_sum_above = 0.0
+                total_splits_above = 0
+                for key, improvement in above_threshold:
+                    n_splits = len(filter_splits_dict[key])
+                    weighted_sum_above += improvement * n_splits
+                    total_splits_above += n_splits
+                weighted_avg_above = (
+                    weighted_sum_above / total_splits_above if total_splits_above > 0 else 0.0
+                )
+
+                table.add_row(
+                    f"[bold]Average (>= {min_score_improvement:.6f})[/bold]",
+                    "",
+                    f"[bold]{avg_above:.6f}[/bold]",
+                )
+                table.add_row(
+                    f"[bold]Weighted Avg (>= {min_score_improvement:.6f})[/bold]",
+                    "",
+                    f"[bold]{weighted_avg_above:.6f}[/bold]",
+                )
+
+        console.print()
+        console.print(table)
+        console.print()
+
+    return score_improvements
+
+
 def prepare_splits(
     trades_df: pd.DataFrame,
     filters_df: pd.DataFrame,
@@ -2088,6 +2450,9 @@ def prepare_splits(
     keep_best_n: int | None = None,
     verbose: str = "no",
     filter_granularities: dict[str, float] | None = None,
+    filter_eval_folds: int = 5,
+    filter_eval_repeats: int = 2,
+    min_score_improvement: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -2152,6 +2517,16 @@ def prepare_splits(
         - Left direction: round values up to nearest granularity multiple
         - Right direction: round values down to nearest granularity multiple
         - Threshold: rounded in opposite direction after averaging unique values
+    filter_eval_folds : int, optional
+        Number of folds for cross-validation when evaluating filters. Default is 5.
+        Only used if score_func is not None.
+    filter_eval_repeats : int, optional
+        Number of times to repeat cross-validation when evaluating filters. Default is 2.
+        Only used if score_func is not None.
+    min_score_improvement : float | None, optional
+        If not None, filters with score improvement less than this value will be removed
+        from depth_1_splits before merging. Only used if score_func is not None.
+        Default is None.
 
     Returns
     -------
@@ -2184,9 +2559,7 @@ def prepare_splits(
         raise ValueError("score_func must be provided when keep_best_n is not None")
 
     if verbose not in ["no", "best", "all"]:
-        raise ValueError(
-            f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'"
-        )
+        raise ValueError(f"verbose must be one of 'no', 'best', or 'all', got '{verbose}'")
 
     if verbose == "best" and score_func is None:
         raise ValueError("verbose='best' requires score_func to be not None")
@@ -2244,6 +2617,48 @@ def prepare_splits(
         depth_1_splits.extend(filter_splits)
     print(f"Generated {len(depth_1_splits)} depth 1 splits.")
 
+    # Evaluate filters using cross-validation if score_func is provided
+    if score_func is not None:
+        # Evaluate filters before scoring to get score improvements
+        filter_score_improvements = _evaluate_filters(
+            depth_1_splits,
+            y,
+            score_func,
+            filter_eval_folds,
+            filter_eval_repeats,
+            verbose,
+            min_score_improvement,
+        )
+
+        # Remove splits with insufficient score improvement if min_score_improvement is set
+        if min_score_improvement is not None and len(filter_score_improvements) > 0:
+            filtered_splits = []
+            for split in depth_1_splits:
+                # Check if this split should be kept
+                should_keep = False
+                if len(split.filters) > 0:
+                    # Get the first filter (depth 1 splits should have only one filter)
+                    filter_info = split.filters[0]
+                    key = (filter_info.filter_name, filter_info.direction)
+                    if key in filter_score_improvements:
+                        if filter_score_improvements[key] >= min_score_improvement:
+                            should_keep = True
+                else:
+                    # Keep splits without filters
+                    should_keep = True
+
+                if should_keep:
+                    filtered_splits.append(split)
+
+            original_count = len(depth_1_splits)
+            depth_1_splits = filtered_splits
+            removed_count = original_count - len(depth_1_splits)
+            if removed_count > 0:
+                print(
+                    f"Removed {removed_count} splits with score improvement "
+                    f"< {min_score_improvement:.6f}"
+                )
+
     # Merge splits with identical masks
     depth_1_splits = _merge_identical_splits(depth_1_splits)
 
@@ -2277,9 +2692,7 @@ def prepare_splits(
         previous_depth_splits = all_splits
 
         # Pre-stack masks for depth_1_splits to avoid redundant stacking in each iteration
-        depth_1_masks_stacked = torch.stack(
-            [split.mask for split in depth_1_splits], dim=0
-        )
+        depth_1_masks_stacked = torch.stack([split.mask for split in depth_1_splits], dim=0)
 
         for depth in range(2, max_depth + 1):
             # Calculate exclusion mask between the two parent sets
@@ -2322,13 +2735,9 @@ def prepare_splits(
                 batch_size = 2 * keep_best_n
 
                 # Loop to ensure we get enough valid candidates
-                while len(candidate_splits) < keep_best_n and candidate_start_idx < len(
-                    new_splits
-                ):
+                while len(candidate_splits) < keep_best_n and candidate_start_idx < len(new_splits):
                     # Select next batch of candidates
-                    candidate_end_idx = min(
-                        candidate_start_idx + batch_size, len(new_splits)
-                    )
+                    candidate_end_idx = min(candidate_start_idx + batch_size, len(new_splits))
                     batch = new_splits[candidate_start_idx:candidate_end_idx]
 
                     # Remove redundant splits and merge identical ones on this batch
@@ -2406,8 +2815,6 @@ def prepare_splits(
                 _print_splits_for_depth(depth, all_splits, score_func)
 
     # Convert filters_df to torch tensor X
-    X = torch.tensor(
-        filters_df.values, dtype=dtype, device=device
-    )  # pylint: disable=invalid-name
+    X = torch.tensor(filters_df.values, dtype=dtype, device=device)  # pylint: disable=invalid-name
 
     return X, y, all_splits
