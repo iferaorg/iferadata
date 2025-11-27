@@ -6,18 +6,19 @@ from Option Alpha and convert them into pandas DataFrames.
 """
 
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
 from typing import Iterable, NamedTuple, Optional
+from functools import reduce
 
 import pandas as pd
 import torch
 from bs4 import BeautifulSoup
-from einops import rearrange
 from rich.console import Console
 from rich.panel import Panel
-
+from tqdm.rich import tqdm
 
 @dataclass
 class SplitTensorState:
@@ -454,6 +455,8 @@ def _read_filter_file(file_name: str) -> pd.DataFrame | None:
         return parse_filter_log(html)
     except FileNotFoundError:
         return None
+    except Exception as e:
+        raise ValueError(f"Error reading filter file '{file_name}': {e}") from e
 
 
 def _parse_description_with_regex(
@@ -592,6 +595,13 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
     df["range_width"] = df["description"].apply(_parse_range_width)
     df = _check_and_eliminate_duplicates(df, "range_width")
     return df[["date", "range_width"]]  # type: ignore
+
+
+def parse_gex(file_name: str) -> pd.DataFrame | None:
+    df = _read_filter_file(file_name)
+    if df is None:
+        return None
+    return _parse_description_with_regex(df, "gex", r":\s+(\-?[\d,]+(?:\.\d+)?)")
 
 
 def parse_change_percent(prefix: str) -> pd.DataFrame | None:
@@ -744,9 +754,20 @@ def get_filters(prefix: str) -> pd.DataFrame:
             ma_df = ma_df.rename(columns={"moving_average": f"{ma.lower()}"})
             dfs.append(ma_df)
 
-    if dfs:
-        from functools import reduce
+    file_names = []
+    for file in os.listdir(FILTERS_FOLDER):
+        if file.startswith(f"{prefix}-GEX-") and file.endswith(".txt"):
+            file_names.append(os.path.join(FILTERS_FOLDER, file))
 
+    for file_name in file_names:
+        gex_df = parse_gex(file_name)
+        if gex_df is not None:
+            # Extract suffix from file name for column naming
+            suffix = file_name.split(f"{prefix}-GEX-")[-1].replace(".txt", "").replace("-", "_").lower()
+            gex_df = gex_df.rename(columns={"gex": f"gex_{suffix}"})
+            dfs.append(gex_df)
+
+    if dfs:
         df_merged = reduce(lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs)
         # Replace NaN with 0 for filter columns
         for col in df_merged.columns:
@@ -758,9 +779,9 @@ def get_filters(prefix: str) -> pd.DataFrame:
         df_merged.index.name = "date"
 
         return df_merged
-    else:
-        # Return empty DataFrame with DatetimeIndex
-        return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
+
+    # Return empty DataFrame with DatetimeIndex
+    return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
 
 
 class Split:
@@ -1324,23 +1345,16 @@ def _create_splits_for_filter(
     col_tensor_original = torch.tensor(filters_df[col_name].values, dtype=dtype, device=device)
 
     # Check if this filter has a granularity
-    granularity = filter_granularities.get(col_name)
+    granularity = filter_granularities.get(col_name, 0.01)
 
     splits = []
 
     # Create left splits if not in right_only_filters
     if col_name not in right_only_filters:
-        if granularity is not None:
-            # Round values UP to nearest granularity multiple for left direction
-            rounded_vals = [math.ceil(v / granularity) * granularity for v in filters_df[col_name]]
-            unique_vals_left = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
-            col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
-        else:
-            # Use original unique values
-            unique_vals_left = torch.tensor(
-                sorted(filters_df[col_name].unique()), dtype=dtype, device=device
-            )
-            col_tensor_left = col_tensor_original
+        # Round values UP to nearest granularity multiple for left direction
+        rounded_vals = [math.ceil(v / granularity) * granularity for v in filters_df[col_name]]
+        unique_vals_left = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
+        col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
 
         if len(unique_vals_left) > 1:
             left_split_indices = _select_split_indices(
@@ -1372,17 +1386,10 @@ def _create_splits_for_filter(
 
     # Create right splits if not in left_only_filters
     if col_name not in left_only_filters:
-        if granularity is not None:
-            # Round values DOWN to nearest granularity multiple for right direction
-            rounded_vals = [math.floor(v / granularity) * granularity for v in filters_df[col_name]]
-            unique_vals_right = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
-            col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
-        else:
-            # Use original unique values
-            unique_vals_right = torch.tensor(
-                sorted(filters_df[col_name].unique()), dtype=dtype, device=device
-            )
-            col_tensor_right = col_tensor_original
+        # Round values DOWN to nearest granularity multiple for right direction
+        rounded_vals = [math.floor(v / granularity) * granularity for v in filters_df[col_name]]
+        unique_vals_right = torch.tensor(sorted(set(rounded_vals)), dtype=dtype, device=device)
+        col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
 
         if len(unique_vals_right) > 1:
             right_split_indices = _select_split_indices(
@@ -2242,15 +2249,19 @@ def _evaluate_filters(
     base_validation_scores = torch.zeros(
         (filter_eval_repeats, filter_eval_folds), dtype=y.dtype, device=device
     )
-    for k in range(filter_eval_repeats):
-        for fold in range(filter_eval_folds):
-            base_score = score_func(y_valid[k, fold], base_masks_all[k, fold].unsqueeze(0))
-            base_validation_scores[k, fold] = base_score[0]
-
+    total_steps = filter_eval_repeats * filter_eval_folds
+    
+    with tqdm(total=total_steps, desc="Base validation scores") as pbar:
+        for k in range(filter_eval_repeats):
+            for fold in range(filter_eval_folds):
+                base_score = score_func(y_valid[k, fold], base_masks_all[k, fold].unsqueeze(0))
+                base_validation_scores[k, fold] = base_score[0]
+                pbar.update(1)
+                
     # Step 5: Evaluate each filter+direction
     score_improvements: dict[tuple[str, str], float] = {}
 
-    for key, splits in filter_splits_dict.items():
+    for key, splits in tqdm(filter_splits_dict.items(), desc="Evaluating filters"):
         # Pad all masks for these splits
         masks_padded_list = []
         for split in splits:
@@ -2606,9 +2617,6 @@ def prepare_splits(
         depth_1_splits.extend(filter_splits)
     print(f"Generated {len(depth_1_splits)} depth 1 splits.")
 
-    # Merge splits with identical masks
-    depth_1_splits = _merge_identical_splits(depth_1_splits)
-
     # Evaluate filters using cross-validation if score_func is provided
     if score_func is not None:
         # Evaluate filters before scoring to get score improvements
@@ -2650,6 +2658,9 @@ def prepare_splits(
                     f"Removed {removed_count} splits with score improvement "
                     f"< {min_score_improvement:.6f}"
                 )
+
+    # Merge splits with identical masks
+    depth_1_splits = _merge_identical_splits(depth_1_splits)
 
     # Score depth_1_splits if score_func is provided
     if score_func is not None:
