@@ -1,0 +1,7 @@
+pandas
+numpy
+torch
+boto3
+pydantic
+pydantic-settings
+tqdm
