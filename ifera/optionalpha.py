@@ -2425,7 +2425,7 @@ def _evaluate_filters(
                 device=device,
             )
             group_max_scores = group_max_scores.scatter_reduce(
-                0, filter_group_tensor, train_scores, reduce="amax", include_self=True
+                0, filter_group_tensor, train_scores, reduce="amax", include_self=False
             )
 
             # Find which split is the best in each group
@@ -2451,7 +2451,11 @@ def _evaluate_filters(
                 (n_filter_groups,), large_val, dtype=torch.long, device=device
             )
             best_split_indices = best_split_indices.scatter_reduce(
-                0, filter_group_tensor, masked_indices, reduce="amin", include_self=True
+                0,
+                filter_group_tensor,
+                masked_indices,
+                reduce="amin",
+                include_self=False,
             )
 
             # Get validation scores for best splits only
