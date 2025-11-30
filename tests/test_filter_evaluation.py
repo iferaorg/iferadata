@@ -150,7 +150,9 @@ def test_evaluate_filters_with_min_score_improvement():
 
     # Should have fewer splits after filtering
     # (This may not always be true depending on data, but likely with high threshold)
-    assert len(splits_filtered) <= len(splits_unfiltered), "Filtered splits should be <= unfiltered"
+    assert len(splits_filtered) <= len(
+        splits_unfiltered
+    ), "Filtered splits should be <= unfiltered"
 
 
 def test_evaluate_filters_without_score_func():
@@ -186,7 +188,18 @@ def test_evaluate_filters_with_custom_folds_and_repeats():
     """Test filter evaluation with custom fold and repeat settings."""
     trades_df = pd.DataFrame(
         {
-            "risk": [100.0, 200.0, 150.0, 120.0, 180.0, 110.0, 190.0, 130.0, 140.0, 160.0],
+            "risk": [
+                100.0,
+                200.0,
+                150.0,
+                120.0,
+                180.0,
+                110.0,
+                190.0,
+                130.0,
+                140.0,
+                160.0,
+            ],
             "profit": [50.0, -100.0, 75.0, 60.0, 90.0, 40.0, -80.0, 65.0, 55.0, 70.0],
         },
         index=pd.DatetimeIndex(
@@ -356,7 +369,9 @@ def test_cv_indices_padding():
     )
 
     # Check that n_samples_padded is divisible by n_folds
-    assert n_samples_padded % n_folds == 0, "Padded samples should be divisible by folds"
+    assert (
+        n_samples_padded % n_folds == 0
+    ), "Padded samples should be divisible by folds"
 
     # Check that n_samples_padded is the smallest such value >= n_samples
     assert n_samples_padded >= n_samples, "Padded samples should be >= original samples"
@@ -396,7 +411,13 @@ def test_cv_splits_creation():
 
     # Create CV splits
     y_train, y_valid = _create_cv_splits(
-        y, randperm, n_folds, n_samples_padded, n_samples_train, n_samples_valid, n_samples
+        y,
+        randperm,
+        n_folds,
+        n_samples_padded,
+        n_samples_train,
+        n_samples_valid,
+        n_samples,
     )
 
     # Check shapes
@@ -420,7 +441,9 @@ def test_cv_splits_creation():
             ), "Validation set should have correct size"
 
             # Training set should have n_samples_train elements
-            assert len(y_train[k, fold]) == n_samples_train, "Training set should have correct size"
+            assert (
+                len(y_train[k, fold]) == n_samples_train
+            ), "Training set should have correct size"
 
 
 def test_evaluate_filters_no_filters():
@@ -455,3 +478,187 @@ def test_evaluate_filters_no_filters():
 
     # May have computed columns that create splits
     assert isinstance(splits, list), "Should return a list of splits"
+
+
+def test_evaluate_filters_vectorized_multiple_filter_groups():
+    """Test vectorized evaluation with multiple filter groups.
+
+    This test validates that the vectorized implementation correctly processes
+    multiple filter+direction groups simultaneously, ensuring each group gets
+    its own best split and score improvement.
+    """
+    # Create test data with multiple distinct filters
+    trades_df = pd.DataFrame(
+        {
+            "risk": [
+                100.0,
+                150.0,
+                120.0,
+                180.0,
+                90.0,
+                200.0,
+                130.0,
+                170.0,
+                110.0,
+                160.0,
+            ],
+            "profit": [50.0, -30.0, 40.0, -50.0, 70.0, -80.0, 35.0, -20.0, 60.0, -10.0],
+        },
+        index=pd.DatetimeIndex(
+            [
+                "2022-01-10",
+                "2022-01-11",
+                "2022-01-12",
+                "2022-01-13",
+                "2022-01-14",
+                "2022-01-17",
+                "2022-01-18",
+                "2022-01-19",
+                "2022-01-20",
+                "2022-01-21",
+            ],
+            name="date",
+        ),
+    )
+
+    # Create multiple filters with different value distributions
+    filters_df = pd.DataFrame(
+        {
+            "filter_a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+            "filter_b": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0],
+            "filter_c": [5.0, 5.0, 5.0, 5.0, 5.0, 15.0, 15.0, 15.0, 15.0, 15.0],
+        },
+        index=pd.DatetimeIndex(
+            [
+                "2022-01-10",
+                "2022-01-11",
+                "2022-01-12",
+                "2022-01-13",
+                "2022-01-14",
+                "2022-01-17",
+                "2022-01-18",
+                "2022-01-19",
+                "2022-01-20",
+                "2022-01-21",
+            ],
+            name="date",
+        ),
+    )
+
+    def mean_score_func(y, masks):
+        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
+        counts = torch.sum(masks.float(), dim=1)
+        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
+        return scores
+
+    # Run with multiple filters and folds
+    _, _, splits = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        [],
+        [],
+        torch.device("cpu"),
+        torch.float32,
+        score_func=mean_score_func,
+        filter_eval_folds=3,
+        filter_eval_repeats=2,
+        min_samples=2,
+    )
+
+    # Should have created splits from multiple filter groups
+    assert len(splits) > 0, "Should have created splits"
+
+    # Verify splits have scores assigned
+    scored_splits = [s for s in splits if s.score is not None]
+    assert len(scored_splits) > 0, "Should have scored splits"
+
+
+def test_evaluate_filters_consistency():
+    """Test that vectorized evaluation produces consistent results.
+
+    This test verifies that the evaluation results are deterministic
+    when run with the same random seed.
+    """
+    trades_df = pd.DataFrame(
+        {
+            "risk": [100.0, 200.0, 150.0, 120.0, 180.0, 110.0],
+            "profit": [50.0, -100.0, 75.0, 60.0, 90.0, 40.0],
+        },
+        index=pd.DatetimeIndex(
+            [
+                "2022-01-10",
+                "2022-01-11",
+                "2022-01-12",
+                "2022-01-13",
+                "2022-01-14",
+                "2022-01-15",
+            ],
+            name="date",
+        ),
+    )
+
+    filters_df = pd.DataFrame(
+        {
+            "filter_a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        },
+        index=pd.DatetimeIndex(
+            [
+                "2022-01-10",
+                "2022-01-11",
+                "2022-01-12",
+                "2022-01-13",
+                "2022-01-14",
+                "2022-01-15",
+            ],
+            name="date",
+        ),
+    )
+
+    def mean_score_func(y, masks):
+        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
+        counts = torch.sum(masks.float(), dim=1)
+        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
+        return scores
+
+    # Set seed for reproducibility
+    torch.manual_seed(42)
+    _, _, splits1 = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        [],
+        [],
+        torch.device("cpu"),
+        torch.float32,
+        score_func=mean_score_func,
+        filter_eval_folds=2,
+        filter_eval_repeats=2,
+        min_samples=2,
+    )
+
+    # Reset seed and run again
+    torch.manual_seed(42)
+    _, _, splits2 = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        [],
+        [],
+        torch.device("cpu"),
+        torch.float32,
+        score_func=mean_score_func,
+        filter_eval_folds=2,
+        filter_eval_repeats=2,
+        min_samples=2,
+    )
+
+    # Results should be identical
+    assert len(splits1) == len(splits2), "Should have same number of splits"
+
+    # Compare scores (they should be identical with same seed)
+    scores1 = sorted([s.score for s in splits1 if s.score is not None])
+    scores2 = sorted([s.score for s in splits2 if s.score is not None])
+    assert len(scores1) == len(scores2), "Should have same number of scored splits"
+    for s1, s2 in zip(scores1, scores2):
+        assert abs(s1 - s2) < 1e-6, f"Scores should match: {s1} vs {s2}"
