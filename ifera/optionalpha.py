@@ -2716,6 +2716,9 @@ def prepare_splits(
     filter_eval_folds: int = 5,
     filter_eval_repeats: int = 2,
     min_score_improvement: float | None = None,
+    purge_pct: float = 0.1,
+    embargo_pct: float = 0.0,
+    min_train_pct: float = 0.2,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -2790,6 +2793,18 @@ def prepare_splits(
         If not None, filters with score improvement less than this value will be removed
         from depth_1_splits before merging. Only used if score_func is not None.
         Default is None.
+    purge_pct : float, optional
+        Percentage of test set size to purge from end of training set during filter
+        evaluation CV (0.0 to 1.0). Default is 0.1 (10%). Prevents autocorrelation
+        leakage by removing observations right after training set.
+    embargo_pct : float, optional
+        Additional percentage of test set size for gap between train end and test start
+        during filter evaluation CV (0.0 to 1.0). Default is 0.0. Provides extra safety
+        for high-frequency data.
+    min_train_pct : float, optional
+        Minimum training set size as percentage of total samples during filter
+        evaluation CV (0.0 to 1.0). Default is 0.2 (20%). Ensures sufficient training
+        data for stable evaluation.
 
     Returns
     -------
@@ -2893,6 +2908,9 @@ def prepare_splits(
             filter_eval_repeats,
             verbose,
             min_score_improvement,
+            purge_pct,
+            embargo_pct,
+            min_train_pct,
         )
 
         # Remove splits with insufficient score improvement if min_score_improvement is set

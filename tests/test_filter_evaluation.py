@@ -758,8 +758,11 @@ def test_purged_ts_cv_splits_with_embargo():
         test_min = test_idx.min().item()
         gap = test_min - train_max - 1
         # Purge + embargo should create a larger gap
+        # Note: purge_samples uses max(1, int(test_size * purge_pct)) to ensure at least 1
         test_size = n_samples // n_splits
-        expected_min_gap = int(test_size * purge_pct) + int(test_size * embargo_pct)
+        expected_purge = max(1, int(test_size * purge_pct))
+        expected_embargo = int(test_size * embargo_pct)
+        expected_min_gap = expected_purge + expected_embargo
         assert gap >= expected_min_gap, f"Gap {gap} should be >= {expected_min_gap}"
 
 
