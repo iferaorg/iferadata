@@ -2093,6 +2093,10 @@ def _create_cv_indices(
     """
     Create cross-validation indices for n-fold CV with k repeats.
 
+    DEPRECATED: This function uses random k-fold CV which causes look-ahead bias
+    in time-series data. Use _create_purged_ts_cv_splits instead for time-series
+    data like trading strategies.
+
     Parameters
     ----------
     n_samples : int
@@ -2143,6 +2147,10 @@ def _create_cv_splits(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Create train/validation splits for cross-validation.
+
+    DEPRECATED: This function uses random k-fold CV which causes look-ahead bias
+    in time-series data. Use _create_purged_ts_cv_splits instead for time-series
+    data like trading strategies.
 
     Parameters
     ----------
@@ -2213,6 +2221,162 @@ def _create_cv_splits(
     return y_train, y_valid
 
 
+def _create_purged_ts_cv_splits(
+    n_samples: int,
+    n_splits: int,
+    n_repeats: int,
+    purge_pct: float,
+    embargo_pct: float,
+    min_train_pct: float,
+    device: torch.device,
+) -> tuple[list[tuple[torch.Tensor, torch.Tensor]], int, int]:
+    """
+    Create repeated purged time-series cross-validation splits.
+
+    This function creates time-ordered splits with purging and embargo to prevent
+    look-ahead bias in time-series data. Unlike random k-fold CV, this method:
+    - Respects chronological order (train always before test)
+    - Applies purging (removes observations right after training set)
+    - Applies embargo (extra gap before test set starts)
+    - Repeats with different random start offsets
+
+    The method is based on Marcos López de Prado's Combinatorial Purged Cross-Validation
+    and is widely used in quantitative finance to avoid overfitting.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of samples in the dataset
+    n_splits : int
+        Number of splits (folds) per repeat
+    n_repeats : int
+        Number of times to repeat with different random offsets
+    purge_pct : float
+        Percentage of test set size to purge from the end of training set (0.0 to 1.0)
+    embargo_pct : float
+        Percentage of test set size for additional gap between train end and test start.
+        This is in addition to the purge period. (0.0 to 1.0)
+    min_train_pct : float
+        Minimum training set size as percentage of total samples (0.0 to 1.0)
+    device : torch.device
+        PyTorch device for tensors
+
+    Returns
+    -------
+    tuple[list[tuple[torch.Tensor, torch.Tensor]], int, int]
+        - splits: List of (train_indices, test_indices) tuples for all valid splits
+        - max_train_size: Maximum training set size across all splits
+        - max_test_size: Maximum test set size across all splits
+    """
+    test_size = n_samples // n_splits
+    min_train_samples = int(n_samples * min_train_pct)
+    purge_samples = max(1, int(test_size * purge_pct))
+    embargo_samples = int(test_size * embargo_pct)
+
+    # Total gap between training end and test start is purge + embargo
+    total_gap = purge_samples + embargo_samples
+
+    splits: list[tuple[torch.Tensor, torch.Tensor]] = []
+    max_train_size = 0
+    max_test_size = 0
+
+    for _ in range(n_repeats):
+        # Random start offset so repeats don't overlap exactly
+        # Offset is within the first test_size positions
+        if test_size > 1:
+            offset = int(torch.randint(0, test_size, (1,), device=device).item())
+        else:
+            offset = 0
+
+        for split_idx in range(n_splits):
+            # Test set: fixed length, moves forward chronologically
+            test_start = offset + split_idx * test_size
+            test_end = test_start + test_size
+
+            if test_end > n_samples:
+                continue  # Skip incomplete final fold
+
+            # Training set: everything before test, minus total gap (purge + embargo)
+            train_end = max(0, test_start - total_gap)
+
+            # Ensure minimum training period
+            if train_end < min_train_samples:
+                continue
+
+            # Create index tensors
+            train_indices = torch.arange(0, train_end, device=device)
+            test_indices = torch.arange(test_start, test_end, device=device)
+
+            if len(train_indices) > 0 and len(test_indices) > 0:
+                splits.append((train_indices, test_indices))
+                max_train_size = max(max_train_size, len(train_indices))
+                max_test_size = max(max_test_size, len(test_indices))
+
+    return splits, max_train_size, max_test_size
+
+
+def _create_purged_ts_masks(
+    n_samples: int,
+    cv_splits: list[tuple[torch.Tensor, torch.Tensor]],
+    max_train_size: int,
+    max_test_size: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Create boolean masks for purged time-series CV splits.
+
+    This function creates fixed-size tensors for efficient vectorized operations
+    by padding variable-length splits to the maximum size.
+
+    Parameters
+    ----------
+    n_samples : int
+        Number of samples in the dataset
+    cv_splits : list[tuple[torch.Tensor, torch.Tensor]]
+        List of (train_indices, test_indices) tuples from _create_purged_ts_cv_splits
+    max_train_size : int
+        Maximum training set size across all splits
+    max_test_size : int
+        Maximum test set size across all splits
+    device : torch.device
+        PyTorch device for tensors
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+        - train_masks: Boolean tensor of shape (n_buckets, n_samples) for training
+        - test_masks: Boolean tensor of shape (n_buckets, n_samples) for testing
+        - train_valid_masks: Boolean tensor of shape (n_buckets, max_train_size) indicating
+          which positions in the padded train sets contain valid data
+        - test_valid_masks: Boolean tensor of shape (n_buckets, max_test_size) indicating
+          which positions in the padded test sets contain valid data
+    """
+    n_buckets = len(cv_splits)
+
+    # Create full-size masks for indexing original data
+    train_masks = torch.zeros((n_buckets, n_samples), dtype=torch.bool, device=device)
+    test_masks = torch.zeros((n_buckets, n_samples), dtype=torch.bool, device=device)
+
+    # Create validity masks for padded arrays
+    train_valid_masks = torch.zeros(
+        (n_buckets, max_train_size), dtype=torch.bool, device=device
+    )
+    test_valid_masks = torch.zeros(
+        (n_buckets, max_test_size), dtype=torch.bool, device=device
+    )
+
+    for bucket_idx, (train_idx, test_idx) in enumerate(cv_splits):
+        # Set masks for actual data positions
+        train_masks[bucket_idx, train_idx] = True
+        test_masks[bucket_idx, test_idx] = True
+
+        # Set validity masks for padded arrays
+        train_valid_masks[bucket_idx, : len(train_idx)] = True
+        test_valid_masks[bucket_idx, : len(test_idx)] = True
+
+    return train_masks, test_masks, train_valid_masks, test_valid_masks
+
+
 def _evaluate_filters(
     depth_1_splits: list[Split],
     y: torch.Tensor,
@@ -2221,14 +2385,22 @@ def _evaluate_filters(
     filter_eval_repeats: int,
     verbose: str = "no",
     min_score_improvement: float | None = None,
+    purge_pct: float = 0.1,
+    embargo_pct: float = 0.0,
+    min_train_pct: float = 0.2,
 ) -> dict[tuple[str, str], float]:
     """
-    Evaluate filters using n-fold cross-validation with k repeats.
+    Evaluate filters using repeated purged time-series cross-validation.
 
     This function evaluates each filter+direction combination by computing score
-    improvements via cross-validation. For each fold, it finds the best split
-    on the training set and evaluates it on the validation set, comparing against
-    a baseline (all-true mask).
+    improvements via purged time-series CV. Unlike random k-fold CV, this method
+    respects chronological order and applies purging to prevent look-ahead bias:
+    - Training data is always before test data (no future leakage)
+    - A purge period removes observations right after training to kill autocorrelation
+    - Multiple repeats with different random offsets provide robust evaluation
+
+    For each split, it finds the best threshold on the training set and evaluates
+    it on the test set, comparing against a baseline (all-true mask).
 
     Parameters
     ----------
@@ -2239,14 +2411,23 @@ def _evaluate_filters(
     score_func : callable
         Function that takes y and masks and returns scores
     filter_eval_folds : int
-        Number of folds for cross-validation
+        Number of time-series splits (folds) per repeat
     filter_eval_repeats : int
-        Number of times to repeat cross-validation
+        Number of times to repeat with different random offsets
     verbose : str, optional
         Controls printing. Default is "no". If not "no", prints the evaluation table.
     min_score_improvement : float | None, optional
         Threshold for filtering. Used to calculate summary statistics for filters
         above threshold. Default is None.
+    purge_pct : float, optional
+        Percentage of test set size to purge from end of training set (0.0 to 1.0).
+        Default is 0.1 (10%). Prevents autocorrelation leakage.
+    embargo_pct : float, optional
+        Percentage of test set size for additional gap after test (0.0 to 1.0).
+        Default is 0.0. Used for extra safety in high-frequency data.
+    min_train_pct : float, optional
+        Minimum training set size as percentage of total samples (0.0 to 1.0).
+        Default is 0.2 (20%). Ensures sufficient training data.
 
     Returns
     -------
@@ -2273,55 +2454,23 @@ def _evaluate_filters(
     if len(filter_splits_dict) == 0:
         return {}
 
-    # Step 2: Create CV indices
-    randperm, n_samples_padded, n_samples_train, n_samples_valid = _create_cv_indices(
-        n_samples, filter_eval_folds, filter_eval_repeats, device
-    )
-
-    # Step 3: Create y_train and y_valid tensors
-    y_train, y_valid = _create_cv_splits(
-        y,
-        randperm,
-        filter_eval_folds,
-        n_samples_padded,
-        n_samples_train,
-        n_samples_valid,
+    # Step 2: Create purged time-series CV splits
+    cv_splits, _, _ = _create_purged_ts_cv_splits(
         n_samples,
+        filter_eval_folds,
+        filter_eval_repeats,
+        purge_pct,
+        embargo_pct,
+        min_train_pct,
+        device,
     )
 
-    # Step 4: Create base mask (True for actual samples, False for padding)
-    # and calculate base_validation_score using vectorized operations
-    base_mask = torch.ones(n_samples_padded, dtype=torch.bool, device=device)
-    if n_samples_padded > n_samples:
-        base_mask[n_samples:] = False
+    n_buckets = len(cv_splits)
+    if n_buckets == 0:
+        # Not enough data for CV splits with the given parameters
+        return {}
 
-    # Vectorize base validation score calculation across all repeats and folds
-    # Shape: (repeats, padded) -> (repeats, folds, valid_size)
-    base_masks_all = base_mask[randperm]  # Shape: (repeats, padded)
-    base_masks_all = base_masks_all.reshape(
-        filter_eval_repeats, filter_eval_folds, n_samples_valid
-    )
-
-    # Calculate base scores for all CV buckets
-    # We need to loop over buckets since score_func expects single y tensor
-    base_validation_scores = torch.zeros(
-        (filter_eval_repeats, filter_eval_folds), dtype=y.dtype, device=device
-    )
-    total_steps = filter_eval_repeats * filter_eval_folds
-
-    with tqdm(total=total_steps, desc="Base validation scores") as pbar:
-        for k in range(filter_eval_repeats):
-            for fold in range(filter_eval_folds):
-                base_score = score_func(
-                    y_valid[k, fold], base_masks_all[k, fold].unsqueeze(0)
-                )
-                base_validation_scores[k, fold] = base_score[0]
-                pbar.update(1)
-
-    # Step 5: Evaluate each filter+direction using vectorized operations
-    # Optimized approach: process all splits together to maximize GPU utilization
-
-    # Step 5a: Build flat arrays for all splits and their filter group mappings
+    # Step 3: Build flat arrays for all splits and their filter group mappings
     all_splits_flat: list[Split] = []
     filter_keys: list[tuple[str, str]] = []
     filter_group_indices: list[int] = []  # Maps each split to its filter group
@@ -2334,52 +2483,25 @@ def _evaluate_filters(
 
     n_total_splits = len(all_splits_flat)
     n_filter_groups = len(filter_keys)
-    n_buckets = filter_eval_repeats * filter_eval_folds
 
     if n_total_splits == 0:
         return {}
 
-    # Step 5b: Pre-compute all padded masks once
-    if n_samples_padded > n_samples:
-        padding = torch.zeros(
-            n_samples_padded - n_samples, dtype=torch.bool, device=device
-        )
-        all_masks_padded = torch.stack(
-            [torch.cat([s.mask, padding]) for s in all_splits_flat], dim=0
-        )
-    else:
-        all_masks_padded = torch.stack([s.mask for s in all_splits_flat], dim=0)
-    # Shape: (n_total_splits, n_samples_padded)
+    # Step 4: Pre-compute all split masks stacked
+    all_split_masks = torch.stack([s.mask for s in all_splits_flat], dim=0)
+    # Shape: (n_total_splits, n_samples)
 
-    # Step 5c: Apply all permutations to all masks at once using advanced indexing
-    # randperm has shape (n_repeats, n_samples_padded)
-    # We want to index all_masks_padded[:, randperm] to get
-    # shape (n_total_splits, n_repeats, n_samples_padded)
-    all_masks_shuffled = all_masks_padded[:, randperm]
-    # Shape: (n_total_splits, n_repeats, n_samples_padded)
-
-    # Step 5d: Reshape to separate folds
-    # Shape: (n_total_splits, n_repeats, n_folds, n_samples_valid)
-    all_masks_by_fold = all_masks_shuffled.reshape(
-        n_total_splits, filter_eval_repeats, filter_eval_folds, n_samples_valid
-    )
-
-    # Step 5e: Create filter group indices tensor for segmented operations
+    # Step 5: Create filter group indices tensor for segmented operations
     filter_group_tensor = torch.tensor(
         filter_group_indices, dtype=torch.long, device=device
     )
 
-    # Step 5f: Pre-compute original mask sample counts for all splits
+    # Step 6: Pre-compute original mask sample counts for all splits
     original_sample_counts = torch.tensor(
         [s.mask.sum().item() for s in all_splits_flat], dtype=torch.long, device=device
     )
 
-    # Step 5g: Process all CV buckets
-    # For memory efficiency, we process one bucket at a time but vectorize across all splits
-    # Each bucket: train all splits, find best per filter group, validate best split
-
-    # Accumulators for results per filter group
-    # Shape: (n_filter_groups, n_buckets)
+    # Step 7: Accumulators for results per filter group
     all_improvements_tensor = torch.zeros(
         (n_filter_groups, n_buckets), dtype=y.dtype, device=device
     )
@@ -2387,37 +2509,28 @@ def _evaluate_filters(
         (n_filter_groups, n_buckets), dtype=torch.long, device=device
     )
 
-    bucket_idx = 0
-    for k in range(filter_eval_repeats):
-        for fold in range(filter_eval_folds):
-            # Extract validation masks for this bucket: (n_total_splits, n_samples_valid)
-            valid_masks_bucket = all_masks_by_fold[:, k, fold, :]
+    # Step 8: Process all CV buckets
+    # For each bucket: score splits on train, find best per group, score on test
+    with tqdm(total=n_buckets, desc="Purged TS-CV evaluation") as pbar:
+        for bucket_idx in range(n_buckets):
+            train_idx, test_idx = cv_splits[bucket_idx]
 
-            # Build training masks by excluding the current fold
-            # We need to concatenate all folds except the current one
-            if fold == 0:
-                train_masks_bucket = all_masks_by_fold[:, k, 1:, :].reshape(
-                    n_total_splits, n_samples_train
-                )
-            elif fold == filter_eval_folds - 1:
-                train_masks_bucket = all_masks_by_fold[:, k, :-1, :].reshape(
-                    n_total_splits, n_samples_train
-                )
-            else:
-                train_masks_bucket = torch.cat(
-                    [
-                        all_masks_by_fold[:, k, :fold, :],
-                        all_masks_by_fold[:, k, fold + 1 :, :],
-                    ],
-                    dim=1,
-                ).reshape(n_total_splits, n_samples_train)
+            # Get y values for train and test sets
+            y_train = y[train_idx]
+            y_test = y[test_idx]
+
+            # Get split masks intersected with train/test indices
+            # train_masks[bucket_idx] is (n_samples,) boolean mask for train indices
+            # all_split_masks is (n_total_splits, n_samples)
+            # We want (n_total_splits, len(train_idx))
+            train_split_masks = all_split_masks[:, train_idx]
+            test_split_masks = all_split_masks[:, test_idx]
 
             # Score all splits on training set at once
-            train_scores = score_func(y_train[k, fold], train_masks_bucket)
+            train_scores = score_func(y_train, train_split_masks)
             # Shape: (n_total_splits,)
 
             # Find best split per filter group using segmented argmax
-            # Use scatter_reduce with 'amax' to get max score per group
             group_max_scores = torch.full(
                 (n_filter_groups,),
                 float("-inf"),
@@ -2429,16 +2542,10 @@ def _evaluate_filters(
             )
 
             # Find which split is the best in each group
-            # Create mask for splits that achieved the group max
             is_best_in_group = train_scores == group_max_scores[filter_group_tensor]
 
-            # For ties, we want the first occurrence per group
-            # Use a vectorized approach: for each group, find the minimum index
-            # among splits that have the max score
-            # Create indices tensor
+            # For ties, find the minimum index per group
             split_indices = torch.arange(n_total_splits, device=device)
-
-            # Mask non-best splits with a large value so they're not selected as minimum
             large_val = n_total_splits + 1
             masked_indices = torch.where(
                 is_best_in_group,
@@ -2446,7 +2553,6 @@ def _evaluate_filters(
                 torch.full_like(split_indices, large_val),
             )
 
-            # Find minimum index per group using scatter_reduce with 'amin'
             best_split_indices = torch.full(
                 (n_filter_groups,), large_val, dtype=torch.long, device=device
             )
@@ -2458,17 +2564,21 @@ def _evaluate_filters(
                 include_self=False,
             )
 
-            # Get validation scores for best splits only
-            # Gather the best split's valid mask for each group
-            best_valid_masks = valid_masks_bucket[best_split_indices]
-            # Shape: (n_filter_groups, n_samples_valid)
+            # Get test scores for best splits only
+            best_test_masks = test_split_masks[best_split_indices]
+            # Shape: (n_filter_groups, len(test_idx))
 
-            # Score validation masks
-            valid_scores = score_func(y_valid[k, fold], best_valid_masks)
+            test_scores = score_func(y_test, best_test_masks)
             # Shape: (n_filter_groups,)
 
+            # Calculate base test score (all samples in test set)
+            base_test_mask = torch.ones(
+                (1, len(test_idx)), dtype=torch.bool, device=device
+            )
+            base_test_score = score_func(y_test, base_test_mask)[0]
+
             # Calculate improvements
-            improvements = valid_scores - base_validation_scores[k, fold]
+            improvements = test_scores - base_test_score
 
             # Store results
             all_improvements_tensor[:, bucket_idx] = improvements
@@ -2476,9 +2586,9 @@ def _evaluate_filters(
                 best_split_indices
             ]
 
-            bucket_idx += 1
+            pbar.update(1)
 
-    # Step 5h: Aggregate results per filter group
+    # Step 9: Aggregate results per filter group
     score_improvements: dict[tuple[str, str], float] = {}
     best_split_sample_counts: dict[tuple[str, str], int] = {}
 
@@ -2491,14 +2601,14 @@ def _evaluate_filters(
         score_improvements[key] = float(avg_improvements[group_idx].item())
         best_split_sample_counts[key] = int(avg_sample_counts[group_idx].item() + 0.5)
 
-    # Step 6: Print results using rich table (only if verbose is not "no")
+    # Step 10: Print results using rich table (only if verbose is not "no")
     if len(score_improvements) > 0 and verbose != "no":
         # Sort by score improvement (descending)
         sorted_items = sorted(
             score_improvements.items(), key=lambda x: x[1], reverse=True
         )
 
-        table = Table(title="Filter Evaluation Results")
+        table = Table(title="Filter Evaluation Results (Purged Time-Series CV)")
         table.add_column("Filter", style="cyan")
         table.add_column("Direction", style="magenta")
         table.add_column("Avg Score Improvement", style="green", justify="right")
@@ -2606,6 +2716,9 @@ def prepare_splits(
     filter_eval_folds: int = 5,
     filter_eval_repeats: int = 2,
     min_score_improvement: float | None = None,
+    purge_pct: float = 0.1,
+    embargo_pct: float = 0.0,
+    min_train_pct: float = 0.2,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -2680,6 +2793,18 @@ def prepare_splits(
         If not None, filters with score improvement less than this value will be removed
         from depth_1_splits before merging. Only used if score_func is not None.
         Default is None.
+    purge_pct : float, optional
+        Percentage of test set size to purge from end of training set during filter
+        evaluation CV (0.0 to 1.0). Default is 0.1 (10%). Prevents autocorrelation
+        leakage by removing observations right after training set.
+    embargo_pct : float, optional
+        Additional percentage of test set size for gap between train end and test start
+        during filter evaluation CV (0.0 to 1.0). Default is 0.0. Provides extra safety
+        for high-frequency data.
+    min_train_pct : float, optional
+        Minimum training set size as percentage of total samples during filter
+        evaluation CV (0.0 to 1.0). Default is 0.2 (20%). Ensures sufficient training
+        data for stable evaluation.
 
     Returns
     -------
@@ -2783,6 +2908,9 @@ def prepare_splits(
             filter_eval_repeats,
             verbose,
             min_score_improvement,
+            purge_pct,
+            embargo_pct,
+            min_train_pct,
         )
 
         # Remove splits with insufficient score improvement if min_score_improvement is set

@@ -662,3 +662,251 @@ def test_evaluate_filters_consistency():
     assert len(scores1) == len(scores2), "Should have same number of scored splits"
     for s1, s2 in zip(scores1, scores2):
         assert abs(s1 - s2) < 1e-6, f"Scores should match: {s1} vs {s2}"
+
+
+def test_purged_ts_cv_splits_basic():
+    """Test that purged time-series CV splits are created correctly."""
+    from ifera.optionalpha import _create_purged_ts_cv_splits
+
+    device = torch.device("cpu")
+    n_samples = 100
+    n_splits = 5
+    n_repeats = 2
+    purge_pct = 0.1
+    embargo_pct = 0.0
+    min_train_pct = 0.2
+
+    torch.manual_seed(42)  # For reproducibility
+    cv_splits, max_train_size, max_test_size = _create_purged_ts_cv_splits(
+        n_samples, n_splits, n_repeats, purge_pct, embargo_pct, min_train_pct, device
+    )
+
+    # Should have created some splits
+    assert len(cv_splits) > 0, "Should have created some CV splits"
+
+    # Check that train is always before test (time ordering)
+    for train_idx, test_idx in cv_splits:
+        train_max = train_idx.max().item() if len(train_idx) > 0 else -1
+        test_min = test_idx.min().item()
+        assert train_max < test_min, "Training data should be before test data"
+
+    # Check purging: there should be a gap between train end and test start
+    for train_idx, test_idx in cv_splits:
+        train_max = train_idx.max().item() if len(train_idx) > 0 else -1
+        test_min = test_idx.min().item()
+        gap = test_min - train_max - 1
+        assert gap >= 1, "There should be a purge gap between train and test"
+
+    # Check max sizes are reasonable
+    assert max_train_size > 0, "Max train size should be positive"
+    assert max_test_size > 0, "Max test size should be positive"
+
+
+def test_purged_ts_cv_splits_minimum_training():
+    """Test that minimum training period is respected."""
+    from ifera.optionalpha import _create_purged_ts_cv_splits
+
+    device = torch.device("cpu")
+    n_samples = 100
+    n_splits = 5
+    n_repeats = 1
+    purge_pct = 0.1
+    embargo_pct = 0.0
+    min_train_pct = 0.3  # Require at least 30% of data for training
+
+    torch.manual_seed(42)
+    cv_splits, _, _ = _create_purged_ts_cv_splits(
+        n_samples, n_splits, n_repeats, purge_pct, embargo_pct, min_train_pct, device
+    )
+
+    min_train_samples = int(n_samples * min_train_pct)
+
+    # Each split should have at least min_train_samples
+    for train_idx, _ in cv_splits:
+        assert (
+            len(train_idx) >= min_train_samples
+        ), f"Train size {len(train_idx)} should be >= {min_train_samples}"
+
+
+def test_purged_ts_cv_splits_with_embargo():
+    """Test that embargo is applied correctly."""
+    from ifera.optionalpha import _create_purged_ts_cv_splits
+
+    device = torch.device("cpu")
+    n_samples = 100
+    n_splits = 5
+    n_repeats = 1
+    purge_pct = 0.1
+    embargo_pct = 0.2  # Add embargo
+    min_train_pct = 0.2
+
+    torch.manual_seed(42)
+    cv_splits_with_embargo, _, _ = _create_purged_ts_cv_splits(
+        n_samples, n_splits, n_repeats, purge_pct, embargo_pct, min_train_pct, device
+    )
+
+    # Reset seed and create without embargo
+    torch.manual_seed(42)
+    cv_splits_no_embargo, _, _ = _create_purged_ts_cv_splits(
+        n_samples, n_splits, n_repeats, purge_pct, 0.0, min_train_pct, device
+    )
+
+    # With embargo, the gap between train end and test start should be larger
+    # and we may have fewer valid splits because of minimum training requirement
+    for train_idx, test_idx in cv_splits_with_embargo:
+        train_max = train_idx.max().item() if len(train_idx) > 0 else -1
+        test_min = test_idx.min().item()
+        gap = test_min - train_max - 1
+        # Purge + embargo should create a larger gap
+        # Note: purge_samples uses max(1, int(test_size * purge_pct)) to ensure at least 1
+        test_size = n_samples // n_splits
+        expected_purge = max(1, int(test_size * purge_pct))
+        expected_embargo = int(test_size * embargo_pct)
+        expected_min_gap = expected_purge + expected_embargo
+        assert gap >= expected_min_gap, f"Gap {gap} should be >= {expected_min_gap}"
+
+
+def test_purged_ts_cv_splits_no_look_ahead():
+    """Test that there is no look-ahead bias (train is always before test)."""
+    from ifera.optionalpha import _create_purged_ts_cv_splits
+
+    device = torch.device("cpu")
+    n_samples = 200
+    n_splits = 5
+    n_repeats = 3
+    purge_pct = 0.1
+    embargo_pct = 0.05
+    min_train_pct = 0.15
+
+    torch.manual_seed(123)
+    cv_splits, _, _ = _create_purged_ts_cv_splits(
+        n_samples, n_splits, n_repeats, purge_pct, embargo_pct, min_train_pct, device
+    )
+
+    # Every split must have train indices < test indices
+    for i, (train_idx, test_idx) in enumerate(cv_splits):
+        assert len(train_idx) > 0, f"Split {i}: Train set should not be empty"
+        assert len(test_idx) > 0, f"Split {i}: Test set should not be empty"
+
+        # Check no overlap
+        train_set = set(train_idx.tolist())
+        test_set = set(test_idx.tolist())
+        overlap = train_set & test_set
+        assert len(overlap) == 0, f"Split {i}: Train and test should not overlap"
+
+        # Check time ordering
+        train_max = max(train_set)
+        test_min = min(test_set)
+        assert (
+            train_max < test_min
+        ), f"Split {i}: Max train idx {train_max} should be < min test idx {test_min}"
+
+
+def test_purged_ts_cv_small_dataset():
+    """Test purged TS-CV with a small dataset."""
+    from ifera.optionalpha import _create_purged_ts_cv_splits
+
+    device = torch.device("cpu")
+    n_samples = 10
+    n_splits = 3
+    n_repeats = 2
+    purge_pct = 0.1
+    embargo_pct = 0.0
+    min_train_pct = 0.2
+
+    torch.manual_seed(42)
+    cv_splits, max_train_size, max_test_size = _create_purged_ts_cv_splits(
+        n_samples, n_splits, n_repeats, purge_pct, embargo_pct, min_train_pct, device
+    )
+
+    # May have limited or no splits with small data, but should not crash
+    # and any splits created should be valid
+    for train_idx, test_idx in cv_splits:
+        assert len(train_idx) > 0, "Train should not be empty"
+        assert len(test_idx) > 0, "Test should not be empty"
+        assert (
+            train_idx.max().item() < test_idx.min().item()
+        ), "Train should be before test"
+
+
+def test_evaluate_filters_uses_purged_ts_cv():
+    """Test that evaluate filters now uses purged time-series CV."""
+    trades_df = pd.DataFrame(
+        {
+            "risk": [
+                100.0,
+                200.0,
+                150.0,
+                120.0,
+                180.0,
+                110.0,
+                190.0,
+                130.0,
+                140.0,
+                160.0,
+            ],
+            "profit": [50.0, -100.0, 75.0, 60.0, 90.0, 40.0, -80.0, 65.0, 55.0, 70.0],
+        },
+        index=pd.DatetimeIndex(
+            [
+                "2022-01-10",
+                "2022-01-11",
+                "2022-01-12",
+                "2022-01-13",
+                "2022-01-14",
+                "2022-01-17",
+                "2022-01-18",
+                "2022-01-19",
+                "2022-01-20",
+                "2022-01-21",
+            ],
+            name="date",
+        ),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]},
+        index=pd.DatetimeIndex(
+            [
+                "2022-01-10",
+                "2022-01-11",
+                "2022-01-12",
+                "2022-01-13",
+                "2022-01-14",
+                "2022-01-17",
+                "2022-01-18",
+                "2022-01-19",
+                "2022-01-20",
+                "2022-01-21",
+            ],
+            name="date",
+        ),
+    )
+
+    def mean_score_func(y, masks):
+        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
+        counts = torch.sum(masks.float(), dim=1)
+        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
+        return scores
+
+    # Run with purged TS-CV (the new default)
+    torch.manual_seed(42)
+    _, _, splits = prepare_splits(
+        trades_df,
+        filters_df,
+        20,
+        [],
+        [],
+        torch.device("cpu"),
+        torch.float32,
+        score_func=mean_score_func,
+        filter_eval_folds=3,
+        filter_eval_repeats=2,
+    )
+
+    # Should have created splits
+    assert len(splits) > 0, "Should have created splits with purged TS-CV"
+
+    # Verify splits have scores
+    scored_splits = [s for s in splits if s.score is not None]
+    assert len(scored_splits) > 0, "Should have scored splits"
