@@ -2604,9 +2604,11 @@ def _evaluate_filters(
     pct_above_threshold: dict[tuple[str, str], float] = {}
 
     avg_improvements = all_improvements_tensor.mean(dim=1)  # (n_filter_groups,)
-    # Use unbiased=False to avoid warning when n_buckets is 1
+    # Use unbiased=False when n_buckets is 1 to avoid warning about degrees of freedom
     if n_buckets > 1:
-        std_improvements = all_improvements_tensor.std(dim=1)  # (n_filter_groups,)
+        std_improvements = all_improvements_tensor.std(
+            dim=1, unbiased=True
+        )  # (n_filter_groups,)
     else:
         std_improvements = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
     avg_sample_counts = all_best_sample_counts_tensor.float().mean(
@@ -2693,42 +2695,19 @@ def _evaluate_filters(
         )
 
         # Add summary rows
-        if min_score_improvement is not None:
-            table.add_row(
-                "[bold]Average (all filters)[/bold]",
-                "",
-                f"[bold]{avg_improvement:.6f}[/bold]",
-                "",
-                "",
-                "",
-                "",
-            )
-            table.add_row(
-                "[bold]Weighted Avg (all filters)[/bold]",
-                "",
-                f"[bold]{weighted_avg_improvement:.6f}[/bold]",
-                "",
-                "",
-                "",
-                "",
-            )
-        else:
-            table.add_row(
-                "[bold]Average (all filters)[/bold]",
-                "",
-                f"[bold]{avg_improvement:.6f}[/bold]",
-                "",
-                "",
-                "",
-            )
-            table.add_row(
-                "[bold]Weighted Avg (all filters)[/bold]",
-                "",
-                f"[bold]{weighted_avg_improvement:.6f}[/bold]",
-                "",
-                "",
-                "",
-            )
+        # Calculate number of extra empty columns for summary rows
+        # Columns: Filter, Dir, AvgImp, StdImp, AvgDrop, [%Above], Samples
+        extra_cols = 4 if min_score_improvement is not None else 3
+
+        def add_summary_row(label: str, value: float) -> None:
+            """Helper to add a summary row with correct number of empty columns."""
+            row = [label, "", f"[bold]{value:.6f}[/bold]"] + [""] * extra_cols
+            table.add_row(*row)
+
+        add_summary_row("[bold]Average (all filters)[/bold]", avg_improvement)
+        add_summary_row(
+            "[bold]Weighted Avg (all filters)[/bold]", weighted_avg_improvement
+        )
 
         # Add statistics for filters above threshold if min_score_improvement is set
         if min_score_improvement is not None:
@@ -2755,23 +2734,12 @@ def _evaluate_filters(
                     else 0.0
                 )
 
-                table.add_row(
-                    f"[bold]Average (>= {min_score_improvement:.6f})[/bold]",
-                    "",
-                    f"[bold]{avg_above:.6f}[/bold]",
-                    "",
-                    "",
-                    "",
-                    "",
+                add_summary_row(
+                    f"[bold]Average (>= {min_score_improvement:.6f})[/bold]", avg_above
                 )
-                table.add_row(
+                add_summary_row(
                     f"[bold]Weighted Avg (>= {min_score_improvement:.6f})[/bold]",
-                    "",
-                    f"[bold]{weighted_avg_above:.6f}[/bold]",
-                    "",
-                    "",
-                    "",
-                    "",
+                    weighted_avg_above,
                 )
 
         console.print()
