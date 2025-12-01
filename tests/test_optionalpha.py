@@ -10,6 +10,7 @@ import torch
 from ifera.optionalpha import (
     FilterInfo,
     Split,
+    SplitGenerator,
     _extract_dollar_amount,
     _parse_time,
     parse_filter_log,
@@ -1397,3 +1398,297 @@ def test_prepare_splits_min_samples_exclusion():
         assert (
             split.mask.sum().item() >= 2
         ), f"All splits should have at least 2 samples, got {split.mask.sum().item()}"
+
+
+# ============================================================================
+# Tests for SplitGenerator class
+# ============================================================================
+
+
+def test_split_generator_basic():
+    """Test basic functionality of SplitGenerator."""
+    # Create simple trades dataframe
+    trades_df = pd.DataFrame(
+        {
+            "symbol": ["SPX", "SPX", "SPX"],
+            "risk": [100.0, 200.0, 150.0],
+            "profit": [50.0, -100.0, 75.0],
+        },
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    # Create simple filters dataframe
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0], "filter_b": [10.0, 20.0, 30.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    # Create a SplitGenerator with hyperparameters
+    generator = SplitGenerator(
+        spread_width=20,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    X, y, splits = generator.generate(trades_df, filters_df)
+
+    # Check X shape - should have 3 rows and 10 columns
+    # (2 filters + reward_per_risk + premium + 5 weekday filters + open_minutes)
+    assert X.shape == (3, 10)
+    assert X.device == torch.device("cpu")
+    assert X.dtype == torch.float32
+
+    # Check y shape and values
+    assert y.shape == (3,)
+    assert y.device == torch.device("cpu")
+    assert y.dtype == torch.float32
+
+    # Check RoR values (profit / risk)
+    expected_y = torch.tensor([0.5, -0.5, 0.5], dtype=torch.float32)
+    assert torch.allclose(y, expected_y)
+
+    # Check that splits were generated
+    assert len(splits) > 0
+
+
+def test_split_generator_with_hyperparameters():
+    """Test SplitGenerator with various hyperparameters."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0, 120.0], "profit": [50.0, -100.0, 75.0, 60.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13"], name="date"
+        ),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0, 4.0], "filter_b": [10.0, 20.0, 30.0, 40.0]},
+        index=pd.DatetimeIndex(
+            ["2022-01-10", "2022-01-11", "2022-01-12", "2022-01-13"], name="date"
+        ),
+    )
+
+    # Create a SplitGenerator with various hyperparameters
+    generator = SplitGenerator(
+        spread_width=20,
+        left_only_filters=["filter_a"],
+        right_only_filters=[],
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        max_depth=2,
+        min_samples=1,
+    )
+
+    X, y, splits = generator.generate(trades_df, filters_df)
+
+    # Check dtype
+    assert X.dtype == torch.float64
+    assert y.dtype == torch.float64
+
+    # Check that filter_a only has left splits
+    has_filter_a_left = False
+    has_filter_a_right = False
+    for split in splits:
+        for filter_idx, filter_name, threshold, direction in split.filters:
+            if filter_name == "filter_a":
+                if direction == "left":
+                    has_filter_a_left = True
+                elif direction == "right":
+                    has_filter_a_right = True
+
+    assert has_filter_a_left, "Expected at least one left split for filter_a"
+    assert not has_filter_a_right, "Expected no right splits for filter_a"
+
+
+def test_split_generator_reuse():
+    """Test that SplitGenerator can be reused with different data."""
+    # Create a SplitGenerator
+    generator = SplitGenerator(
+        spread_width=20,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        min_samples=1,
+    )
+
+    # First dataset
+    trades_df1 = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+    filters_df1 = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    X1, y1, splits1 = generator.generate(trades_df1, filters_df1)
+
+    # Second dataset (different - different profit values)
+    trades_df2 = pd.DataFrame(
+        {"risk": [150.0, 250.0, 175.0], "profit": [150.0, 50.0, 175.0]},
+        index=pd.DatetimeIndex(["2022-02-01", "2022-02-02", "2022-02-03"], name="date"),
+    )
+    filters_df2 = pd.DataFrame(
+        {"filter_a": [5.0, 6.0, 7.0]},
+        index=pd.DatetimeIndex(["2022-02-01", "2022-02-02", "2022-02-03"], name="date"),
+    )
+
+    X2, y2, splits2 = generator.generate(trades_df2, filters_df2)
+
+    # Check that both calls produced valid outputs
+    assert X1.shape == (2, 9)  # 2 samples
+    assert X2.shape == (3, 9)  # 3 samples
+
+    # Check that y values are different (different profit/risk ratios)
+    # y1 = [50/100, 100/200] = [0.5, 0.5]
+    # y2 = [150/150, 50/250, 175/175] = [1.0, 0.2, 1.0]
+    # Check y2[0] (1.0) is different from y1[0] (0.5)
+    assert abs(y1[0].item() - y2[0].item()) > 0.1
+
+
+def test_split_generator_equivalence_to_prepare_splits():
+    """Test that SplitGenerator produces equivalent results to prepare_splits."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, -100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    # Use SplitGenerator
+    generator = SplitGenerator(
+        spread_width=20,
+        left_only_filters=[],
+        right_only_filters=[],
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        min_samples=1,
+    )
+    X_gen, y_gen, splits_gen = generator.generate(trades_df, filters_df)
+
+    # Use prepare_splits
+    X_func, y_func, splits_func = prepare_splits(
+        trades_df,
+        filters_df,
+        spread_width=20,
+        left_only_filters=[],
+        right_only_filters=[],
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        min_samples=1,
+    )
+
+    # Check that X and y are equal
+    assert torch.allclose(X_gen, X_func)
+    assert torch.allclose(y_gen, y_func)
+
+    # Check that the number of splits is the same
+    assert len(splits_gen) == len(splits_func)
+
+
+def test_split_generator_spread_width_override():
+    """Test that spread_width can be overridden in generate()."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    # Create generator with spread_width=20
+    generator = SplitGenerator(
+        spread_width=20,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    # Generate with default spread_width (20)
+    X1, y1, splits1 = generator.generate(trades_df, filters_df)
+
+    # Generate with overridden spread_width (30)
+    X2, y2, splits2 = generator.generate(trades_df, filters_df, spread_width=30)
+
+    # Columns after filter_a: reward_per_risk (1), premium (2)
+    # reward_per_risk column (index 1) should be different
+    # reward_per_risk = (spread_width * 100 - risk) / risk
+    # For spread_width=20, risk=100: (2000 - 100) / 100 = 19.0
+    # For spread_width=30, risk=100: (3000 - 100) / 100 = 29.0
+    assert not torch.allclose(X1[:, 1], X2[:, 1])
+
+    # Expected reward_per_risk for spread_width=20
+    expected_rpr_20 = torch.tensor(
+        [(20 * 100 - 100) / 100, (20 * 100 - 200) / 200], dtype=torch.float32
+    )
+    assert torch.allclose(X1[:, 1], expected_rpr_20)
+
+    # Expected reward_per_risk for spread_width=30
+    expected_rpr_30 = torch.tensor(
+        [(30 * 100 - 100) / 100, (30 * 100 - 200) / 200], dtype=torch.float32
+    )
+    assert torch.allclose(X2[:, 1], expected_rpr_30)
+
+
+def test_split_generator_keep_best_n_requires_score_func():
+    """Test that keep_best_n requires score_func to be provided."""
+    with pytest.raises(
+        ValueError, match="score_func must be provided when keep_best_n is not None"
+    ):
+        SplitGenerator(
+            spread_width=20,
+            keep_best_n=5,
+        )
+
+
+def test_split_generator_verbose_best_requires_score_func():
+    """Test that verbose='best' requires score_func to be not None."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0], "profit": [50.0, 100.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
+    )
+
+    generator = SplitGenerator(spread_width=20)
+
+    with pytest.raises(
+        ValueError, match="verbose='best' requires score_func to be not None"
+    ):
+        generator.generate(trades_df, filters_df, verbose="best")
+
+
+def test_split_generator_with_score_func():
+    """Test SplitGenerator with a score function."""
+    trades_df = pd.DataFrame(
+        {"risk": [100.0, 200.0, 150.0], "profit": [50.0, -100.0, 75.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    filters_df = pd.DataFrame(
+        {"filter_a": [1.0, 2.0, 3.0]},
+        index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
+    )
+
+    # Define a simple score function
+    def simple_score_func(y, masks):
+        return torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
+
+    generator = SplitGenerator(
+        spread_width=20,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        score_func=simple_score_func,
+    )
+
+    X, y, splits = generator.generate(trades_df, filters_df)
+
+    # All splits should have scores
+    for split in splits:
+        assert split.score is not None, "Split should have been scored"
+        assert isinstance(split.score, float), "Score should be a float"

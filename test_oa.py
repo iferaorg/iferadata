@@ -35,7 +35,7 @@ df = ifera.parse_trade_log(trade_grid)
 full_period = df.index.max() - df.index.min() + pd.Timedelta(days=1)
 num_years = full_period.days / 365.25
 
-dates = np.array([dt.date(d.year, d.month, d.day) for d in df.index.unique().sort_values()]) # type: ignore
+dates = np.array([dt.date(d.year, d.month, d.day) for d in df.index.unique().sort_values()])  # type: ignore
 
 # Create 1 year long slices of dates starting every 3 months
 slices = []
@@ -113,7 +113,7 @@ granularities = {
     "ema_200": 1,
 }
 
-#dff = dff[["macd_12_26_9"]]
+# dff = dff[["macd_12_26_9"]]
 
 # Keep only rows with date index >= 2023-01-01
 # df = df[df.index >= pd.Timestamp("2023-01-01")]
@@ -133,99 +133,104 @@ def masked_sharpe(returns: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     )  # Annualized Sharpe ratio
     return sharpe_ratio
 
+
 # Create date-to-index mapping
 date_to_idx = {date: idx for idx, date in enumerate(dates)}
 
-def masked_sharpe_byslices(
-    returns: torch.Tensor, mask: torch.Tensor
-) -> torch.Tensor:
+
+def masked_sharpe_byslices(returns: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     # Store Sharpe ratios for each slice
     slice_sharpes = []
-    
+
     for i, slice_dates in enumerate(slices):
         # Get indices for this slice
-        slice_indices = [date_to_idx[date] for date in slice_dates if date in date_to_idx]
-        
+        slice_indices = [
+            date_to_idx[date] for date in slice_dates if date in date_to_idx
+        ]
+
         if len(slice_indices) == 0:
             continue
-            
+
         # Extract returns and mask for this slice
         slice_returns = returns[slice_indices]
         slice_mask = mask[:, slice_indices]
-        
+
         days = (end_dates[i] - start_dates[i]).days + 1
         padded_slice_returns = torch.zeros(
             (mask.shape[0], days), dtype=returns.dtype, device=returns.device
         )
         # Calculate masked returns
         padded_slice_returns[:, : slice_returns.shape[0]] = slice_returns * slice_mask
-        
+
         # Calculate Sharpe ratio for this slice
         mean_return = torch.mean(padded_slice_returns, dim=1)
         std_return = torch.std(padded_slice_returns, dim=1) + 1e-8
         sharpe_ratio = mean_return / std_return * (365.25**0.5)  # Annualized
-        
+
         slice_sharpes.append(sharpe_ratio)
-    
+
     # Stack all slice Sharpe ratios and return the minimum for each batch
     all_sharpes = torch.stack(slice_sharpes, dim=1)  # Shape: (batch_size, num_slices)
     min_sharpe = torch.min(all_sharpes, dim=1)[0]  # Shape: (batch_size,)
-    
+
     return min_sharpe
 
 
-X, y, splits = ifera.prepare_splits(
-    df,
-    dff,
-    spread_with,
-    left_only,
-    right_only,
-    torch.device("cuda"),
-    torch.float32,
+# Create a SplitGenerator instance with hyperparameters
+generator = ifera.SplitGenerator(
+    spread_width=spread_with,
+    left_only_filters=left_only,
+    right_only_filters=right_only,
+    device=torch.device("cuda"),
+    dtype=torch.float32,
     max_splits_per_filter=None,
     max_depth=1,
-    min_samples=300, #217, #len(df)//2,
+    min_samples=300,  # 217, #len(df)//2,
     score_func=masked_sharpe,
     keep_best_n=256,
-    verbose="best",
     filter_granularities=granularities,
     filter_eval_folds=4,
     filter_eval_repeats=1024,
     min_score_improvement=0.01,
-    purge_pct=0.02
+    purge_pct=0.02,
 )
+
+X, y, splits = generator.generate(df, dff, verbose="best")
 
 exit(0)
 
 
-#torch.backends.cuda.matmul.fp32_precision = "tf32"
+# torch.backends.cuda.matmul.fp32_precision = "tf32"
 n_samples = len(df)
 
 for p in np.arange(0.5, 0.51, 0.05):
     min_samples = int(n_samples * p)
     t = time.time()
-    print(f"================= Preparing splits with min_samples={min_samples} ({p*100:.0f}%) =================")
-    X, y, splits = ifera.prepare_splits(
-        df,
-        dff,
-        spread_with,
-        left_only,
-        right_only,
-        torch.device("cuda"),
-        torch.float32,
+    print(
+        f"================= Preparing splits with min_samples={min_samples} "
+        f"({p*100:.0f}%) ================="
+    )
+    # Create a new SplitGenerator for each iteration with different min_samples
+    loop_generator = ifera.SplitGenerator(
+        spread_width=spread_with,
+        left_only_filters=left_only,
+        right_only_filters=right_only,
+        device=torch.device("cuda"),
+        dtype=torch.float32,
         max_splits_per_filter=None,
         max_depth=1000,
         min_samples=min_samples,
         score_func=masked_sharpe,
         keep_best_n=256,
-        verbose="best",
         filter_granularities=granularities,
         filter_eval_folds=4,
         filter_eval_repeats=500,
-        min_score_improvement=0.08,        
+        min_score_improvement=0.08,
     )
+    X, y, splits = loop_generator.generate(df, dff, verbose="best")
     print(
-        f"prepare_splits time: {time.time() - t:.2f} sec, number of splits: {len(splits)}, min_samples: {min_samples}"
+        f"generate time: {time.time() - t:.2f} sec, number of splits: {len(splits)}, "
+        f"min_samples: {min_samples}"
     )
 
 
