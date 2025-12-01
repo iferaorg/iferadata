@@ -1521,7 +1521,7 @@ def test_split_generator_reuse():
 
     X1, y1, splits1 = generator.generate(trades_df1, filters_df1)
 
-    # Second dataset (different - different profit values)
+    # Second dataset with different profit values
     trades_df2 = pd.DataFrame(
         {"risk": [150.0, 250.0, 175.0], "profit": [150.0, 50.0, 175.0]},
         index=pd.DatetimeIndex(["2022-02-01", "2022-02-02", "2022-02-03"], name="date"),
@@ -1675,8 +1675,22 @@ def test_split_generator_with_score_func():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    # Define a simple score function
-    def simple_score_func(y, masks):
+    def simple_score_func(y: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+        """
+        Simple score function that sums masked y values.
+
+        Parameters
+        ----------
+        y : torch.Tensor
+            1-D tensor of target values (n_samples,)
+        masks : torch.Tensor
+            2-D boolean tensor of shape (batch_size, n_samples)
+
+        Returns
+        -------
+        torch.Tensor
+            1-D tensor of scores (batch_size,)
+        """
         return torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
 
     generator = SplitGenerator(
