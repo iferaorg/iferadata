@@ -9,3 +9,5 @@ pytest_err.log
 log/
 thetadata/lib/
 thetadata/creds.txt
+table_source.txt
+*.log
