@@ -2508,6 +2508,12 @@ def _evaluate_filters(
     all_best_sample_counts_tensor = torch.zeros(
         (n_filter_groups, n_buckets), dtype=torch.long, device=device
     )
+    all_train_scores_tensor = torch.zeros(
+        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
+    )
+    all_test_scores_tensor = torch.zeros(
+        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
+    )
 
     # Step 8: Process all CV buckets
     # For each bucket: score splits on train, find best per group, score on test
@@ -2585,21 +2591,46 @@ def _evaluate_filters(
             all_best_sample_counts_tensor[:, bucket_idx] = original_sample_counts[
                 best_split_indices
             ]
+            all_train_scores_tensor[:, bucket_idx] = group_max_scores
+            all_test_scores_tensor[:, bucket_idx] = test_scores
 
             pbar.update(1)
 
     # Step 9: Aggregate results per filter group
     score_improvements: dict[tuple[str, str], float] = {}
     best_split_sample_counts: dict[tuple[str, str], int] = {}
+    score_improvement_stds: dict[tuple[str, str], float] = {}
+    train_test_drops: dict[tuple[str, str], float] = {}
+    pct_above_threshold: dict[tuple[str, str], float] = {}
 
     avg_improvements = all_improvements_tensor.mean(dim=1)  # (n_filter_groups,)
+    # Use unbiased=False when n_buckets is 1 to avoid warning about degrees of freedom
+    if n_buckets > 1:
+        std_improvements = all_improvements_tensor.std(
+            dim=1, unbiased=True
+        )  # (n_filter_groups,)
+    else:
+        std_improvements = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
     avg_sample_counts = all_best_sample_counts_tensor.float().mean(
         dim=1
     )  # (n_filter_groups,)
+    avg_train_scores = all_train_scores_tensor.mean(dim=1)  # (n_filter_groups,)
+    avg_test_scores = all_test_scores_tensor.mean(dim=1)  # (n_filter_groups,)
+    avg_train_test_drops = avg_train_scores - avg_test_scores  # (n_filter_groups,)
+
+    # Compute percentage of tests above threshold
+    if min_score_improvement is not None:
+        above_threshold_mask = all_improvements_tensor >= min_score_improvement
+        pct_above = above_threshold_mask.float().mean(dim=1) * 100.0
+    else:
+        pct_above = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
 
     for group_idx, key in enumerate(filter_keys):
         score_improvements[key] = float(avg_improvements[group_idx].item())
         best_split_sample_counts[key] = int(avg_sample_counts[group_idx].item() + 0.5)
+        score_improvement_stds[key] = float(std_improvements[group_idx].item())
+        train_test_drops[key] = float(avg_train_test_drops[group_idx].item())
+        pct_above_threshold[key] = float(pct_above[group_idx].item())
 
     # Step 10: Print results using rich table (only if verbose is not "no")
     if len(score_improvements) > 0 and verbose != "no":
@@ -2610,16 +2641,40 @@ def _evaluate_filters(
 
         table = Table(title="Filter Evaluation Results (Purged Time-Series CV)")
         table.add_column("Filter", style="cyan")
-        table.add_column("Direction", style="magenta")
-        table.add_column("Avg Score Improvement", style="green", justify="right")
+        table.add_column("Dir", style="magenta")
+        table.add_column("AvgImp", style="green", justify="right")
+        table.add_column("StdImp", style="blue", justify="right")
+        table.add_column("AvgDrop", style="red", justify="right")
+        if min_score_improvement is not None:
+            table.add_column("%Above", style="yellow", justify="right")
         table.add_column("Samples", style="yellow", justify="right")
 
         for (filter_name, direction), improvement in sorted_items:
-            # Get average sample count from best splits across CV folds
+            # Get statistics for this filter
             avg_samples = best_split_sample_counts.get((filter_name, direction), 0)
-            table.add_row(
-                filter_name, direction, f"{improvement:.6f}", str(avg_samples)
-            )
+            std_imp = score_improvement_stds.get((filter_name, direction), 0.0)
+            avg_drop = train_test_drops.get((filter_name, direction), 0.0)
+            pct_above_val = pct_above_threshold.get((filter_name, direction), 0.0)
+
+            if min_score_improvement is not None:
+                table.add_row(
+                    filter_name,
+                    direction,
+                    f"{improvement:.6f}",
+                    f"{std_imp:.6f}",
+                    f"{avg_drop:.6f}",
+                    f"{pct_above_val:.1f}%",
+                    str(avg_samples),
+                )
+            else:
+                table.add_row(
+                    filter_name,
+                    direction,
+                    f"{improvement:.6f}",
+                    f"{std_imp:.6f}",
+                    f"{avg_drop:.6f}",
+                    str(avg_samples),
+                )
 
         # Add summary statistics
         table.add_section()
@@ -2640,17 +2695,18 @@ def _evaluate_filters(
         )
 
         # Add summary rows
-        table.add_row(
-            "[bold]Average (all filters)[/bold]",
-            "",
-            f"[bold]{avg_improvement:.6f}[/bold]",
-            "",
-        )
-        table.add_row(
-            "[bold]Weighted Avg (all filters)[/bold]",
-            "",
-            f"[bold]{weighted_avg_improvement:.6f}[/bold]",
-            "",
+        # Calculate number of extra empty columns for summary rows
+        # Columns: Filter, Dir, AvgImp, StdImp, AvgDrop, [%Above], Samples
+        extra_cols = 4 if min_score_improvement is not None else 3
+
+        def add_summary_row(label: str, value: float) -> None:
+            """Helper to add a summary row with correct number of empty columns."""
+            row = [label, "", f"[bold]{value:.6f}[/bold]"] + [""] * extra_cols
+            table.add_row(*row)
+
+        add_summary_row("[bold]Average (all filters)[/bold]", avg_improvement)
+        add_summary_row(
+            "[bold]Weighted Avg (all filters)[/bold]", weighted_avg_improvement
         )
 
         # Add statistics for filters above threshold if min_score_improvement is set
@@ -2678,17 +2734,12 @@ def _evaluate_filters(
                     else 0.0
                 )
 
-                table.add_row(
-                    f"[bold]Average (>= {min_score_improvement:.6f})[/bold]",
-                    "",
-                    f"[bold]{avg_above:.6f}[/bold]",
-                    "",
+                add_summary_row(
+                    f"[bold]Average (>= {min_score_improvement:.6f})[/bold]", avg_above
                 )
-                table.add_row(
+                add_summary_row(
                     f"[bold]Weighted Avg (>= {min_score_improvement:.6f})[/bold]",
-                    "",
-                    f"[bold]{weighted_avg_above:.6f}[/bold]",
-                    "",
+                    weighted_avg_above,
                 )
 
         console.print()
