@@ -34,6 +34,7 @@ from .optionalpha import (
     get_filters,
     prepare_splits,
     Split,
+    SplitGenerator,
 )
 
 __all__ = [
@@ -87,4 +88,5 @@ __all__ = [
     "get_filters",
     "prepare_splits",
     "Split",
+    "SplitGenerator",
 ]
