@@ -7,11 +7,11 @@ import zipfile as zip_file
 from typing import Optional, List, Tuple
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import torch
 from tqdm import tqdm
 
-from .config import BaseInstrumentConfig
+from .config import BaseInstrumentConfig, parse_datetime, timedelta_range
 from .enums import Source
 from .file_utils import make_instrument_path
 
@@ -19,39 +19,70 @@ SECONDS_IN_DAY = 86400
 
 
 def add_missing_rows(
-    group: pd.DataFrame,
-    start_time: pd.Timedelta,
-    end_time: pd.Timedelta,
-    time_step: pd.Timedelta,
-) -> pd.DataFrame:
+    group: pl.DataFrame,
+    start_time: datetime.timedelta,
+    end_time: datetime.timedelta,
+    time_step: datetime.timedelta,
+) -> pl.DataFrame:
     """Add missing rows for each time step in a group."""
-    all_time_steps = pd.timedelta_range(start=start_time, end=end_time, freq=time_step)
-    all_time_step_rows = pd.DataFrame(
-        {
-            "trade_date": group["trade_date"].iloc[0],
-            "offset_time": all_time_steps,
-            "open": np.nan,
-            "high": np.nan,
-            "low": np.nan,
-            "close": np.nan,
-            "volume": np.nan,
-        }
-    )
-    merged = pd.merge(
-        group,
+    all_time_steps = timedelta_range(start=start_time, end=end_time, freq=time_step)
+    
+    # Convert timedeltas to total_seconds for polars
+    all_time_steps_seconds = [int(td.total_seconds()) for td in all_time_steps]
+    trade_date_val = group["trade_date"][0]
+    
+    all_time_step_rows = pl.DataFrame({
+        "trade_date": [trade_date_val] * len(all_time_steps_seconds),
+        "offset_time": all_time_steps_seconds,
+        "open": [None] * len(all_time_steps_seconds),
+        "high": [None] * len(all_time_steps_seconds),
+        "low": [None] * len(all_time_steps_seconds),
+        "close": [None] * len(all_time_steps_seconds),
+        "volume": [None] * len(all_time_steps_seconds),
+    })
+    
+    # Merge and sort
+    merged = group.join(
         all_time_step_rows,
         on=["trade_date", "offset_time"],
-        how="outer",
-        suffixes=("", "_y"),
-        sort=True,
-    )[group.columns].copy()
-    merged["close"] = merged["close"].ffill()
-    first_open = group["open"].iloc[0]
-    merged["close"] = merged["close"].fillna(first_open)
-    merged[["open", "high", "low", "close"]] = merged[
-        ["open", "high", "low", "close"]
-    ].bfill(axis=1)
-    merged["volume"] = merged["volume"].fillna(0, inplace=False).astype("int32")
+        how="full",
+        suffix="_y"
+    ).sort(["trade_date", "offset_time"])
+    
+    # Forward fill close
+    merged = merged.with_columns([
+        pl.col("close").forward_fill().alias("close")
+    ])
+    
+    # Fill remaining nulls in close with first open value
+    first_open = group["open"][0]
+    merged = merged.with_columns([
+        pl.col("close").fill_null(first_open).alias("close")
+    ])
+    
+    # Backward fill open, high, low from close
+    merged = merged.with_columns([
+        pl.when(pl.col("open").is_null())
+        .then(pl.col("close"))
+        .otherwise(pl.col("open"))
+        .alias("open"),
+        
+        pl.when(pl.col("high").is_null())
+        .then(pl.col("close"))
+        .otherwise(pl.col("high"))
+        .alias("high"),
+        
+        pl.when(pl.col("low").is_null())
+        .then(pl.col("close"))
+        .otherwise(pl.col("low"))
+        .alias("low"),
+    ])
+    
+    # Fill volume nulls with 0
+    merged = merged.with_columns([
+        pl.col("volume").fill_null(0).cast(pl.Int32).alias("volume")
+    ])
+    
     return merged
 
 
@@ -102,7 +133,7 @@ def make_float_formatter(max_decimals: int):
     """Create a function that formats floats with specified decimal places."""
 
     def float_formatter(x):
-        if pd.isna(x):
+        if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
             return ""
         formatted = f"{x:.{max_decimals}f}".rstrip("0").rstrip(".")
         return formatted
@@ -110,90 +141,91 @@ def make_float_formatter(max_decimals: int):
     return float_formatter
 
 
-def aggregate_by_second(df: pd.DataFrame, max_decimals: int) -> pd.DataFrame:
+def aggregate_by_second(df: pl.DataFrame, max_decimals: int) -> pl.DataFrame:
     """Aggregate data by second, computing OHLCV and VWAP."""
-    if df.empty:
+    if df.is_empty():
         return df
-    df["PxSize"] = df["Price"] * df["Size"]
-    grouped = df.groupby(["Date", "Time"], as_index=False, sort=False).agg(
-        {
-            "Bid": ["first", "max", "min", "last"],
-            "Ask": ["first", "max", "min", "last"],
-            "Price": ["first", "max", "min", "last"],
-            "Size": "sum",
-            "PxSize": "sum",
-        }
-    )
-    # Convert list of strings to pandas Index to satisfy type checking
-    grouped.columns = pd.Index(
-        [
-            "Date",
-            "Time",
-            "BidOpen",
-            "BidHigh",
-            "BidLow",
-            "BidClose",
-            "AskOpen",
-            "AskHigh",
-            "AskLow",
-            "AskClose",
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume",
-            "PxSizeSum",
-        ]
-    )
-    grouped["PxSizeSum"] = grouped["PxSizeSum"].astype(float)
-    grouped["Volume"] = grouped["Volume"].astype(float)
-    grouped["Close"] = grouped["Close"].astype(float)
-    grouped["VWAP"] = grouped["Close"].astype(float)
-    nonzero_mask = grouped["Volume"] != 0
-    grouped.loc[nonzero_mask, "VWAP"] = (
-        grouped.loc[nonzero_mask, "PxSizeSum"]
-        .div(grouped.loc[nonzero_mask, "Volume"])
-        .astype(float)
-    )
-    grouped["Volume"] = grouped["Volume"].astype(int)
-    grouped.drop(columns=["PxSizeSum"], inplace=True)
+    
+    df = df.with_columns([
+        (pl.col("Price") * pl.col("Size")).alias("PxSize")
+    ])
+    
+    grouped = df.group_by(["Date", "Time"], maintain_order=True).agg([
+        pl.col("Bid").first().alias("BidOpen"),
+        pl.col("Bid").max().alias("BidHigh"),
+        pl.col("Bid").min().alias("BidLow"),
+        pl.col("Bid").last().alias("BidClose"),
+        pl.col("Ask").first().alias("AskOpen"),
+        pl.col("Ask").max().alias("AskHigh"),
+        pl.col("Ask").min().alias("AskLow"),
+        pl.col("Ask").last().alias("AskClose"),
+        pl.col("Price").first().alias("Open"),
+        pl.col("Price").max().alias("High"),
+        pl.col("Price").min().alias("Low"),
+        pl.col("Price").last().alias("Close"),
+        pl.col("Size").sum().alias("Volume"),
+        pl.col("PxSize").sum().alias("PxSizeSum"),
+    ])
+    
+    # Cast to appropriate types
+    grouped = grouped.with_columns([
+        pl.col("PxSizeSum").cast(pl.Float64),
+        pl.col("Volume").cast(pl.Float64),
+        pl.col("Close").cast(pl.Float64),
+    ])
+    
+    # Calculate VWAP
+    grouped = grouped.with_columns([
+        pl.when(pl.col("Volume") != 0)
+        .then(pl.col("PxSizeSum") / pl.col("Volume"))
+        .otherwise(pl.col("Close"))
+        .alias("VWAP")
+    ])
+    
+    # Cast volume to int
+    grouped = grouped.with_columns([
+        pl.col("Volume").cast(pl.Int64)
+    ])
+    
+    # Drop PxSizeSum
+    grouped = grouped.drop("PxSizeSum")
+    
+    # Round float columns
     float_cols = [
-        "BidOpen",
-        "BidHigh",
-        "BidLow",
-        "BidClose",
-        "AskOpen",
-        "AskHigh",
-        "AskLow",
-        "AskClose",
-        "Open",
-        "High",
-        "Low",
-        "Close",
-        "VWAP",
+        "BidOpen", "BidHigh", "BidLow", "BidClose",
+        "AskOpen", "AskHigh", "AskLow", "AskClose",
+        "Open", "High", "Low", "Close", "VWAP",
     ]
-    grouped[float_cols] = grouped[float_cols].round(max_decimals)
+    grouped = grouped.with_columns([
+        pl.col(col).round(max_decimals).alias(col) for col in float_cols
+    ])
+    
     return grouped
 
 
 def process_chunk(
-    chunk: pd.DataFrame, partial_df: pd.DataFrame, max_decimals: int
-) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    chunk: pl.DataFrame, partial_df: pl.DataFrame, max_decimals: int
+) -> Tuple[Optional[pl.DataFrame], Optional[pl.DataFrame]]:
     """Process a chunk of data, aggregating complete seconds and carrying over incomplete data."""
     if partial_df is None:
         combined = chunk
     else:
-        combined = pd.concat([partial_df, chunk], ignore_index=True)
+        combined = pl.concat([partial_df, chunk])
 
-    if combined.empty:
+    if combined.is_empty():
         return None, partial_df  # type: ignore
 
-    last_dt = combined.iloc[-1]["Date"] + " " + combined.iloc[-1]["Time"]
-    mask = (combined["Date"] + " " + combined["Time"]) == last_dt
-    to_aggregate = combined[~mask]
-    new_partial_df = combined[mask]
+    last_row = combined.tail(1)
+    last_dt = last_row["Date"][0] + " " + last_row["Time"][0]
+    
+    combined = combined.with_columns([
+        (pl.col("Date") + " " + pl.col("Time")).alias("datetime_str")
+    ])
+    
+    to_aggregate = combined.filter(pl.col("datetime_str") != last_dt).drop("datetime_str")
+    new_partial_df = combined.filter(pl.col("datetime_str") == last_dt).drop("datetime_str")
 
-    if not to_aggregate.empty:
+    if not to_aggregate.is_empty():
         aggregated = aggregate_by_second(to_aggregate, max_decimals)
     else:
         aggregated = None
@@ -208,9 +240,24 @@ def aggregate_large_quote_file(
     max_decimals = find_max_decimals_in_file(input_file, chunk_size=chunksize)
     print(f"Detected max decimals: {max_decimals}")
     float_formatter = make_float_formatter(max_decimals)
-    total_lines = count_lines(input_file)
-    num_chunks = (total_lines + chunksize - 1) // chunksize
-
+    
+    # Read the entire file with polars (polars is more efficient with large files)
+    print("Reading file...")
+    df = pl.read_csv(
+        input_file,
+        has_header=False,
+        new_columns=["Date", "Time", "Bid", "Ask", "Price", "Size"],
+        schema_overrides={
+            "Date": pl.Utf8,
+            "Time": pl.Utf8,
+            "Bid": pl.Float64,
+            "Ask": pl.Float64,
+            "Price": pl.Float64,
+            "Size": pl.Int64,
+        },
+    )
+    
+    # Write header
     with open(output_file, "w", encoding="utf-8") as f_out:
         header = (
             "Date,Time,"
@@ -220,80 +267,61 @@ def aggregate_large_quote_file(
             "Volume,VWAP\n"
         )
         f_out.write(header)
-
-    partial_df = None
-    pbar = tqdm(total=num_chunks, desc="Processing chunks")
-    for chunk in pd.read_csv(
-        input_file,
-        names=["Date", "Time", "Bid", "Ask", "Price", "Size"],
-        header=None,
-        chunksize=chunksize,
-        dtype={
-            "Date": str,
-            "Time": str,
-            "Bid": float,
-            "Ask": float,
-            "Price": float,
-            "Size": int,
-        },
-        encoding="utf-8",
-    ):
-        aggregated, partial_df = process_chunk(chunk, partial_df, max_decimals)  # type: ignore
-
-        if aggregated is not None:
-            aggregated.to_csv(
-                output_file,
-                mode="a",
-                header=False,
-                index=False,
-                float_format=float_formatter,
-            )
-        pbar.update(1)
-    pbar.close()
-
-    if partial_df is not None and not partial_df.empty:
-        aggregated = aggregate_by_second(partial_df, max_decimals)
-        aggregated.to_csv(
-            output_file,
-            mode="a",
-            header=False,
-            index=False,
-            float_format=float_formatter,
-        )
-
+    
+    print("Aggregating by second...")
+    aggregated = aggregate_by_second(df, max_decimals)
+    
+    # Write to CSV
+    aggregated.write_csv(output_file, has_header=False, append=True)
+    
     print("Aggregation complete.")
 
 
 def calculate_time_columns(
-    df: pd.DataFrame, instrument: BaseInstrumentConfig
-) -> pd.DataFrame:
+    df: pl.DataFrame, instrument: BaseInstrumentConfig
+) -> pl.DataFrame:
     """Calculate and assign datetime-related columns to the DataFrame."""
-    dt_index = pd.to_datetime(df.index)
-    df = df.assign(
-        date=pd.to_datetime(dt_index.date),
-        time=pd.to_timedelta(
-            [d.hour * 3600 + d.minute * 60 + d.second for d in dt_index], unit="s"
-        ),
-        offset_time=pd.Series(index=df.index, dtype="timedelta64[ns]"),
-        trade_date=pd.Series(index=df.index, dtype="datetime64[ns]"),
-    )
-    df["offset_time"] = df["time"] - instrument.trading_start
-    df["offset_time"] = df["offset_time"].apply(
-        lambda x: x - pd.to_timedelta(x.days, unit="d")
-    )
-    df["trade_date"] = pd.to_datetime(
-        [(d - instrument.trading_start).date() for d in dt_index]
-    )
+    # Assuming df has a 'date_time' column from the raw data loading
+    trading_start_seconds = int(instrument.trading_start.total_seconds())
+    
+    df = df.with_columns([
+        # Extract date
+        pl.col("date_time").dt.date().alias("date"),
+        
+        # Calculate time in seconds from start of day
+        (pl.col("date_time").dt.hour() * 3600 + 
+         pl.col("date_time").dt.minute() * 60 + 
+         pl.col("date_time").dt.second()).alias("time_seconds"),
+    ])
+    
+    # Calculate offset_time as seconds from trading_start
+    df = df.with_columns([
+        (pl.col("time_seconds") - trading_start_seconds).alias("offset_time_seconds")
+    ])
+    
+    # Normalize offset_time to be within 0 to SECONDS_IN_DAY
+    df = df.with_columns([
+        (pl.col("offset_time_seconds") % SECONDS_IN_DAY).alias("offset_time_seconds")
+    ])
+    
+    # Calculate trade_date (the date adjusted for trading_start)
+    df = df.with_columns([
+        pl.when(pl.col("time_seconds") < trading_start_seconds)
+        .then(pl.col("date") - pl.duration(days=1))
+        .otherwise(pl.col("date"))
+        .alias("trade_date")
+    ])
+    
     return df
 
 
 def process_group(
-    group: pd.DataFrame, instrument: BaseInstrumentConfig
-) -> pd.DataFrame:
+    group: pl.DataFrame, instrument: BaseInstrumentConfig
+) -> pl.DataFrame:
     """Process a group by adding missing rows based on instrument settings."""
     return add_missing_rows(
         group,
-        start_time=pd.Timedelta(0),
+        start_time=datetime.timedelta(0),
         end_time=instrument.end_time,
         time_step=instrument.time_step,
     )
