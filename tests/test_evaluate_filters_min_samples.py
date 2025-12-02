@@ -7,7 +7,20 @@ import torch
 from ifera.optionalpha import prepare_splits
 
 
-def test_evaluate_filters_with_min_samples_expansion():
+@pytest.fixture
+def mean_score_func():
+    """Fixture providing a simple mean score function for tests."""
+
+    def _mean_score_func(y, masks):
+        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
+        counts = torch.sum(masks.float(), dim=1)
+        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
+        return scores
+
+    return _mean_score_func
+
+
+def test_evaluate_filters_with_min_samples_expansion(mean_score_func):
     """Test that _evaluate_filters expands evaluations by min_samples values."""
     # Create test data with specific sample counts
     trades_df = pd.DataFrame(
@@ -54,13 +67,6 @@ def test_evaluate_filters_with_min_samples_expansion():
         ),
     )
 
-    # Define a simple score function
-    def mean_score_func(y, masks):
-        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
-        counts = torch.sum(masks.float(), dim=1)
-        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
-        return scores
-
     # Run prepare_splits with filter evaluation and min_samples=3
     X, y, splits = prepare_splits(
         trades_df,
@@ -84,7 +90,7 @@ def test_evaluate_filters_with_min_samples_expansion():
     # that the function ran without errors
 
 
-def test_evaluate_filters_min_samples_best_selection():
+def test_evaluate_filters_min_samples_best_selection(mean_score_func):
     """Test that the best min_samples is selected correctly."""
     # Create test data where higher sample counts should give better scores
     trades_df = pd.DataFrame(
@@ -147,12 +153,6 @@ def test_evaluate_filters_min_samples_best_selection():
         ),
     )
 
-    def mean_score_func(y, masks):
-        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
-        counts = torch.sum(masks.float(), dim=1)
-        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
-        return scores
-
     # Run prepare_splits
     X, y, splits = prepare_splits(
         trades_df,
@@ -171,7 +171,7 @@ def test_evaluate_filters_min_samples_best_selection():
     assert len(splits) > 0, "Should have created some splits"
 
 
-def test_evaluate_filters_min_samples_tie_breaking():
+def test_evaluate_filters_min_samples_tie_breaking(mean_score_func):
     """Test that ties are broken by selecting the lowest min_samples."""
     # Create test data where all splits have the same score
     trades_df = pd.DataFrame(
@@ -217,12 +217,6 @@ def test_evaluate_filters_min_samples_tie_breaking():
         ),
     )
 
-    def mean_score_func(y, masks):
-        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
-        counts = torch.sum(masks.float(), dim=1)
-        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
-        return scores
-
     # Run prepare_splits
     X, y, splits = prepare_splits(
         trades_df,
@@ -241,7 +235,7 @@ def test_evaluate_filters_min_samples_tie_breaking():
     assert len(splits) > 0, "Should have created some splits"
 
 
-def test_evaluate_filters_min_samples_filtering():
+def test_evaluate_filters_min_samples_filtering(mean_score_func):
     """Test that splits are correctly filtered by min_samples threshold."""
     # Create test data
     trades_df = pd.DataFrame(
@@ -288,12 +282,6 @@ def test_evaluate_filters_min_samples_filtering():
         ),
     )
 
-    def mean_score_func(y, masks):
-        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
-        counts = torch.sum(masks.float(), dim=1)
-        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
-        return scores
-
     # Run prepare_splits with min_samples=3
     # The filter will create a left split with 3 samples and a right split with 7 samples
     X, y, splits = prepare_splits(
@@ -320,7 +308,7 @@ def test_evaluate_filters_min_samples_filtering():
         assert sample_count >= 1, f"Split has {sample_count} samples, expected >= 1"
 
 
-def test_evaluate_filters_with_different_min_samples_values():
+def test_evaluate_filters_with_different_min_samples_values(mean_score_func):
     """Test that different min_samples values produce expected behavior."""
     trades_df = pd.DataFrame(
         {
@@ -360,12 +348,6 @@ def test_evaluate_filters_with_different_min_samples_values():
             name="date",
         ),
     )
-
-    def mean_score_func(y, masks):
-        sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
-        counts = torch.sum(masks.float(), dim=1)
-        scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
-        return scores
 
     # Test with min_samples=1
     X1, y1, splits1 = prepare_splits(

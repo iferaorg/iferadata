@@ -2463,7 +2463,6 @@ def _evaluate_filters(
     # - The passed min_samples parameter
     # - sum(mask) for all splits in the group
     expanded_filter_splits_dict: dict[tuple[str, str, int], list[Split]] = {}
-    filter_to_min_samples: dict[tuple[str, str], list[int]] = {}
 
     for key, splits_for_key in filter_splits_dict.items():
         # Collect unique min_samples values
@@ -2473,7 +2472,6 @@ def _evaluate_filters(
 
         # Sort unique min_samples values
         unique_min_samples_list = sorted(unique_min_samples_set)
-        filter_to_min_samples[key] = unique_min_samples_list
 
         # Create expanded groups
         for ms in unique_min_samples_list:
