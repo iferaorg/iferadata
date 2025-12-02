@@ -6,7 +6,7 @@ import zipfile as zip_module  # Renamed to avoid parameter conflict
 from typing import Any, Dict, Optional
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import torch
 from tqdm import tqdm
 
@@ -30,18 +30,18 @@ def count_lines(file_path: str, is_zip: bool = False) -> int:
 
 def read_csv_with_progress(
     file_path: str, read_csv_kwargs: Dict[str, Any], zipfile: bool
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Read a CSV file with progress tracking, handling both regular and zip files."""
     total_lines = count_lines(file_path, zipfile)
-    chunksize = max(1000, min(100000, total_lines // 100))
-    read_csv_kwargs["chunksize"] = chunksize
-    chunks = []
     desc = f"Loading data from {file_path}"
+    
+    # Polars doesn't support chunk reading, so we'll read the whole file at once
+    # but still show a progress bar
     with tqdm(total=total_lines, unit="lines", desc=desc) as pbar:
-        for chunk in pd.read_csv(file_path, **read_csv_kwargs):
-            chunks.append(chunk)
-            pbar.update(len(chunk))
-    df = pd.concat(chunks, ignore_index=True)
+        # Remove chunksize if present since polars doesn't support it
+        read_csv_kwargs_copy = {k: v for k, v in read_csv_kwargs.items() if k != 'chunksize'}
+        df = pl.read_csv(file_path, **read_csv_kwargs_copy)
+        pbar.update(len(df))
     return df
 
 
@@ -50,33 +50,41 @@ def load_data(
     instrument: BaseInstrumentConfig,
     dtype: str = "float32",
     zipfile: bool = True,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Load data from CSV files."""
     source = Source.RAW if raw else Source.PROCESSED
     file_path = make_instrument_path(source=source, instrument=instrument)
 
     read_csv_kwargs: Dict[str, Any] = {}
 
+    # Map pandas dtype names to polars dtype classes
+    pl_dtype_map = {
+        "float32": pl.Float32,
+        "float64": pl.Float64,
+        "int32": pl.Int32,
+        "int64": pl.Int64,
+    }
+    
+    pl_dtype = pl_dtype_map.get(dtype, pl.Float32)
+
     if raw:
         read_csv_kwargs = {
-            "header": None,
-            "parse_dates": False,
-            "names": ["date", "time", "open", "high", "low", "close", "volume"],
-            "dtype": {
-                "open": dtype,
-                "high": dtype,
-                "low": dtype,
-                "close": dtype,
-                "volume": "int32",
+            "has_header": False,
+            "new_columns": ["date", "time", "open", "high", "low", "close", "volume"],
+            "schema_overrides": {
+                "open": pl_dtype,
+                "high": pl_dtype,
+                "low": pl_dtype,
+                "close": pl_dtype,
+                "volume": pl.Int32,
             },
         }
     else:
         # pylint: disable=duplicate-code
         # Use a different variable name to avoid redefinition
         read_csv_kwargs = {
-            "header": None,
-            "parse_dates": False,
-            "names": [
+            "has_header": False,
+            "new_columns": [
                 "date",
                 "time",
                 "trade_date",
@@ -87,22 +95,21 @@ def load_data(
                 "close",
                 "volume",
             ],
-            "dtype": {
-                "open": dtype,
-                "high": dtype,
-                "low": dtype,
-                "close": dtype,
-                "volume": "int32",
-                "date": "int32",
-                "time": "int32",
-                "trade_date": "int32",
-                "offset_time": "int32",
+            "schema_overrides": {
+                "open": pl_dtype,
+                "high": pl_dtype,
+                "low": pl_dtype,
+                "close": pl_dtype,
+                "volume": pl.Int32,
+                "date": pl.Int32,
+                "time": pl.Int32,
+                "trade_date": pl.Int32,
+                "offset_time": pl.Int32,
             },
         }
         # pylint: enable=duplicate-code
 
-    if zipfile:
-        read_csv_kwargs["compression"] = "zip"
+    # Polars uses infer_schema_length instead of compression for zip files
     try:
         df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile)
     except Exception as e:
@@ -110,13 +117,17 @@ def load_data(
 
     if raw:
         try:
-            df["date_time"] = pd.to_datetime(df["date"] + " " + df["time"])
+            # Convert date and time columns to datetime
+            df = df.with_columns([
+                (pl.col("date") + " " + pl.col("time")).str.to_datetime().alias("date_time")
+            ])
         except Exception as e:
             raise ValueError(
                 "Error converting 'date' and 'time' columns to datetime"
             ) from e
 
-        df = df.drop(columns=["date", "time"], inplace=False).set_index("date_time")
+        # Drop date and time columns (polars doesn't have index like pandas)
+        df = df.drop(["date", "time"])
     return df
 
 

@@ -8,11 +8,68 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import datetime
 import yaml
 
-import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from .decorators import singleton
 
 SECONDS_IN_DAY = 86400
+
+
+def parse_timedelta(value: str) -> datetime.timedelta:
+    """Parse a timedelta string like '1h', '30m', '1s', or '1d'."""
+    if isinstance(value, datetime.timedelta):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"Expected string or timedelta, got {type(value)}")
+    
+    value = value.strip()
+    
+    # Handle days
+    if value.endswith('d') or value.endswith('D'):
+        return datetime.timedelta(days=float(value[:-1]))
+    # Handle hours
+    elif value.endswith('h') or value.endswith('H'):
+        return datetime.timedelta(hours=float(value[:-1]))
+    # Handle minutes
+    elif value.endswith('m') or value.endswith('M'):
+        return datetime.timedelta(minutes=float(value[:-1]))
+    # Handle seconds
+    elif value.endswith('s') or value.endswith('S'):
+        return datetime.timedelta(seconds=float(value[:-1]))
+    # Handle milliseconds
+    elif value.endswith('ms') or value.endswith('MS'):
+        return datetime.timedelta(milliseconds=float(value[:-2]))
+    # Handle microseconds  
+    elif value.endswith('us') or value.endswith('US'):
+        return datetime.timedelta(microseconds=float(value[:-2]))
+    else:
+        raise ValueError(f"Unable to parse timedelta: {value}")
+
+
+def parse_datetime(value: str) -> datetime.date:
+    """Parse a datetime string to a date."""
+    if isinstance(value, datetime.date):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(f"Expected string or date, got {type(value)}")
+    
+    # Try common formats
+    for fmt in ['%Y-%m-%d', '%Y/%m/%d', '%m/%d/%Y', '%d/%m/%Y']:
+        try:
+            return datetime.datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Unable to parse datetime: {value}")
+
+
+def timedelta_range(start: datetime.timedelta, end: datetime.timedelta, 
+                     freq: datetime.timedelta) -> List[datetime.timedelta]:
+    """Create a range of timedeltas similar to pandas.timedelta_range."""
+    result = []
+    current = start
+    while current <= end:
+        result.append(current)
+        current += freq
+    return result
 
 
 def to_camel(string: str) -> str:
@@ -32,12 +89,12 @@ class BaseInstrumentConfig(BaseModel):
     currency: str
     type: str
     interval: str
-    trading_start: pd.Timedelta = Field(..., alias="tradingStart")
-    trading_end: pd.Timedelta = Field(..., alias="tradingEnd")
-    liquid_start: pd.Timedelta = Field(..., alias="liquidStart")
-    liquid_end: pd.Timedelta = Field(..., alias="liquidEnd")
-    regular_start: pd.Timedelta = Field(..., alias="regularStart")
-    regular_end: pd.Timedelta = Field(..., alias="regularEnd")
+    trading_start: datetime.timedelta = Field(..., alias="tradingStart")
+    trading_end: datetime.timedelta = Field(..., alias="tradingEnd")
+    liquid_start: datetime.timedelta = Field(..., alias="liquidStart")
+    liquid_end: datetime.timedelta = Field(..., alias="liquidEnd")
+    regular_start: datetime.timedelta = Field(..., alias="regularStart")
+    regular_end: datetime.timedelta = Field(..., alias="regularEnd")
     contract_multiplier: int = Field(..., alias="contractMultiplier")
     tick_size: float = Field(..., alias="tickSize")
     remove_dates: Optional[List[datetime.date]] = Field(
@@ -45,7 +102,7 @@ class BaseInstrumentConfig(BaseModel):
     )
     start_date: datetime.date = Field(..., alias="startDate")
     days_of_week: List[int] = Field(..., alias="daysOfWeek", validate_default=True)
-    rollover_time: Optional[pd.Timedelta] = Field(
+    rollover_time: Optional[datetime.timedelta] = Field(
         None, alias="rolloverTime", validate_default=True
     )
     rollover_vol_alpha: Optional[float] = Field(
@@ -67,8 +124,8 @@ class BaseInstrumentConfig(BaseModel):
     last_update: Optional[float] = Field(default=None)
 
     # Derived Fields
-    time_step: pd.Timedelta = pd.Timedelta(0)  # type: ignore[assignment]
-    end_time: pd.Timedelta = pd.Timedelta(0)  # type: ignore[assignment]
+    time_step: datetime.timedelta = datetime.timedelta(0)  # type: ignore[assignment]
+    end_time: datetime.timedelta = datetime.timedelta(0)  # type: ignore[assignment]
     rollover_offset: int = 0
     total_steps: int = 0
 
@@ -100,10 +157,10 @@ class BaseInstrumentConfig(BaseModel):
         mode="before",
     )
     @classmethod
-    def parse_timedelta(cls, value):
+    def parse_timedelta_field(cls, value):
         """Parse timedelta from string value."""
         try:
-            return pd.to_timedelta(value)
+            return parse_timedelta(value)
         except Exception as exc:
             raise ValueError(
                 f"Error parsing timedelta from value {value}: {exc}"
@@ -114,7 +171,7 @@ class BaseInstrumentConfig(BaseModel):
     def parse_start_date(cls, value):
         """Parse start_date from string value."""
         try:
-            return pd.to_datetime(value)
+            return parse_datetime(value)
         except Exception as exc:
             raise ValueError(f"Error parsing start_date: {exc}") from exc
 
@@ -125,7 +182,7 @@ class BaseInstrumentConfig(BaseModel):
         if value is None:
             return None
         try:
-            return [pd.to_datetime(date_str).date() for date_str in value]
+            return [parse_datetime(date_str) for date_str in value]
         except Exception as exc:
             raise ValueError(f"Error parsing remove_dates: {exc}") from exc
 
@@ -144,19 +201,20 @@ class BaseInstrumentConfig(BaseModel):
         try:
             if self.interval is None:
                 raise ValueError("Interval is required.")
-            self.time_step = pd.to_timedelta(self.interval)
+            self.time_step = parse_timedelta(self.interval)
             if self.trading_start is None or self.trading_end is None:
                 raise ValueError("Both trading_start and trading_end are required.")
-            all_steps = pd.timedelta_range(
-                start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=self.time_step
+            all_steps = timedelta_range(
+                start=datetime.timedelta(0), end=datetime.timedelta(days=1), freq=self.time_step
             )
-            filtered_steps = all_steps[
-                all_steps < self.trading_end - self.trading_start
+            filtered_steps = [
+                step for step in all_steps 
+                if step < self.trading_end - self.trading_start
             ]
             if len(filtered_steps) > 0:
-                self.end_time = pd.Timedelta(filtered_steps[-1])  # type: ignore[assignment]
+                self.end_time = filtered_steps[-1]  # type: ignore[assignment]
             else:
-                self.end_time = pd.Timedelta(0)  # type: ignore[assignment]
+                self.end_time = datetime.timedelta(0)  # type: ignore[assignment]
             total_seconds = self.end_time.total_seconds()
             step_seconds = self.time_step.total_seconds()
 
@@ -185,7 +243,7 @@ class BaseInstrumentConfig(BaseModel):
         return self
 
     model_config = ConfigDict(
-        arbitrary_types_allowed=True,  # allow pandas.Timedelta
+        arbitrary_types_allowed=True,  # allow datetime.timedelta
         alias_generator=to_camel,  # snake_case -> camelCase
         populate_by_name=True,  # allow field population by pythonic names
     )
@@ -295,10 +353,10 @@ class ConfigManager:
         self, allowed_intervals: List[str], interval: str
     ) -> Optional[str]:
         """Return the best parent interval from allowed_intervals for the requested one."""
-        requested_td = pd.to_timedelta(interval)
-        candidates: List[Tuple[pd.Timedelta, str]] = []
+        requested_td = parse_timedelta(interval)
+        candidates: List[Tuple[datetime.timedelta, str]] = []
         for allowed in allowed_intervals:
-            allowed_td = pd.to_timedelta(allowed)
+            allowed_td = parse_timedelta(allowed)
             if (
                 allowed_td < requested_td
                 and requested_td.total_seconds() % allowed_td.total_seconds() == 0
@@ -480,7 +538,7 @@ class ConfigManager:
 
         if new_interval is not None:
             config_dict["interval"] = new_interval
-            time_step = pd.to_timedelta(new_interval)
+            time_step = parse_timedelta(new_interval)
             parent_step_seconds = parent_config.time_step.total_seconds()
             new_step_seconds = time_step.total_seconds()
 
@@ -509,16 +567,17 @@ class ConfigManager:
                 )
 
             # Recompute derived fields
-            all_steps = pd.timedelta_range(
-                start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=time_step
+            all_steps = timedelta_range(
+                start=datetime.timedelta(0), end=datetime.timedelta(days=1), freq=time_step
             )
-            filtered_end_steps = all_steps[
-                all_steps < parent_config.trading_end - parent_config.trading_start
+            filtered_end_steps = [
+                step for step in all_steps 
+                if step < parent_config.trading_end - parent_config.trading_start
             ]
             if len(filtered_end_steps) > 0:
-                end_time = pd.Timedelta(filtered_end_steps[-1])
+                end_time = filtered_end_steps[-1]
             else:
-                end_time = pd.Timedelta(0)
+                end_time = datetime.timedelta(0)
             total_seconds = end_time.total_seconds()  # type: ignore[attr-defined]
             step_seconds = time_step.total_seconds()
 

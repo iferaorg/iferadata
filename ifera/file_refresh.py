@@ -6,7 +6,6 @@ import time
 
 import torch
 import yaml
-import pandas as pd
 from einops import rearrange, repeat
 from tqdm import tqdm
 
@@ -14,7 +13,7 @@ from .url_utils import contract_notice_and_expiry, make_url
 from .s3_utils import download_s3_file, upload_s3_file, check_s3_file_exists
 from .data_loading import load_data, load_data_tensor
 from .data_processing import process_data, calculate_rollover
-from .config import ConfigManager
+from .config import ConfigManager, parse_timedelta
 from .enums import Source, extension_map, Scheme, ExpirationRule
 from .file_utils import make_path, write_tensor_to_gzip, read_tensor_from_gzip
 from .file_manager import FileManager
@@ -569,13 +568,13 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
 
     parent_steps = parent_tensor.shape[1]
 
-    child_delta = pd.to_timedelta(interval)
-    parent_delta = pd.to_timedelta(parent_interval)
+    child_delta = parse_timedelta(interval)
+    parent_delta = parse_timedelta(parent_interval)
 
-    if child_delta % parent_delta != pd.Timedelta(0):
+    if child_delta.total_seconds() % parent_delta.total_seconds() != 0:
         raise ValueError("Child interval must be multiple of parent interval")
 
-    multiplier = int(child_delta / parent_delta)
+    multiplier = int(child_delta.total_seconds() / parent_delta.total_seconds())
 
     if parent_steps % multiplier != 0:
         padding = (parent_steps // multiplier + 1) * multiplier - parent_steps
