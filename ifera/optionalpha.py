@@ -2638,9 +2638,13 @@ def _evaluate_filters(
 
     # Step 10: Print results using rich table (only if verbose is not "no")
     if len(score_improvements) > 0 and verbose != "no":
-        # Sort by score improvement (descending)
+        adjusted_improvements = {
+            key: value - score_improvement_stds.get(key, 0.0)
+            for key, value in score_improvements.items()
+        }
+        # Sort by adjusted improvement (descending)
         sorted_items = sorted(
-            score_improvements.items(), key=lambda x: x[1], reverse=True
+            adjusted_improvements.items(), key=lambda x: x[1], reverse=True
         )
 
         table = Table(title="Filter Evaluation Results (Purged Time-Series CV)")
@@ -2648,13 +2652,15 @@ def _evaluate_filters(
         table.add_column("Dir", style="magenta")
         table.add_column("AvgImp", style="green", justify="right")
         table.add_column("StdImp", style="blue", justify="right")
+        table.add_column("AdjImp", style="yellow", justify="right")
         table.add_column("AvgDrop", style="red", justify="right")
         if min_score_improvement is not None:
             table.add_column("%Above", style="yellow", justify="right")
         table.add_column("Samples", style="yellow", justify="right")
 
-        for (filter_name, direction), improvement in sorted_items:
+        for (filter_name, direction), adj_imp in sorted_items:
             # Get statistics for this filter
+            improvement = score_improvements.get((filter_name, direction), 0.0)
             avg_samples = best_split_sample_counts.get((filter_name, direction), 0)
             std_imp = score_improvement_stds.get((filter_name, direction), 0.0)
             avg_drop = train_test_drops.get((filter_name, direction), 0.0)
@@ -2666,6 +2672,7 @@ def _evaluate_filters(
                     direction,
                     f"{improvement:.6f}",
                     f"{std_imp:.6f}",
+                    f"{adj_imp:.6f}",
                     f"{avg_drop:.6f}",
                     f"{pct_above_val:.1f}%",
                     str(avg_samples),
@@ -2676,6 +2683,7 @@ def _evaluate_filters(
                     direction,
                     f"{improvement:.6f}",
                     f"{std_imp:.6f}",
+                    f"{adj_imp:.6f}",
                     f"{avg_drop:.6f}",
                     str(avg_samples),
                 )
@@ -2700,8 +2708,8 @@ def _evaluate_filters(
 
         # Add summary rows
         # Calculate number of extra empty columns for summary rows
-        # Columns: Filter, Dir, AvgImp, StdImp, AvgDrop, [%Above], Samples
-        extra_cols = 4 if min_score_improvement is not None else 3
+        # Columns: Filter, Dir, AvgImp, StdImp, AdjImp, AvgDrop, [%Above], Samples
+        extra_cols = 5 if min_score_improvement is not None else 4
 
         def add_summary_row(label: str, value: float) -> None:
             """Helper to add a summary row with correct number of empty columns."""
