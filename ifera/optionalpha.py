@@ -2388,7 +2388,6 @@ def _evaluate_filters(
     purge_pct: float = 0.1,
     embargo_pct: float = 0.0,
     min_train_pct: float = 0.2,
-    min_samples: int = 1,
 ) -> dict[tuple[str, str], float]:
     """
     Evaluate filters using repeated purged time-series cross-validation.
@@ -2429,9 +2428,6 @@ def _evaluate_filters(
     min_train_pct : float, optional
         Minimum training set size as percentage of total samples (0.0 to 1.0).
         Default is 0.2 (20%). Ensures sufficient training data.
-    min_samples : int, optional
-        Minimum number of samples for splits. Default is 1. Used as one of the
-        values to evaluate for each (filter, direction) combination.
 
     Returns
     -------
@@ -2444,7 +2440,7 @@ def _evaluate_filters(
     n_samples = len(y)
     device = y.device
 
-    # Step 1: Sort depth_1_splits into dict keyed by (filter_name, direction)
+    # Step 1: Sort depth_1_splits into dict keyed by filter_id + direction
     filter_splits_dict: dict[tuple[str, str], list[Split]] = {}
     for split in depth_1_splits:
         if len(split.filters) > 0:
@@ -2457,29 +2453,6 @@ def _evaluate_filters(
 
     if len(filter_splits_dict) == 0:
         return {}
-
-    # Step 1.5: Expand groups by min_samples
-    # For each (filter, direction), find unique min_samples values:
-    # - The passed min_samples parameter
-    # - sum(mask) for all splits in the group
-    expanded_filter_splits_dict: dict[tuple[str, str, int], list[Split]] = {}
-
-    for key, splits_for_key in filter_splits_dict.items():
-        # Collect unique min_samples values
-        unique_min_samples_set = {min_samples}
-        for split in splits_for_key:
-            unique_min_samples_set.add(int(split.mask.sum().item()))
-
-        # Sort unique min_samples values
-        unique_min_samples_list = sorted(unique_min_samples_set)
-
-        # Create expanded groups
-        for ms in unique_min_samples_list:
-            # Filter splits where sum(mask) >= ms
-            filtered_splits = [s for s in splits_for_key if s.mask.sum().item() >= ms]
-            if len(filtered_splits) > 0:
-                expanded_key = (key[0], key[1], ms)
-                expanded_filter_splits_dict[expanded_key] = filtered_splits
 
     # Step 2: Create purged time-series CV splits
     cv_splits, _, _ = _create_purged_ts_cv_splits(
@@ -2497,21 +2470,19 @@ def _evaluate_filters(
         # Not enough data for CV splits with the given parameters
         return {}
 
-    # Step 3: Build flat arrays for all splits and their expanded filter group mappings
+    # Step 3: Build flat arrays for all splits and their filter group mappings
     all_splits_flat: list[Split] = []
-    expanded_filter_keys: list[tuple[str, str, int]] = []
-    filter_group_indices: list[int] = []  # Maps each split to its expanded filter group
+    filter_keys: list[tuple[str, str]] = []
+    filter_group_indices: list[int] = []  # Maps each split to its filter group
 
-    for group_idx, (expanded_key, splits_for_key) in enumerate(
-        expanded_filter_splits_dict.items()
-    ):
-        expanded_filter_keys.append(expanded_key)
+    for group_idx, (key, splits_for_key) in enumerate(filter_splits_dict.items()):
+        filter_keys.append(key)
         for split in splits_for_key:
             all_splits_flat.append(split)
             filter_group_indices.append(group_idx)
 
     n_total_splits = len(all_splits_flat)
-    n_expanded_filter_groups = len(expanded_filter_keys)
+    n_filter_groups = len(filter_keys)
 
     if n_total_splits == 0:
         return {}
@@ -2530,18 +2501,18 @@ def _evaluate_filters(
         [s.mask.sum().item() for s in all_splits_flat], dtype=torch.long, device=device
     )
 
-    # Step 7: Accumulators for results per expanded filter group
+    # Step 7: Accumulators for results per filter group
     all_improvements_tensor = torch.zeros(
-        (n_expanded_filter_groups, n_buckets), dtype=y.dtype, device=device
+        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
     )
     all_best_sample_counts_tensor = torch.zeros(
-        (n_expanded_filter_groups, n_buckets), dtype=torch.long, device=device
+        (n_filter_groups, n_buckets), dtype=torch.long, device=device
     )
     all_train_scores_tensor = torch.zeros(
-        (n_expanded_filter_groups, n_buckets), dtype=y.dtype, device=device
+        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
     )
     all_test_scores_tensor = torch.zeros(
-        (n_expanded_filter_groups, n_buckets), dtype=y.dtype, device=device
+        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
     )
 
     # Step 8: Process all CV buckets
@@ -2565,9 +2536,9 @@ def _evaluate_filters(
             train_scores = score_func(y_train, train_split_masks)
             # Shape: (n_total_splits,)
 
-            # Find best split per expanded filter group using segmented argmax
+            # Find best split per filter group using segmented argmax
             group_max_scores = torch.full(
-                (n_expanded_filter_groups,),
+                (n_filter_groups,),
                 float("-inf"),
                 dtype=train_scores.dtype,
                 device=device,
@@ -2589,7 +2560,7 @@ def _evaluate_filters(
             )
 
             best_split_indices = torch.full(
-                (n_expanded_filter_groups,), large_val, dtype=torch.long, device=device
+                (n_filter_groups,), large_val, dtype=torch.long, device=device
             )
             best_split_indices = best_split_indices.scatter_reduce(
                 0,
@@ -2601,10 +2572,10 @@ def _evaluate_filters(
 
             # Get test scores for best splits only
             best_test_masks = test_split_masks[best_split_indices]
-            # Shape: (n_expanded_filter_groups, len(test_idx))
+            # Shape: (n_filter_groups, len(test_idx))
 
             test_scores = score_func(y_test, best_test_masks)
-            # Shape: (n_expanded_filter_groups,)
+            # Shape: (n_filter_groups,)
 
             # Calculate base test score (all samples in test set)
             base_test_mask = torch.ones(
@@ -2625,97 +2596,41 @@ def _evaluate_filters(
 
             pbar.update(1)
 
-    # Step 9: Aggregate results per expanded filter group
-    # First, compute statistics for all expanded groups
-    avg_improvements = all_improvements_tensor.mean(
-        dim=1
-    )  # (n_expanded_filter_groups,)
+    # Step 9: Aggregate results per filter group
+    score_improvements: dict[tuple[str, str], float] = {}
+    best_split_sample_counts: dict[tuple[str, str], int] = {}
+    score_improvement_stds: dict[tuple[str, str], float] = {}
+    train_test_drops: dict[tuple[str, str], float] = {}
+    pct_above_threshold: dict[tuple[str, str], float] = {}
+
+    avg_improvements = all_improvements_tensor.mean(dim=1)  # (n_filter_groups,)
     # Use unbiased=False when n_buckets is 1 to avoid warning about degrees of freedom
     if n_buckets > 1:
         std_improvements = all_improvements_tensor.std(
             dim=1, unbiased=True
-        )  # (n_expanded_filter_groups,)
+        )  # (n_filter_groups,)
     else:
-        std_improvements = torch.zeros(
-            n_expanded_filter_groups, dtype=y.dtype, device=device
-        )
+        std_improvements = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
     avg_sample_counts = all_best_sample_counts_tensor.float().mean(
         dim=1
-    )  # (n_expanded_filter_groups,)
-    avg_train_scores = all_train_scores_tensor.mean(
-        dim=1
-    )  # (n_expanded_filter_groups,)
-    avg_test_scores = all_test_scores_tensor.mean(dim=1)  # (n_expanded_filter_groups,)
-    avg_train_test_drops = (
-        avg_train_scores - avg_test_scores
-    )  # (n_expanded_filter_groups,)
+    )  # (n_filter_groups,)
+    avg_train_scores = all_train_scores_tensor.mean(dim=1)  # (n_filter_groups,)
+    avg_test_scores = all_test_scores_tensor.mean(dim=1)  # (n_filter_groups,)
+    avg_train_test_drops = avg_train_scores - avg_test_scores  # (n_filter_groups,)
 
     # Compute percentage of tests above threshold
     if min_score_improvement is not None:
         above_threshold_mask = all_improvements_tensor >= min_score_improvement
         pct_above = above_threshold_mask.float().mean(dim=1) * 100.0
     else:
-        pct_above = torch.zeros(n_expanded_filter_groups, dtype=y.dtype, device=device)
+        pct_above = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
 
-    # Store expanded results
-    expanded_score_improvements: dict[tuple[str, str, int], float] = {}
-    expanded_best_split_sample_counts: dict[tuple[str, str, int], int] = {}
-    expanded_score_improvement_stds: dict[tuple[str, str, int], float] = {}
-    expanded_train_test_drops: dict[tuple[str, str, int], float] = {}
-    expanded_pct_above_threshold: dict[tuple[str, str, int], float] = {}
-
-    for group_idx, expanded_key in enumerate(expanded_filter_keys):
-        expanded_score_improvements[expanded_key] = float(
-            avg_improvements[group_idx].item()
-        )
-        expanded_best_split_sample_counts[expanded_key] = int(
-            avg_sample_counts[group_idx].item() + 0.5
-        )
-        expanded_score_improvement_stds[expanded_key] = float(
-            std_improvements[group_idx].item()
-        )
-        expanded_train_test_drops[expanded_key] = float(
-            avg_train_test_drops[group_idx].item()
-        )
-        expanded_pct_above_threshold[expanded_key] = float(pct_above[group_idx].item())
-
-    # Step 9.5: For each (filter, direction), find the min_samples with the best result
-    # In case of tie, use the least restrictive (lowest) min_samples
-    score_improvements: dict[tuple[str, str], float] = {}
-    best_split_sample_counts: dict[tuple[str, str], int] = {}
-    score_improvement_stds: dict[tuple[str, str], float] = {}
-    train_test_drops: dict[tuple[str, str], float] = {}
-    pct_above_threshold: dict[tuple[str, str], float] = {}
-    best_min_samples: dict[tuple[str, str], int] = {}
-
-    for base_key in filter_splits_dict.keys():
-        # Find all expanded keys for this (filter, direction)
-        expanded_keys_for_base = [
-            (ek, expanded_score_improvements[ek])
-            for ek in expanded_filter_keys
-            if ek[0] == base_key[0] and ek[1] == base_key[1]
-        ]
-
-        if len(expanded_keys_for_base) > 0:
-            # Sort by score (descending), then by min_samples (ascending) for tie-breaking
-            expanded_keys_for_base.sort(key=lambda x: (-x[1], x[0][2]))
-            best_expanded_key = expanded_keys_for_base[0][0]
-
-            # Store the best results for this (filter, direction)
-            score_improvements[base_key] = expanded_score_improvements[
-                best_expanded_key
-            ]
-            best_split_sample_counts[base_key] = expanded_best_split_sample_counts[
-                best_expanded_key
-            ]
-            score_improvement_stds[base_key] = expanded_score_improvement_stds[
-                best_expanded_key
-            ]
-            train_test_drops[base_key] = expanded_train_test_drops[best_expanded_key]
-            pct_above_threshold[base_key] = expanded_pct_above_threshold[
-                best_expanded_key
-            ]
-            best_min_samples[base_key] = best_expanded_key[2]
+    for group_idx, key in enumerate(filter_keys):
+        score_improvements[key] = float(avg_improvements[group_idx].item())
+        best_split_sample_counts[key] = int(avg_sample_counts[group_idx].item() + 0.5)
+        score_improvement_stds[key] = float(std_improvements[group_idx].item())
+        train_test_drops[key] = float(avg_train_test_drops[group_idx].item())
+        pct_above_threshold[key] = float(pct_above[group_idx].item())
 
     # Step 10: Print results using rich table (only if verbose is not "no")
     if len(score_improvements) > 0 and verbose != "no":
@@ -2732,7 +2647,6 @@ def _evaluate_filters(
         table.add_column("AvgDrop", style="red", justify="right")
         if min_score_improvement is not None:
             table.add_column("%Above", style="yellow", justify="right")
-        table.add_column("MinSamples", style="white", justify="right")
         table.add_column("Samples", style="yellow", justify="right")
 
         for (filter_name, direction), improvement in sorted_items:
@@ -2741,7 +2655,6 @@ def _evaluate_filters(
             std_imp = score_improvement_stds.get((filter_name, direction), 0.0)
             avg_drop = train_test_drops.get((filter_name, direction), 0.0)
             pct_above_val = pct_above_threshold.get((filter_name, direction), 0.0)
-            min_samples_val = best_min_samples.get((filter_name, direction), 0)
 
             if min_score_improvement is not None:
                 table.add_row(
@@ -2751,7 +2664,6 @@ def _evaluate_filters(
                     f"{std_imp:.6f}",
                     f"{avg_drop:.6f}",
                     f"{pct_above_val:.1f}%",
-                    str(min_samples_val),
                     str(avg_samples),
                 )
             else:
@@ -2761,7 +2673,6 @@ def _evaluate_filters(
                     f"{improvement:.6f}",
                     f"{std_imp:.6f}",
                     f"{avg_drop:.6f}",
-                    str(min_samples_val),
                     str(avg_samples),
                 )
 
@@ -2785,8 +2696,8 @@ def _evaluate_filters(
 
         # Add summary rows
         # Calculate number of extra empty columns for summary rows
-        # Columns: Filter, Dir, AvgImp, StdImp, AvgDrop, [%Above], MinSamples, Samples
-        extra_cols = 5 if min_score_improvement is not None else 4
+        # Columns: Filter, Dir, AvgImp, StdImp, AvgDrop, [%Above], Samples
+        extra_cols = 4 if min_score_improvement is not None else 3
 
         def add_summary_row(label: str, value: float) -> None:
             """Helper to add a summary row with correct number of empty columns."""
@@ -3056,7 +2967,6 @@ class SplitGenerator:
             self.purge_pct,
             self.embargo_pct,
             self.min_train_pct,
-            self.min_samples,
         )
 
     def generate(
