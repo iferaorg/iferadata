@@ -10,9 +10,10 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
-from typing import Iterable, NamedTuple, Optional
 from functools import reduce
+from typing import Iterable, NamedTuple, Optional
 
+import numpy as np
 import pandas as pd
 import torch
 from bs4 import BeautifulSoup
@@ -1250,6 +1251,9 @@ def _select_split_indices(
     list[int]
         List of indices where splits should be created
     """
+    if unique_vals.numel() <= 1:
+        return []
+
     # Count samples for each unique value using vectorized operations
     _, sample_counts = torch.unique(col_tensor, return_counts=True)
 
@@ -1258,26 +1262,26 @@ def _select_split_indices(
     total_samples = cumsum[-1].item()
 
     # Determine valid split indices based on min_samples and direction
-    n_possible_splits = len(unique_vals) - 1
-    valid_indices = []
+    left_counts = cumsum[:-1]
+    right_counts = total_samples - left_counts
 
-    for i in range(n_possible_splits):
-        # cumsum[i] is the count of samples <= unique_vals[i]
-        # cumsum[-1] - cumsum[i] is the count of samples > unique_vals[i]
-        left_count = cumsum[i].item()
-        right_count = total_samples - left_count
+    if direction == "left":
+        valid_mask = left_counts >= min_samples
+        counts_for_selection = left_counts
+    else:
+        valid_mask = right_counts >= min_samples
+        counts_for_selection = right_counts
 
-        if direction == "left" and left_count >= min_samples:
-            valid_indices.append(i)
-        elif direction == "right" and right_count >= min_samples:
-            valid_indices.append(i)
-
-    if len(valid_indices) == 0:
+    valid_indices_tensor = torch.nonzero(valid_mask, as_tuple=False).flatten()
+    if len(valid_indices_tensor) == 0:
         return []
 
-    if max_splits_per_filter is None or len(valid_indices) <= max_splits_per_filter:
+    if (
+        max_splits_per_filter is None
+        or len(valid_indices_tensor) <= max_splits_per_filter
+    ):
         # Use all valid splits
-        return valid_indices
+        return valid_indices_tensor.tolist()
 
     # Select splits to evenly distribute the valid sample range into buckets
     # We aim to create max_splits_per_filter+1 buckets of roughly equal size
@@ -1289,43 +1293,24 @@ def _select_split_indices(
     range_size = end_count - start_count
     target_bucket_size = range_size / (max_splits_per_filter + 1)
 
-    # Find the split indices that best achieve even distribution
-    selected_indices = []
+    counts_for_valid = counts_for_selection[valid_indices_tensor]
+    selected_indices: list[int] = []
+    used_mask = torch.zeros_like(valid_indices_tensor, dtype=torch.bool)
+
     for split_num in range(1, max_splits_per_filter + 1):
         target_cumsum = start_count + split_num * target_bucket_size
 
-        # Only consider valid indices
-        diffs = torch.full((n_possible_splits,), float("inf"))
-        for idx in valid_indices:
-            if direction == "left":
-                # For left splits, compare cumulative count to target
-                diffs[idx] = abs(cumsum[idx].item() - target_cumsum)
-            else:
-                # For right splits, compare remaining count to target
-                # remaining_count = total_samples - cumsum[idx]
-                # target_remaining = total_samples - target_cumsum
-                remaining_count = total_samples - cumsum[idx].item()
-                target_remaining = total_samples - target_cumsum
-                diffs[idx] = abs(remaining_count - target_remaining)
+        diffs = torch.abs(counts_for_valid - target_cumsum)
+        diffs = diffs.masked_fill(used_mask, float("inf"))
 
-        best_idx = int(torch.argmin(diffs).item())
+        if torch.all(diffs == float("inf")):
+            break
 
-        # Avoid duplicate indices and ensure we have valid candidates
-        attempts = 0
-        max_attempts = len(valid_indices)
-        while (
-            best_idx in selected_indices
-            and diffs[best_idx] < float("inf")
-            and attempts < max_attempts
-        ):
-            diffs[best_idx] = float("inf")
-            best_idx = int(torch.argmin(diffs).item())
-            attempts += 1
+        best_pos = int(torch.argmin(diffs).item())
+        used_mask[best_pos] = True
+        selected_indices.append(int(valid_indices_tensor[best_pos].item()))
 
-        if best_idx not in selected_indices and best_idx in valid_indices:
-            selected_indices.append(best_idx)
-
-    return sorted(selected_indices)
+    return selected_indices
 
 
 def _create_splits_for_filter(
@@ -1371,10 +1356,8 @@ def _create_splits_for_filter(
     list[Split]
         List of Split objects for this filter
     """
-    # Convert filter column to tensor for masking (original values)
-    col_tensor_original = torch.tensor(
-        filters_df[col_name].values, dtype=dtype, device=device
-    )
+    col_values = filters_df[col_name].to_numpy(dtype=float, copy=False)
+    col_tensor_original = torch.as_tensor(col_values, dtype=dtype, device=device)
 
     # Check if this filter has a granularity
     granularity = filter_granularities.get(col_name, 0.01)
@@ -1384,15 +1367,14 @@ def _create_splits_for_filter(
     # Create left splits if not in right_only_filters
     if col_name not in right_only_filters:
         # Round values UP to nearest granularity multiple for left direction
-        rounded_vals = [
-            math.ceil(v / granularity) * granularity for v in filters_df[col_name]
-        ]
-        unique_vals_left = torch.tensor(
-            sorted(set(rounded_vals)), dtype=dtype, device=device
-        )
-        col_tensor_left = torch.tensor(rounded_vals, dtype=dtype, device=device)
+        rounded_left = np.ceil(col_values / granularity) * granularity
+        unique_vals_left_np = np.unique(rounded_left)
 
-        if len(unique_vals_left) > 1:
+        if unique_vals_left_np.size > 1:
+            unique_vals_left = torch.as_tensor(
+                unique_vals_left_np, dtype=dtype, device=device
+            )
+            col_tensor_left = torch.as_tensor(rounded_left, dtype=dtype, device=device)
             left_split_indices = _select_split_indices(
                 unique_vals_left,
                 col_tensor_left,
@@ -1404,13 +1386,9 @@ def _create_splits_for_filter(
                 # Calculate threshold from unique values
                 threshold_avg = (unique_vals_left[i] + unique_vals_left[i + 1]) / 2.0
 
-                if granularity is not None:
-                    # Round threshold DOWN (opposite of left rounding) to nearest granularity
-                    threshold = (
-                        math.floor(threshold_avg.item() / granularity) * granularity
-                    )
-                else:
-                    threshold = threshold_avg.item()
+                threshold = (
+                    math.floor(float(threshold_avg.item()) / granularity) * granularity
+                )
 
                 # Use original col_tensor for mask
                 left_mask = col_tensor_original <= threshold
@@ -1425,15 +1403,16 @@ def _create_splits_for_filter(
     # Create right splits if not in left_only_filters
     if col_name not in left_only_filters:
         # Round values DOWN to nearest granularity multiple for right direction
-        rounded_vals = [
-            math.floor(v / granularity) * granularity for v in filters_df[col_name]
-        ]
-        unique_vals_right = torch.tensor(
-            sorted(set(rounded_vals)), dtype=dtype, device=device
-        )
-        col_tensor_right = torch.tensor(rounded_vals, dtype=dtype, device=device)
+        rounded_right = np.floor(col_values / granularity) * granularity
+        unique_vals_right_np = np.unique(rounded_right)
 
-        if len(unique_vals_right) > 1:
+        if unique_vals_right_np.size > 1:
+            unique_vals_right = torch.as_tensor(
+                unique_vals_right_np, dtype=dtype, device=device
+            )
+            col_tensor_right = torch.as_tensor(
+                rounded_right, dtype=dtype, device=device
+            )
             right_split_indices = _select_split_indices(
                 unique_vals_right,
                 col_tensor_right,
@@ -1445,13 +1424,9 @@ def _create_splits_for_filter(
                 # Calculate threshold from unique values
                 threshold_avg = (unique_vals_right[i] + unique_vals_right[i + 1]) / 2.0
 
-                if granularity is not None:
-                    # Round threshold UP (opposite of right rounding) to nearest granularity
-                    threshold = (
-                        math.ceil(threshold_avg.item() / granularity) * granularity
-                    )
-                else:
-                    threshold = threshold_avg.item()
+                threshold = (
+                    math.ceil(float(threshold_avg.item()) / granularity) * granularity
+                )
 
                 # Use original col_tensor for mask
                 right_mask = col_tensor_original >= threshold
