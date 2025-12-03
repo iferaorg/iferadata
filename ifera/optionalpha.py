@@ -823,6 +823,8 @@ class Split:
         List of sets of parent Split objects. Each set represents the parent
         splits that were combined with logical AND to create this child split.
         Empty for depth 1 (original) splits.
+    sample_count : int
+        Number of samples included in the split mask.
     score : float | None
         Score assigned to the split by the score_func. Initialized to None.
     """
@@ -851,6 +853,7 @@ class Split:
         self.mask = mask
         self.filters = filters
         self.parents = parents
+        self.sample_count = int(mask.sum().item())
         self.score = None
 
     def __eq__(self, other):
@@ -1004,12 +1007,13 @@ class Split:
             header = "Split filters:"
 
         # Add score and sample count to header if available
-        sample_count = int(self.mask.sum().item())
         header_parts = [header]
         if self.score is not None:
-            header_parts.append(f" (score: {self.score:.4f}, samples: {sample_count})")
+            header_parts.append(
+                f" (score: {self.score:.4f}, samples: {self.sample_count})"
+            )
         else:
-            header_parts.append(f" (samples: {sample_count})")
+            header_parts.append(f" (samples: {self.sample_count})")
         header = "".join(header_parts)
 
         if not dnf_terms:
@@ -2498,7 +2502,7 @@ def _evaluate_filters(
 
     # Step 6: Pre-compute original mask sample counts for all splits
     original_sample_counts = torch.tensor(
-        [s.mask.sum().item() for s in all_splits_flat], dtype=torch.long, device=device
+        [s.sample_count for s in all_splits_flat], dtype=torch.long, device=device
     )
 
     # Step 7: Accumulators for results per filter group
