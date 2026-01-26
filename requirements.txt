@@ -14,6 +14,6 @@ beautifulsoup4==4.14.2
 python-dateutil==2.9.0.post0
 holidays==0.83
 readerwriterlock==1.0.9
-rich==14.2.0
+rich==14.3.1
 tensordict==0.10.0
 httpx==0.28.1
