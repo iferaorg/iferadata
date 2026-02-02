@@ -1,6 +1,6 @@
 numpy==2.2.4
 pandas==2.3.3
-tqdm==4.67.1
+tqdm==4.67.2
 boto3==1.41.5 
 pydantic==2.12.3
 pydantic-settings==2.11.0 
