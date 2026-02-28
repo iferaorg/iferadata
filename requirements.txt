@@ -1,6 +1,11 @@
 numpy==2.4.0
+<<<<<<< HEAD
 polars==1.38.1
 tqdm==4.67.1
+=======
+pandas==2.3.3
+tqdm==4.67.3
+>>>>>>> 497e4dc (Bump tqdm from 4.67.1 to 4.67.3)
 boto3==1.42.58 
 pydantic==2.12.3
 pydantic-settings==2.12.0 
