@@ -113,12 +113,13 @@ granularities = {
     "ema_200": 1,
 }
 
-# dff = dff[["macd_12_26_9"]]
+dff = dff[["gex_n12_pg"]]
 
 # Keep only rows with date index >= 2023-01-01
-# df = df[df.index >= pd.Timestamp("2023-01-01")]
+df = df[df.index >= pd.Timestamp("2022-05-01")]
 # dff = dff[dff.index >= pd.Timestamp("2023-01-01")]
 
+print(f"Data length after filtering by date: {len(df)}")
 
 def masked_sharpe(returns: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     padded_returns = torch.zeros(
@@ -189,10 +190,10 @@ generator = ifera.SplitGenerator(
     score_func=masked_sharpe,
     keep_best_n=256,
     filter_granularities=granularities,
-    filter_eval_folds=4,
+    filter_eval_folds=5,
     filter_eval_repeats=1024,
     min_score_improvement=0.01,
-    purge_pct=0.02,
+    purge_pct=0.01,
 )
 
 X, y, splits = generator.generate(df, dff, verbose="best")

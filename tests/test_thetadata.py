@@ -5,8 +5,9 @@ These tests use mocking to avoid requiring an actual ThetaData server.
 """
 
 import io
+from typing import get_type_hints
 from unittest.mock import Mock, patch
-import pandas as pd
+import polars as pl
 import pytest
 import httpx
 
@@ -45,10 +46,10 @@ class TestThetaDataClient:
         mock_response.text = "symbol\nAAPL\nGOOG\nMSFT\n"
 
         df = client._parse_csv_response(mock_response)
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 3
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 3
         assert "symbol" in df.columns
-        assert df["symbol"].tolist() == ["AAPL", "GOOG", "MSFT"]
+        assert df["symbol"].to_list() == ["AAPL", "GOOG", "MSFT"]
         client.close()
 
     def test_parse_csv_response_empty(self):
@@ -58,8 +59,8 @@ class TestThetaDataClient:
         mock_response.text = ""
 
         df = client._parse_csv_response(mock_response)
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 0
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 0
         client.close()
 
     def test_parse_json_response(self):
@@ -69,8 +70,8 @@ class TestThetaDataClient:
         mock_response.json.return_value = {"symbol": ["AAPL", "GOOG", "MSFT"]}
 
         df = client._parse_json_response(mock_response)
-        assert isinstance(df, pd.DataFrame)
-        assert len(df) == 3
+        assert isinstance(df, pl.DataFrame)
+        assert df.height == 3
         assert "symbol" in df.columns
         client.close()
 
@@ -91,13 +92,13 @@ class TestStockEndpoints:
         """Test stock_list_symbols function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame({"symbol": ["AAPL", "GOOG"]})
+        mock_df = pl.DataFrame({"symbol": ["AAPL", "GOOG"]})
         mock_client.get_dataframe.return_value = mock_df
 
         result = stock_list_symbols()
 
-        assert isinstance(result, pd.DataFrame)
-        assert len(result) == 2
+        assert isinstance(result, pl.DataFrame)
+        assert result.height == 2
         mock_client.get_dataframe.assert_called_once_with(
             "/stock/list/symbols", output_format="csv"
         )
@@ -107,12 +108,12 @@ class TestStockEndpoints:
         """Test stock_list_dates function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame({"symbol": ["AAPL"], "date": ["20240101"]})
+        mock_df = pl.DataFrame({"symbol": ["AAPL"], "date": ["20240101"]})
         mock_client.get_dataframe.return_value = mock_df
 
         result = stock_list_dates("trade", "AAPL")
 
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
         mock_client.get_dataframe.assert_called_once()
         call_args = mock_client.get_dataframe.call_args
         assert call_args[0][0] == "/stock/list/dates/trade"
@@ -123,7 +124,7 @@ class TestStockEndpoints:
         """Test stock_snapshot_ohlc function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame(
+        mock_df = pl.DataFrame(
             {
                 "symbol": ["AAPL"],
                 "open": [150.0],
@@ -136,7 +137,7 @@ class TestStockEndpoints:
 
         result = stock_snapshot_ohlc("AAPL")
 
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
         mock_client.get_dataframe.assert_called_once()
         call_args = mock_client.get_dataframe.call_args
         assert call_args[0][0] == "/stock/snapshot/ohlc"
@@ -151,12 +152,12 @@ class TestOptionEndpoints:
         """Test option_list_symbols function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame({"symbol": ["AAPL", "SPY"]})
+        mock_df = pl.DataFrame({"symbol": ["AAPL", "SPY"]})
         mock_client.get_dataframe.return_value = mock_df
 
         result = option_list_symbols()
 
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
         mock_client.get_dataframe.assert_called_once_with(
             "/option/list/symbols", output_format="csv"
         )
@@ -166,12 +167,12 @@ class TestOptionEndpoints:
         """Test option_list_expirations function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame({"expiration": ["20240119", "20240216"]})
+        mock_df = pl.DataFrame({"expiration": ["20240119", "20240216"]})
         mock_client.get_dataframe.return_value = mock_df
 
         result = option_list_expirations("AAPL")
 
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
         mock_client.get_dataframe.assert_called_once()
         call_args = mock_client.get_dataframe.call_args
         assert call_args[0][0] == "/option/list/expirations"
@@ -186,12 +187,12 @@ class TestIndexEndpoints:
         """Test index_list_symbols function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame({"symbol": ["SPX", "NDX"]})
+        mock_df = pl.DataFrame({"symbol": ["SPX", "NDX"]})
         mock_client.get_dataframe.return_value = mock_df
 
         result = index_list_symbols()
 
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
         mock_client.get_dataframe.assert_called_once_with(
             "/index/list/symbols", output_format="csv"
         )
@@ -201,12 +202,12 @@ class TestIndexEndpoints:
         """Test index_snapshot_price function."""
         mock_client = Mock()
         mock_client_class.return_value.__enter__.return_value = mock_client
-        mock_df = pd.DataFrame({"symbol": ["SPX"], "price": [4500.0]})
+        mock_df = pl.DataFrame({"symbol": ["SPX"], "price": [4500.0]})
         mock_client.get_dataframe.return_value = mock_df
 
         result = index_snapshot_price("SPX")
 
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, pl.DataFrame)
         mock_client.get_dataframe.assert_called_once()
         call_args = mock_client.get_dataframe.call_args
         assert call_args[0][0] == "/index/snapshot/price"
@@ -227,6 +228,24 @@ class TestClientWithRealClient:
         with ThetaDataClient() as client:
             result = stock_list_symbols(client=client)
 
-        assert isinstance(result, pd.DataFrame)
-        assert len(result) == 1
-        assert result["symbol"].tolist() == ["AAPL"]
+        assert isinstance(result, pl.DataFrame)
+        assert result.height == 1
+        assert result["symbol"].to_list() == ["AAPL"]
+
+
+def test_public_thetadata_api_uses_polars_return_types():
+    """Ensure public ThetaData APIs annotate table outputs as Polars DataFrames."""
+    functions = [
+        ThetaDataClient.get_dataframe,
+        stock_list_symbols,
+        stock_list_dates,
+        stock_snapshot_ohlc,
+        option_list_symbols,
+        option_list_expirations,
+        index_list_symbols,
+        index_snapshot_price,
+    ]
+
+    for function in functions:
+        hints = get_type_hints(function)
+        assert hints.get("return") is pl.DataFrame

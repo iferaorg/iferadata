@@ -5,13 +5,13 @@ This module provides functions for accessing index data from the ThetaData REST 
 """
 
 from typing import Optional
-import pandas as pd
+import polars as pl
 from .client import ThetaDataClient
 
 
 def index_list_symbols(
     client: Optional[ThetaDataClient] = None, output_format: str = "csv"
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all traded index symbols.
 
@@ -24,7 +24,7 @@ def index_list_symbols(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with columns: symbol
     """
     endpoint = "/index/list/symbols"
@@ -39,7 +39,7 @@ def index_list_dates(
     symbol: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all available dates for an index symbol.
 
@@ -54,7 +54,7 @@ def index_list_dates(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with available dates
     """
     endpoint = "/index/list/dates"
@@ -70,7 +70,7 @@ def index_snapshot_ohlc(
     symbol: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time OHLC snapshot for indices.
 
@@ -85,7 +85,7 @@ def index_snapshot_ohlc(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with OHLC data including timestamp, symbol, volume, high, low, count, close, open
     """
     endpoint = "/index/snapshot/ohlc"
@@ -101,7 +101,7 @@ def index_snapshot_price(
     symbol: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time price snapshot for indices.
 
@@ -116,7 +116,7 @@ def index_snapshot_price(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with price data including timestamp, symbol, price
     """
     endpoint = "/index/snapshot/price"
@@ -134,7 +134,7 @@ def index_history_eod(
     end_date: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get end-of-day historical data for indices.
 
@@ -153,7 +153,7 @@ def index_history_eod(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with EOD data
     """
     endpoint = "/index/history/eod"
@@ -174,7 +174,7 @@ def index_history_ohlc(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical OHLC data for indices.
 
@@ -199,7 +199,7 @@ def index_history_ohlc(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with OHLC data
     """
     endpoint = "/index/history/ohlc"
@@ -226,7 +226,7 @@ def index_history_price(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical price data for indices.
 
@@ -249,7 +249,7 @@ def index_history_price(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with price data
     """
     endpoint = "/index/history/price"
@@ -273,7 +273,7 @@ def index_at_time_price(
     time: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get price data at a specific time for indices.
 
@@ -292,7 +292,7 @@ def index_at_time_price(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with price data at the specified time
     """
     endpoint = "/index/at_time/price"

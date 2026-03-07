@@ -5,7 +5,7 @@ This module provides functions for accessing historical options data from the Th
 """
 
 from typing import Optional
-import pandas as pd
+import polars as pl
 from .client import ThetaDataClient
 
 
@@ -18,7 +18,7 @@ def option_history_eod(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get end-of-day historical data for options.
 
@@ -43,7 +43,7 @@ def option_history_eod(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with EOD data
     """
     endpoint = "/option/history/eod"
@@ -73,7 +73,7 @@ def option_history_ohlc(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical OHLC data for options.
 
@@ -102,7 +102,7 @@ def option_history_ohlc(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with OHLC data
     """
     endpoint = "/option/history/ohlc"
@@ -133,7 +133,7 @@ def option_history_trade(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade data for options.
 
@@ -160,7 +160,7 @@ def option_history_trade(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade data
     """
     endpoint = "/option/history/trade"
@@ -190,7 +190,7 @@ def option_history_quote(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical quote data for options.
 
@@ -217,7 +217,7 @@ def option_history_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with quote data
     """
     endpoint = "/option/history/quote"
@@ -248,7 +248,7 @@ def option_history_trade_quote(
     end_time: str = "16:00:00",
     exclusive: bool = True,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade and quote data for options.
 
@@ -277,7 +277,7 @@ def option_history_trade_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade and quote data
     """
     endpoint = "/option/history/trade_quote"
@@ -307,7 +307,7 @@ def option_history_open_interest(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical open interest data for options.
 
@@ -332,7 +332,7 @@ def option_history_open_interest(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with open interest data
     """
     endpoint = "/option/history/open_interest"
@@ -361,7 +361,7 @@ def option_history_greeks_eod(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get end-of-day historical Greeks data for options.
 
@@ -386,7 +386,7 @@ def option_history_greeks_eod(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with EOD Greeks data
     """
     endpoint = "/option/history/greeks/eod"
@@ -416,7 +416,7 @@ def option_history_greeks_all(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical all Greeks data for options.
 
@@ -445,7 +445,7 @@ def option_history_greeks_all(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with all Greeks data
     """
     endpoint = "/option/history/greeks/all"
@@ -476,7 +476,7 @@ def option_history_trade_greeks_all(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade Greeks (all) data for options.
 
@@ -503,7 +503,7 @@ def option_history_trade_greeks_all(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade Greeks data
     """
     endpoint = "/option/history/trade_greeks/all"
@@ -534,7 +534,7 @@ def option_history_greeks_first_order(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical first-order Greeks data for options.
 
@@ -563,7 +563,7 @@ def option_history_greeks_first_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with first-order Greeks data
     """
     endpoint = "/option/history/greeks/first_order"
@@ -594,7 +594,7 @@ def option_history_trade_greeks_first_order(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade Greeks (first-order) data for options.
 
@@ -621,7 +621,7 @@ def option_history_trade_greeks_first_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade first-order Greeks data
     """
     endpoint = "/option/history/trade_greeks/first_order"
@@ -652,7 +652,7 @@ def option_history_greeks_second_order(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical second-order Greeks data for options.
 
@@ -681,7 +681,7 @@ def option_history_greeks_second_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with second-order Greeks data
     """
     endpoint = "/option/history/greeks/second_order"
@@ -712,7 +712,7 @@ def option_history_trade_greeks_second_order(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade Greeks (second-order) data for options.
 
@@ -739,7 +739,7 @@ def option_history_trade_greeks_second_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade second-order Greeks data
     """
     endpoint = "/option/history/trade_greeks/second_order"
@@ -770,7 +770,7 @@ def option_history_greeks_third_order(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical third-order Greeks data for options.
 
@@ -799,7 +799,7 @@ def option_history_greeks_third_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with third-order Greeks data
     """
     endpoint = "/option/history/greeks/third_order"
@@ -830,7 +830,7 @@ def option_history_trade_greeks_third_order(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade Greeks (third-order) data for options.
 
@@ -857,7 +857,7 @@ def option_history_trade_greeks_third_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade third-order Greeks data
     """
     endpoint = "/option/history/trade_greeks/third_order"
@@ -888,7 +888,7 @@ def option_history_greeks_implied_volatility(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical implied volatility data for options.
 
@@ -917,7 +917,7 @@ def option_history_greeks_implied_volatility(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with implied volatility data
     """
     endpoint = "/option/history/greeks/implied_volatility"
@@ -948,7 +948,7 @@ def option_history_trade_greeks_implied_volatility(
     start_time: str = "09:30:00",
     end_time: str = "16:00:00",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade Greeks (implied volatility) data for options.
 
@@ -975,7 +975,7 @@ def option_history_trade_greeks_implied_volatility(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade implied volatility data
     """
     endpoint = "/option/history/trade_greeks/implied_volatility"
@@ -1005,7 +1005,7 @@ def option_at_time_trade(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get trade data at a specific time for options.
 
@@ -1030,7 +1030,7 @@ def option_at_time_trade(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade data at the specified time
     """
     endpoint = "/option/at_time/trade"
@@ -1058,7 +1058,7 @@ def option_at_time_quote(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get quote data at a specific time for options.
 
@@ -1083,7 +1083,7 @@ def option_at_time_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with quote data at the specified time
     """
     endpoint = "/option/at_time/quote"

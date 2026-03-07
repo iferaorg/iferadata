@@ -2,7 +2,7 @@
 ThetaData REST API Package
 
 This package provides a Python interface to the ThetaData REST API v3.
-All functions that return lists/tables return them as pandas DataFrames.
+All functions that return lists/tables return them as Polars DataFrames.
 
 Example usage:
     from thetadata import stock_list_symbols, ThetaDataClient

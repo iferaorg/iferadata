@@ -2,24 +2,28 @@
 Module for parsing Option Alpha trade log HTML grids.
 
 This module provides functionality to parse HTML-formatted trade log grids
-from Option Alpha and convert them into pandas DataFrames.
+from Option Alpha and convert them into Polars DataFrames.
 """
 
 import math
 import os
 import re
+import warnings
 from dataclasses import dataclass
-from datetime import datetime, time
-from functools import reduce
-from typing import Iterable, NamedTuple, Optional
+from datetime import date, datetime, time
+from typing import Any, Iterable, NamedTuple, Optional, Protocol, TypeGuard, cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import torch
 from bs4 import BeautifulSoup
+from dateutil import parser as date_parser
 from rich.console import Console
 from rich.panel import Panel
+from tqdm import TqdmExperimentalWarning
 from tqdm.rich import tqdm
+
+warnings.filterwarnings("ignore", category=TqdmExperimentalWarning)
 
 
 @dataclass
@@ -64,9 +68,28 @@ class FilterInfo(NamedTuple):
     direction: str
 
 
-def parse_trade_log(html_string: str) -> pd.DataFrame:
+class _PandasLikeDataFrame(Protocol):
+    """Protocol for the subset of pandas DataFrame behavior used for coercion."""
+
+    columns: Iterable[str]
+    index: "_PandasLikeIndex"
+
+    def copy(self) -> "_PandasLikeDataFrame": ...
+
+    def reset_index(self) -> "_PandasLikeDataFrame": ...
+
+    def rename(self, columns: dict[str, str]) -> "_PandasLikeDataFrame": ...
+
+
+class _PandasLikeIndex(Protocol):
+    """Protocol for pandas-like index access used by coercion."""
+
+    name: str | None
+
+
+def parse_trade_log(html_string: str) -> pl.DataFrame:
     """
-    Parse an Option Alpha trade log HTML grid and return a pandas DataFrame.
+    Parse an Option Alpha trade log HTML grid and return a Polars DataFrame.
 
     This function extracts trade information from an HTML grid containing
     trade log data. The grid includes columns for symbol, trade type,
@@ -79,8 +102,8 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame
-        A DataFrame with a DatetimeIndex (named 'date') and columns:
+    pl.DataFrame
+        A DataFrame with a `date` column and columns:
         - symbol: str, e.g., "SPX"
         - trade_type: str, e.g., "Long Call"
         - start_time: datetime.time, e.g., time(15, 47)
@@ -90,7 +113,7 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
         - profit: float, profit/loss in dollars (0 if missing)
 
         The DataFrame will not contain any NaN values.
-        The index is a pd.DatetimeIndex containing unique dates.
+        The `date` column contains unique values.
 
     Raises
     ------
@@ -103,8 +126,8 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     >>> html = '<grid>...</grid>'
     >>> df = parse_trade_log(html)
     >>> df.columns
-    Index(['symbol', 'trade_type', 'start_time', 'end_time', 'status', 'risk', 'profit'])
-    >>> isinstance(df.index, pd.DatetimeIndex)
+    ['symbol', 'trade_type', 'date', 'start_time', 'end_time', 'status', 'risk', 'profit']
+    >>> isinstance(df, pl.DataFrame)
     True
     """
     if not html_string or not html_string.strip():
@@ -201,37 +224,78 @@ def parse_trade_log(html_string: str) -> pd.DataFrame:
     if not data:
         raise ValueError("No valid trade data could be extracted from HTML")
 
-    # Create DataFrame and ensure no NaN values
-    df = pd.DataFrame(data)
+    df = (
+        pl.DataFrame(data)
+        .with_columns(
+            pl.col("symbol").fill_null("").alias("symbol"),
+            pl.col("trade_type").fill_null("").alias("trade_type"),
+            pl.col("date").fill_null("").alias("date"),
+            pl.col("start_time").fill_null("").alias("start_time"),
+            pl.col("end_time").fill_null("").alias("end_time"),
+            pl.col("status").fill_null("").alias("status"),
+            pl.col("risk").cast(pl.Float64).fill_null(0.0).alias("risk"),
+            pl.col("profit").cast(pl.Float64).fill_null(0.0).alias("profit"),
+        )
+        .with_columns(
+            pl.col("date")
+            .map_elements(_parse_date, return_dtype=pl.Date)
+            .alias("date"),
+            pl.col("start_time").map_elements(_parse_time, return_dtype=pl.Object),
+            pl.col("end_time").map_elements(_parse_time, return_dtype=pl.Object),
+        )
+        .filter(pl.col("date").is_not_null())
+    )
 
-    # Fill any potential NaN values with appropriate defaults
-    df["symbol"] = df["symbol"].fillna("")
-    df["trade_type"] = df["trade_type"].fillna("")
-    df["date"] = df["date"].fillna("")
-    df["start_time"] = df["start_time"].fillna("")
-    df["end_time"] = df["end_time"].fillna("")
-    df["status"] = df["status"].fillna("")
-    df["risk"] = df["risk"].fillna(0)
-    df["profit"] = df["profit"].fillna(0)
+    duplicates = df.filter(pl.col("date").is_duplicated())
+    if duplicates.height > 0:
+        unique_dup_dates = (
+            duplicates.select("date").unique().get_column("date").to_list()
+        )
+        raise ValueError(f"Duplicate dates found in trade log: {unique_dup_dates}")
 
-    # Convert date column to datetime
-    df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
+    return df.select(
+        [
+            "symbol",
+            "trade_type",
+            "date",
+            "start_time",
+            "end_time",
+            "status",
+            "risk",
+            "profit",
+        ]
+    )
 
-    # Convert time columns to datetime.time objects
-    df["start_time"] = df["start_time"].apply(_parse_time)  # type: ignore
-    df["end_time"] = df["end_time"].apply(_parse_time)  # type: ignore
 
-    # Check for duplicate dates and raise error if found
-    duplicates = df[df["date"].duplicated(keep=False)]
-    if len(duplicates) > 0:
-        unique_dup_dates = duplicates["date"].drop_duplicates().tolist()  # type: ignore
-        raise ValueError(f"Duplicate dates found in trade log: " f"{unique_dup_dates}")
+def _coerce_table_to_polars(table: object) -> pl.DataFrame:
+    """Coerce a Polars or pandas-like table to Polars with a `date` column."""
+    if isinstance(table, pl.DataFrame):
+        coerced = table.clone()
+    elif _is_pandas_like_dataframe(table):
+        coerced_pd = table.copy()
+        if "date" not in coerced_pd.columns:
+            index_name = coerced_pd.index.name or "index"
+            coerced_pd = coerced_pd.reset_index().rename(columns={index_name: "date"})
+        coerced = pl.from_pandas(cast(Any, coerced_pd))
+    else:
+        raise TypeError(
+            "Input table must be a Polars DataFrame or a pandas-like DataFrame"
+        )
 
-    # Set date as the index
-    df = df.set_index("date")
-    df.index.name = "date"
+    if "date" not in coerced.columns:
+        raise ValueError("Input table must include a 'date' column or DatetimeIndex")
 
-    return df
+    return coerced.with_columns(
+        pl.col("date").cast(pl.Date, strict=False).alias("date")
+    )
+
+
+def _is_pandas_like_dataframe(table: object) -> TypeGuard[_PandasLikeDataFrame]:
+    """Return True if object exposes pandas DataFrame-like methods used here."""
+    return all(
+        hasattr(table, attribute)
+        for attribute in ("columns", "copy", "reset_index", "rename", "index")
+    )
 
 
 def _parse_time(time_str: str) -> Optional[time]:
@@ -268,9 +332,19 @@ def _parse_time(time_str: str) -> Optional[time]:
         return None
 
 
-def parse_filter_log(html_string: str) -> pd.DataFrame:
+def _parse_date(date_str: str) -> Optional[date]:
+    """Parse a date string into a datetime.date value."""
+    if not date_str or date_str.strip() == "":
+        return None
+    try:
+        return date_parser.parse(date_str).date()
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def parse_filter_log(html_string: str) -> pl.DataFrame:
     """
-    Parse an Option Alpha filter log HTML and return a pandas DataFrame.
+    Parse an Option Alpha filter log HTML and return a Polars DataFrame.
 
     This function extracts filter information from an HTML grid containing
     filter log data. The grid includes columns for date, filter type, and
@@ -283,7 +357,7 @@ def parse_filter_log(html_string: str) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         A DataFrame with columns:
         - date: datetime, parsed date
         - filter_type: str, the type of filter applied
@@ -360,31 +434,22 @@ def parse_filter_log(html_string: str) -> pd.DataFrame:
     if not data:
         raise ValueError("No valid filter data could be extracted from HTML")
 
-    # Create DataFrame and ensure no NaN values
-    df = pd.DataFrame(data)
+    df = (
+        pl.DataFrame(data)
+        .with_columns(
+            pl.col("filter_type").fill_null("").alias("filter_type"),
+            pl.col("description").fill_null("").alias("description"),
+        )
+        .with_columns(
+            pl.col("date").map_elements(_parse_date, return_dtype=pl.Date).alias("date")
+        )
+        .filter(pl.col("date").is_not_null())
+    )
 
-    # Fill any potential NaN values with appropriate defaults for string columns
-    df["filter_type"] = df["filter_type"].fillna("")
-    df["description"] = df["description"].fillna("")
-
-    # Convert date column to datetime, filtering out any invalid dates
-    df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
-
-    # Drop rows where date conversion failed (resulting in NaT)
-    # This ensures the guarantee of no NaN/NaT values
-    initial_count = len(df)
-    df = df.dropna(subset=["date"])
-    if len(df) < initial_count:
-        # Some dates failed to parse, but we continue with valid entries
-        pass
-
-    if len(df) == 0:
+    if df.height == 0:
         raise ValueError("No valid filter data with parseable dates could be extracted")
 
-    # Reset index after dropping rows
-    df = df.reset_index(drop=True)
-
-    return df
+    return df.select(["date", "filter_type", "description"])
 
 
 def _extract_dollar_amount(cell) -> float:
@@ -437,7 +502,7 @@ def _extract_dollar_amount(cell) -> float:
 FILTERS_FOLDER = "data/results/option_alpha/filters/"
 
 
-def _read_filter_file(file_name: str) -> pd.DataFrame | None:
+def _read_filter_file(file_name: str) -> pl.DataFrame | None:
     """
     Read and parse a filter log file.
 
@@ -448,7 +513,7 @@ def _read_filter_file(file_name: str) -> pd.DataFrame | None:
 
     Returns
     -------
-    pd.DataFrame | None
+    pl.DataFrame | None
         Parsed filter log DataFrame, or None if file not found
     """
     try:
@@ -462,14 +527,14 @@ def _read_filter_file(file_name: str) -> pd.DataFrame | None:
 
 
 def _parse_description_with_regex(
-    df: pd.DataFrame, column_name: str, regex_pattern: str, parse_func=None
-) -> pd.DataFrame:
+    df: pl.DataFrame, column_name: str, regex_pattern: str, parse_func=None
+) -> pl.DataFrame:
     """
     Parse description column using a regex pattern and create a new column.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame
         DataFrame with a 'description' column
     column_name : str
         Name of the new column to create
@@ -480,7 +545,7 @@ def _parse_description_with_regex(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with the new column added and duplicates eliminated
     """
 
@@ -492,25 +557,31 @@ def _parse_description_with_regex(
         return None
 
     parser = parse_func if parse_func is not None else default_parse
-    df[column_name] = df["description"].apply(parser)
-    df = _check_and_eliminate_duplicates(df, column_name)
-    return df[["date", column_name]]  # type: ignore
+    df = df.with_columns(
+        pl.col("description")
+        .map_elements(parser, return_dtype=pl.Float64)
+        .alias(column_name)
+    )
+    df = cast(pl.DataFrame, _check_and_eliminate_duplicates(df, column_name))
+    return df.select(["date", column_name])
 
 
-def _check_and_eliminate_duplicates(df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+def _check_and_eliminate_duplicates(
+    df: pl.DataFrame | object, column_name: str
+) -> pl.DataFrame:
     """
     Check for duplicate dates and eliminate them if values are the same.
 
     Parameters
     ----------
-    df : pd.DataFrame
+    df : pl.DataFrame
         DataFrame with a 'date' column
     column_name : str
         Name of the value column to check for consistency across duplicates
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with duplicates removed
 
     Raises
@@ -518,51 +589,57 @@ def _check_and_eliminate_duplicates(df: pd.DataFrame, column_name: str) -> pd.Da
     ValueError
         If duplicate dates have different values for the specified column
     """
-    if "date" not in df.columns:
-        return df
+    df_polars = _coerce_table_to_polars(df) if not isinstance(df, pl.DataFrame) else df
 
-    duplicates = df[df["date"].duplicated(keep=False)]
-    if len(duplicates) > 0:
-        # Check if duplicate dates have the same values
-        unique_dates = duplicates["date"].drop_duplicates().tolist()  # type: ignore
-        for date in unique_dates:
-            date_rows = df[df["date"] == date]
-            # Check if all values for this date are the same
-            if len(date_rows[column_name].unique()) > 1:  # type: ignore
-                raise ValueError(
-                    f"Duplicate date {date} found with different values for '{column_name}': "
-                    f"{date_rows[column_name].tolist()}"
-                )
+    if "date" not in df_polars.columns:
+        return df_polars
 
-        # Remove duplicates, keeping first occurrence
-        df = df.drop_duplicates(subset=["date"], keep="first")
+    duplicate_check = (
+        df_polars.group_by("date")
+        .agg(
+            pl.col(column_name).drop_nulls().n_unique().alias("n_unique_values"),
+            pl.col(column_name).drop_nulls().alias("values"),
+        )
+        .filter(pl.col("n_unique_values") > 1)
+    )
+    if duplicate_check.height > 0:
+        first = duplicate_check.select("date", "values").to_dicts()[0]
+        raise ValueError(
+            f"Duplicate date {first['date']} found with different values for "
+            f"'{column_name}': {first['values']}"
+        )
 
-    return df
+    result = df_polars.unique(subset=["date"], keep="first", maintain_order=True)
+
+    return result
 
 
-def parse_simple_filter(file_name: str) -> pd.DataFrame | None:
+def parse_simple_filter(file_name: str) -> pl.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
 
-    df["filter"] = 1
-    df = _check_and_eliminate_duplicates(df, "filter")
-    return df[["date", "filter"]]  # type: ignore
+    df = df.with_columns(pl.lit(1).alias("filter"))
+    df = cast(pl.DataFrame, _check_and_eliminate_duplicates(df, "filter"))
+    return df.select(["date", "filter"])
 
 
-def parse_simple_indicator(file_name: str) -> pd.DataFrame | None:
+def parse_simple_indicator(file_name: str) -> pl.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
 
-    # Fill empty descriptions with 0
-    df["description"] = df["description"].replace("", "0")
-    df["indicator"] = df["description"].astype(float)
-    df = _check_and_eliminate_duplicates(df, "indicator")
-    return df[["date", "indicator"]]  # type: ignore
+    df = df.with_columns(
+        pl.when(pl.col("description") == "")
+        .then(pl.lit("0"))
+        .otherwise(pl.col("description"))
+        .alias("description")
+    ).with_columns(pl.col("description").cast(pl.Float64).alias("indicator"))
+    df = cast(pl.DataFrame, _check_and_eliminate_duplicates(df, "indicator"))
+    return df.select(["date", "indicator"])
 
 
-def parse_moving_average(file_name: str) -> pd.DataFrame | None:
+def parse_moving_average(file_name: str) -> pl.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
@@ -577,12 +654,16 @@ def parse_moving_average(file_name: str) -> pd.DataFrame | None:
             return int(price > ma)
         return None
 
-    df["moving_average"] = df["description"].apply(_parse_moving_average)
-    df = _check_and_eliminate_duplicates(df, "moving_average")
-    return df[["date", "moving_average"]]  # type: ignore
+    df = df.with_columns(
+        pl.col("description")
+        .map_elements(_parse_moving_average, return_dtype=pl.Int64)
+        .alias("moving_average")
+    )
+    df = cast(pl.DataFrame, _check_and_eliminate_duplicates(df, "moving_average"))
+    return df.select(["date", "moving_average"])
 
 
-def parse_range_with(prefix: str) -> pd.DataFrame | None:
+def parse_range_with(prefix: str) -> pl.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-RANGE_WIDTH.txt"
     df = _read_filter_file(file_name)
     if df is None:
@@ -596,19 +677,23 @@ def parse_range_with(prefix: str) -> pd.DataFrame | None:
             return (max_val - min_val) / max_val if max_val != 0 else 0
         return None
 
-    df["range_width"] = df["description"].apply(_parse_range_width)
-    df = _check_and_eliminate_duplicates(df, "range_width")
-    return df[["date", "range_width"]]  # type: ignore
+    df = df.with_columns(
+        pl.col("description")
+        .map_elements(_parse_range_width, return_dtype=pl.Float64)
+        .alias("range_width")
+    )
+    df = cast(pl.DataFrame, _check_and_eliminate_duplicates(df, "range_width"))
+    return df.select(["date", "range_width"])
 
 
-def parse_gex(file_name: str) -> pd.DataFrame | None:
+def parse_gex(file_name: str) -> pl.DataFrame | None:
     df = _read_filter_file(file_name)
     if df is None:
         return None
     return _parse_description_with_regex(df, "gex", r":\s+(\-?[\d,]+(?:\.\d+)?)")
 
 
-def parse_change_percent(prefix: str) -> pd.DataFrame | None:
+def parse_change_percent(prefix: str) -> pl.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_PERCENT.txt"
     df = _read_filter_file(file_name)
     if df is None:
@@ -618,7 +703,7 @@ def parse_change_percent(prefix: str) -> pd.DataFrame | None:
     )
 
 
-def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
+def parse_change_stdev(prefix: str) -> pl.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_STDEV.txt"
     df = _read_filter_file(file_name)
     if df is None:
@@ -628,7 +713,7 @@ def parse_change_stdev(prefix: str) -> pd.DataFrame | None:
     )
 
 
-def parse_gap(prefix: str) -> pd.DataFrame | None:
+def parse_gap(prefix: str) -> pl.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-GAP.txt"
     df = _read_filter_file(file_name)
     if df is None:
@@ -636,7 +721,7 @@ def parse_gap(prefix: str) -> pd.DataFrame | None:
     return _parse_description_with_regex(df, "gap", r"Gap: (\-?[\d,]+\.\d+)")
 
 
-def parse_open_change(prefix: str) -> pd.DataFrame | None:
+def parse_open_change(prefix: str) -> pl.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-OPEN_CHANGE.txt"
     df = _read_filter_file(file_name)
     if df is None:
@@ -646,7 +731,7 @@ def parse_open_change(prefix: str) -> pd.DataFrame | None:
     )
 
 
-def parse_vixc(prefix: str) -> pd.DataFrame | None:
+def parse_vixc(prefix: str) -> pl.DataFrame | None:
     file_name = f"{FILTERS_FOLDER}{prefix}-VIXC.txt"
     df = _read_filter_file(file_name)
     if df is None:
@@ -654,7 +739,7 @@ def parse_vixc(prefix: str) -> pd.DataFrame | None:
     return _parse_description_with_regex(df, "vixc", r"VIX Change: (\-?[\d,]+\.\d+)")
 
 
-def get_filters(prefix: str) -> pd.DataFrame:
+def get_filters(prefix: str) -> pl.DataFrame:
     """
     Get and merge filter data for a given prefix.
 
@@ -669,9 +754,9 @@ def get_filters(prefix: str) -> pd.DataFrame:
 
     Returns
     -------
-    pd.DataFrame
-        A DataFrame with a DatetimeIndex (named 'date') and columns for each filter.
-        If no filter files are found, returns an empty DataFrame with a DatetimeIndex.
+    pl.DataFrame
+        A DataFrame with a `date` column and filter columns.
+        If no filter files are found, returns an empty DataFrame.
         Missing values are filled with 0.
 
     Notes
@@ -703,7 +788,7 @@ def get_filters(prefix: str) -> pd.DataFrame:
     for filter_name in simple_filter_names:
         filter_df = parse_simple_filter(f"{FILTERS_FOLDER}{prefix}-{filter_name}.txt")
         if filter_df is not None:
-            filter_df = filter_df.rename(columns={"filter": f"{filter_name.lower()}"})
+            filter_df = filter_df.rename({"filter": f"{filter_name.lower()}"})
             dfs.append(filter_df)
 
     # Range width
@@ -743,7 +828,7 @@ def get_filters(prefix: str) -> pd.DataFrame:
         )
         if indicator_df is not None:
             indicator_df = indicator_df.rename(
-                columns={"indicator": f"{indicator_name.lower()}"}
+                {"indicator": f"{indicator_name.lower()}"}
             )
             dfs.append(indicator_df)
 
@@ -765,7 +850,7 @@ def get_filters(prefix: str) -> pd.DataFrame:
     for ma in moving_average_names:
         ma_df = parse_moving_average(f"{FILTERS_FOLDER}{prefix}-{ma}.txt")
         if ma_df is not None:
-            ma_df = ma_df.rename(columns={"moving_average": f"{ma.lower()}"})
+            ma_df = ma_df.rename({"moving_average": f"{ma.lower()}"})
             dfs.append(ma_df)
 
     file_names = []
@@ -783,26 +868,26 @@ def get_filters(prefix: str) -> pd.DataFrame:
                 .replace("-", "_")
                 .lower()
             )
-            gex_df = gex_df.rename(columns={"gex": f"gex_{suffix}"})
+            gex_df = gex_df.rename({"gex": f"gex_{suffix}"})
             dfs.append(gex_df)
 
     if dfs:
-        df_merged = reduce(
-            lambda left, right: pd.merge(left, right, on="date", how="outer"), dfs
-        )
-        # Replace NaN with 0 for filter columns
-        for col in df_merged.columns:
-            if col != "date":
-                df_merged[col] = df_merged[col].fillna(0)
+        df_merged = dfs[0]
+        for right_df in dfs[1:]:
+            df_merged = df_merged.join(right_df, on="date", how="full", suffix="_right")
+            if "date_right" in df_merged.columns:
+                df_merged = df_merged.with_columns(
+                    pl.coalesce([pl.col("date"), pl.col("date_right")]).alias("date")
+                ).drop("date_right")
 
-        # Set date as the index
-        df_merged = df_merged.set_index("date")
-        df_merged.index.name = "date"
+        fill_columns = [col for col in df_merged.columns if col != "date"]
+        if fill_columns:
+            df_merged = df_merged.with_columns(
+                [pl.col(col).fill_null(0).alias(col) for col in fill_columns]
+            )
+        return df_merged.sort("date")
 
-        return df_merged
-
-    # Return empty DataFrame with DatetimeIndex
-    return pd.DataFrame(index=pd.DatetimeIndex([], name="date"))
+    return pl.DataFrame(schema={"date": pl.Date})
 
 
 class Split:
@@ -1119,8 +1204,8 @@ def _compute_child_parent_sets(parent_a: Split, parent_b: Split) -> list[set[Spl
 
 
 def _align_filters_with_trades(
-    filters_df: pd.DataFrame, trades_df: pd.DataFrame
-) -> pd.DataFrame:
+    filters_df: pl.DataFrame, trades_df: pl.DataFrame
+) -> pl.DataFrame:
     """
     Align filters DataFrame with trades DataFrame.
 
@@ -1129,43 +1214,44 @@ def _align_filters_with_trades(
 
     Parameters
     ----------
-    filters_df : pd.DataFrame
-        DataFrame with DatetimeIndex containing filter columns
-    trades_df : pd.DataFrame
-        DataFrame with DatetimeIndex containing trade data
+    filters_df : pl.DataFrame
+        DataFrame with a `date` column containing filter columns
+    trades_df : pl.DataFrame
+        DataFrame with a `date` column containing trade data
 
     Returns
     -------
-    pd.DataFrame
-        Aligned filters DataFrame with the same index as trades_df
+    pl.DataFrame
+        Aligned filters DataFrame with rows in the same date-order as trades_df
 
     Raises
     ------
     ValueError
         If there are dates in trades_df without corresponding dates in filters_df
     """
-    # Remove rows from filters_df that don't exist in trades_df
-    filters_df = filters_df.loc[filters_df.index.isin(trades_df.index)].copy()
+    filters_filtered = filters_df.join(
+        trades_df.select("date"), on="date", how="inner"
+    ).unique(subset=["date"], keep="first")
 
-    # Verify that every row in trades_df has a matching row in filters_df
-    missing_dates = trades_df.index.difference(filters_df.index)
-    if len(missing_dates) > 0:
+    missing_dates = trades_df.join(
+        filters_filtered.select("date"), on="date", how="anti"
+    )
+    if missing_dates.height > 0:
         raise ValueError(
             f"Trades dataframe contains dates not found in filters dataframe: "
-            f"{missing_dates.tolist()}"
+            f"{missing_dates.get_column('date').to_list()}"
         )
 
-    # Reindex filters to match trades exactly
-    return filters_df.reindex(trades_df.index)
+    return trades_df.select("date").join(filters_filtered, on="date", how="left")
 
 
 def _add_computed_columns(
-    filters_df: pd.DataFrame,
-    trades_df: pd.DataFrame,
+    filters_df: pl.DataFrame,
+    trades_df: pl.DataFrame,
     spread_width: int,
     left_only_filters: list[str],
     right_only_filters: list[str],
-) -> tuple[pd.DataFrame, list[str], list[str]]:
+) -> tuple[pl.DataFrame, list[str], list[str]]:
     """
     Add computed columns to filters DataFrame.
 
@@ -1174,10 +1260,10 @@ def _add_computed_columns(
 
     Parameters
     ----------
-    filters_df : pd.DataFrame
-        DataFrame with DatetimeIndex containing filter columns
-    trades_df : pd.DataFrame
-        DataFrame with DatetimeIndex containing trade data (risk, profit, start_time)
+    filters_df : pl.DataFrame
+        DataFrame with date-aligned filter columns
+    trades_df : pl.DataFrame
+        DataFrame with date-aligned trade data (risk, profit, start_time)
     spread_width : int
         Width of the option spread in points
     left_only_filters : list[str]
@@ -1185,30 +1271,37 @@ def _add_computed_columns(
 
     Returns
     -------
-    tuple[pd.DataFrame, list[str]]
+    tuple[pl.DataFrame, list[str]]
         Updated filters DataFrame and updated left_only_filters list
     """
-    # Add reward_per_risk column
-    filters_df["reward_per_risk"] = (
-        spread_width * 100 - trades_df["risk"]
-    ) / trades_df["risk"]
-
-    # Add premium column
-    filters_df["premium"] = spread_width * 100 - trades_df["risk"]
+    trades_risk = trades_df.get_column("risk")
+    filters_df = filters_df.with_columns(
+        pl.Series(
+            "reward_per_risk", ((spread_width * 100) - trades_risk) / trades_risk
+        ),
+        pl.Series("premium", (spread_width * 100) - trades_risk),
+    )
 
     # Add weekday filters based on date
+    weekday_series = filters_df.get_column("date").dt.weekday() - 1
     weekday_names = ["monday", "tuesday", "wednesday", "thursday", "friday"]
-    for i, day in enumerate(weekday_names):
-        filters_df[f"is_{day}"] = (filters_df.index.dayofweek == i).astype(int)  # type: ignore
+    weekday_columns = [
+        pl.Series(f"is_{day}", (weekday_series == i).cast(pl.Int64))
+        for i, day in enumerate(weekday_names)
+    ]
+    filters_df = filters_df.with_columns(weekday_columns)
 
     # Add open_minutes based on start_time (hours*60+minutes)
     if "start_time" in trades_df.columns:
-        filters_df["open_minutes"] = trades_df["start_time"].apply(
-            lambda t: t.hour * 60 + t.minute if t is not None else 0
-        )
+        open_minutes = [
+            t.hour * 60 + t.minute if t is not None else 0
+            for t in trades_df.get_column("start_time").to_list()
+        ]
+        filters_df = filters_df.with_columns(pl.Series("open_minutes", open_minutes))
     else:
-        # Default to 0 if start_time column doesn't exist
-        filters_df["open_minutes"] = 0
+        filters_df = filters_df.with_columns(
+            pl.Series("open_minutes", [0] * filters_df.height)
+        )
 
     # Append weekday filters to left_only_filters (they can only be excluded)
     # Create a new list to avoid mutating the input parameter
@@ -1316,7 +1409,7 @@ def _select_split_indices(
 def _create_splits_for_filter(
     col_idx: int,
     col_name: str,
-    filters_df: pd.DataFrame,
+    filters_df: pl.DataFrame,
     left_only_filters: list[str],
     right_only_filters: list[str],
     device: torch.device,
@@ -1334,7 +1427,7 @@ def _create_splits_for_filter(
         Index of the column in the filters DataFrame
     col_name : str
         Name of the filter column
-    filters_df : pd.DataFrame
+    filters_df : pl.DataFrame
         DataFrame containing filter data
     left_only_filters : list[str]
         Filter names that should only generate left splits
@@ -1356,7 +1449,7 @@ def _create_splits_for_filter(
     list[Split]
         List of Split objects for this filter
     """
-    col_values = filters_df[col_name].to_numpy(dtype=float, copy=False)
+    col_values = filters_df[col_name].cast(pl.Float64).to_numpy().copy()
     col_tensor_original = torch.as_tensor(col_values, dtype=dtype, device=device)
 
     # Check if this filter has a granularity
@@ -2613,13 +2706,13 @@ def _evaluate_filters(
 
     # Step 10: Print results using rich table (only if verbose is not "no")
     if len(score_improvements) > 0 and verbose != "no":
-        adjusted_improvements = {
-            key: value - score_improvement_stds.get(key, 0.0)
-            for key, value in score_improvements.items()
-        }
+        # adjusted_improvements = {
+        #     key: value - score_improvement_stds.get(key, 0.0)
+        #     for key, value in score_improvements.items()
+        # }
         # Sort by adjusted improvement (descending)
         sorted_items = sorted(
-            adjusted_improvements.items(), key=lambda x: x[1], reverse=True
+            score_improvements.items(), key=lambda x: x[1], reverse=True
         )
 
         table = Table(title="Filter Evaluation Results (Purged Time-Series CV)")
@@ -2633,9 +2726,9 @@ def _evaluate_filters(
             table.add_column("%Above", style="yellow", justify="right")
         table.add_column("Samples", style="yellow", justify="right")
 
-        for (filter_name, direction), adj_imp in sorted_items:
+        for (filter_name, direction), improvement in sorted_items:
             # Get statistics for this filter
-            improvement = score_improvements.get((filter_name, direction), 0.0)
+            # improvement = score_improvements.get((filter_name, direction), 0.0)
             avg_samples = best_split_sample_counts.get((filter_name, direction), 0)
             std_imp = score_improvement_stds.get((filter_name, direction), 0.0)
             avg_drop = train_test_drops.get((filter_name, direction), 0.0)
@@ -2647,7 +2740,7 @@ def _evaluate_filters(
                     direction,
                     f"{improvement:.6f}",
                     f"{std_imp:.6f}",
-                    f"{adj_imp:.6f}",
+                    f"{improvement - std_imp:.6f}",
                     f"{avg_drop:.6f}",
                     f"{pct_above_val:.1f}%",
                     str(avg_samples),
@@ -2658,7 +2751,7 @@ def _evaluate_filters(
                     direction,
                     f"{improvement:.6f}",
                     f"{std_imp:.6f}",
-                    f"{adj_imp:.6f}",
+                    f"{improvement - std_imp:.6f}",
                     f"{avg_drop:.6f}",
                     str(avg_samples),
                 )
@@ -2882,7 +2975,7 @@ class SplitGenerator:
         self,
         col_idx: int,
         col_name: str,
-        filters_df: pd.DataFrame,
+        filters_df: pl.DataFrame,
         left_only_filters: list[str],
         right_only_filters: list[str],
     ) -> list[Split]:
@@ -2895,7 +2988,7 @@ class SplitGenerator:
             Index of the column in the filters DataFrame
         col_name : str
             Name of the filter column
-        filters_df : pd.DataFrame
+        filters_df : pl.DataFrame
             DataFrame containing filter data
         left_only_filters : list[str]
             Filter names that should only generate left splits
@@ -2958,8 +3051,8 @@ class SplitGenerator:
 
     def generate(
         self,
-        trades_df: pd.DataFrame,
-        filters_df: pd.DataFrame,
+        trades_df: pl.DataFrame | object,
+        filters_df: pl.DataFrame | object,
         spread_width: int | None = None,
         verbose: str = "no",
     ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
@@ -2968,11 +3061,11 @@ class SplitGenerator:
 
         Parameters
         ----------
-        trades_df : pd.DataFrame
-            DataFrame created from parse_trade_log function, with DatetimeIndex
+        trades_df : pl.DataFrame
+            DataFrame created from parse_trade_log function with a `date` column
             containing columns: risk, profit, etc.
-        filters_df : pd.DataFrame
-            DataFrame created from get_filters function, with DatetimeIndex
+        filters_df : pl.DataFrame
+            DataFrame created from get_filters function with a `date` column
             containing various filter columns.
         spread_width : int | None, optional
             Width of the option spread in points. If None (default), uses the value
@@ -3013,6 +3106,9 @@ class SplitGenerator:
         - At depths > 2, child splits are created by combining the previous depth's
           new splits with the original depth 1 splits.
         """
+        trades_df = _coerce_table_to_polars(trades_df).sort("date")
+        filters_df = _coerce_table_to_polars(filters_df).sort("date")
+
         # Validate verbose parameter
         if verbose not in ["no", "best", "all"]:
             raise ValueError(
@@ -3046,14 +3142,14 @@ class SplitGenerator:
         # Calculate RoR (y) as profit / risk
         # Done early so it can be used for scoring
         y = torch.tensor(  # pylint: disable=invalid-name
-            (trades_df["profit"] / trades_df["risk"]).values,
+            (trades_df["profit"] / trades_df["risk"]).to_numpy(),
             dtype=self.dtype,
             device=self.device,
         )
 
         # Find all depth 1 splits
         depth_1_splits: list[Split] = []
-        filter_names = filters_df.columns.tolist()
+        filter_names = [col for col in filters_df.columns if col != "date"]
 
         for col_idx, col_name in enumerate(filter_names):
             filter_splits = self._create_splits_for_filter(
@@ -3277,15 +3373,17 @@ class SplitGenerator:
 
         # Convert filters_df to torch tensor X
         X = torch.tensor(  # pylint: disable=invalid-name
-            filters_df.values, dtype=self.dtype, device=self.device
+            filters_df.select(filter_names).to_numpy(),
+            dtype=self.dtype,
+            device=self.device,
         )
 
         return X, y, all_splits
 
 
 def prepare_splits(
-    trades_df: pd.DataFrame,
-    filters_df: pd.DataFrame,
+    trades_df: pl.DataFrame | object,
+    filters_df: pl.DataFrame | object,
     spread_width: int,
     left_only_filters: list[str],
     right_only_filters: list[str],
@@ -3315,11 +3413,11 @@ def prepare_splits(
 
     Parameters
     ----------
-    trades_df : pd.DataFrame
-        DataFrame created from parse_trade_log function, with DatetimeIndex
+    trades_df : pl.DataFrame
+        DataFrame created from parse_trade_log function with a `date` column
         containing columns: risk, profit, etc.
-    filters_df : pd.DataFrame
-        DataFrame created from get_filters function, with DatetimeIndex
+    filters_df : pl.DataFrame
+        DataFrame created from get_filters function with a `date` column
         containing various filter columns.
     spread_width : int
         Width of the option spread in points (e.g., 20 for a 20-wide spread).

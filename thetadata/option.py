@@ -5,14 +5,14 @@ This module provides functions for accessing options data from the ThetaData RES
 """
 
 from typing import Optional
-import pandas as pd
+import polars as pl
 from .client import ThetaDataClient
 
 
 # List endpoints
 def option_list_symbols(
     client: Optional[ThetaDataClient] = None, output_format: str = "csv"
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all traded option symbols (underlying assets).
 
@@ -25,7 +25,7 @@ def option_list_symbols(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with columns: symbol
     """
     endpoint = "/option/list/symbols"
@@ -41,7 +41,7 @@ def option_list_dates(
     symbol: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all available dates for options with a given request type and symbol.
 
@@ -58,7 +58,7 @@ def option_list_dates(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with available dates
     """
     endpoint = f"/option/list/dates/{request_type}"
@@ -74,7 +74,7 @@ def option_list_expirations(
     symbol: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all expiration dates for a given underlying symbol.
 
@@ -89,7 +89,7 @@ def option_list_expirations(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with expiration dates
     """
     endpoint = "/option/list/expirations"
@@ -107,7 +107,7 @@ def option_list_strikes(
     client: Optional[ThetaDataClient] = None,
     right: str = "both",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all strike prices for a given underlying and expiration.
 
@@ -126,7 +126,7 @@ def option_list_strikes(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with strike prices
     """
     endpoint = "/option/list/strikes"
@@ -146,7 +146,7 @@ def option_list_contracts(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all option contracts for a given underlying, expiration, and request type.
 
@@ -169,7 +169,7 @@ def option_list_contracts(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with option contracts
     """
     endpoint = f"/option/list/contracts/{request_type}"
@@ -194,7 +194,7 @@ def option_snapshot_ohlc(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time OHLC snapshot for options.
 
@@ -215,7 +215,7 @@ def option_snapshot_ohlc(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with OHLC data
     """
     endpoint = "/option/snapshot/ohlc"
@@ -239,7 +239,7 @@ def option_snapshot_trade(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time last trade for options.
 
@@ -260,7 +260,7 @@ def option_snapshot_trade(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade data
     """
     endpoint = "/option/snapshot/trade"
@@ -284,7 +284,7 @@ def option_snapshot_quote(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time last quote for options.
 
@@ -305,7 +305,7 @@ def option_snapshot_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with quote data
     """
     endpoint = "/option/snapshot/quote"
@@ -329,7 +329,7 @@ def option_snapshot_open_interest(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time open interest for options.
 
@@ -350,7 +350,7 @@ def option_snapshot_open_interest(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with open interest data
     """
     endpoint = "/option/snapshot/open_interest"
@@ -375,7 +375,7 @@ def option_snapshot_greeks_implied_volatility(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time implied volatility for options.
 
@@ -396,7 +396,7 @@ def option_snapshot_greeks_implied_volatility(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with implied volatility data
     """
     endpoint = "/option/snapshot/greeks/implied_volatility"
@@ -420,7 +420,7 @@ def option_snapshot_greeks_all(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time all Greeks for options.
 
@@ -441,7 +441,7 @@ def option_snapshot_greeks_all(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with all Greeks data
     """
     endpoint = "/option/snapshot/greeks/all"
@@ -465,7 +465,7 @@ def option_snapshot_greeks_first_order(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time first-order Greeks (delta, vega, rho) for options.
 
@@ -486,7 +486,7 @@ def option_snapshot_greeks_first_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with first-order Greeks data
     """
     endpoint = "/option/snapshot/greeks/first_order"
@@ -510,7 +510,7 @@ def option_snapshot_greeks_second_order(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time second-order Greeks (gamma, vanna, vomma) for options.
 
@@ -531,7 +531,7 @@ def option_snapshot_greeks_second_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with second-order Greeks data
     """
     endpoint = "/option/snapshot/greeks/second_order"
@@ -555,7 +555,7 @@ def option_snapshot_greeks_third_order(
     right: str = "both",
     strike: str = "*",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time third-order Greeks for options.
 
@@ -576,7 +576,7 @@ def option_snapshot_greeks_third_order(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with third-order Greeks data
     """
     endpoint = "/option/snapshot/greeks/third_order"

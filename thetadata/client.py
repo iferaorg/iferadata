@@ -6,8 +6,8 @@ This module provides the base HTTP client for interacting with the ThetaData RES
 
 import io
 from typing import Optional, Dict, Any
-import pandas as pd
 import httpx
+import polars as pl
 
 
 class ThetaDataClient:
@@ -86,9 +86,9 @@ class ThetaDataClient:
         response.raise_for_status()
         return response
 
-    def _parse_csv_response(self, response: httpx.Response) -> pd.DataFrame:
+    def _parse_csv_response(self, response: httpx.Response) -> pl.DataFrame:
         """
-        Parse CSV response into a pandas DataFrame.
+        Parse CSV response into a Polars DataFrame.
 
         Parameters
         ----------
@@ -97,18 +97,18 @@ class ThetaDataClient:
 
         Returns
         -------
-        pd.DataFrame
+        pl.DataFrame
             The parsed data as a DataFrame
         """
         text = response.text.strip()
         if not text:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
-        return pd.read_csv(io.StringIO(text))
+        return pl.read_csv(io.StringIO(text))
 
-    def _parse_json_response(self, response: httpx.Response) -> pd.DataFrame:
+    def _parse_json_response(self, response: httpx.Response) -> pl.DataFrame:
         """
-        Parse JSON response into a pandas DataFrame.
+        Parse JSON response into a Polars DataFrame.
 
         Parameters
         ----------
@@ -117,23 +117,23 @@ class ThetaDataClient:
 
         Returns
         -------
-        pd.DataFrame
+        pl.DataFrame
             The parsed data as a DataFrame
         """
         data = response.json()
         if not data:
-            return pd.DataFrame()
+            return pl.DataFrame()
 
-        return pd.DataFrame(data)
+        return pl.DataFrame(data)
 
     def get_dataframe(
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
         output_format: str = "csv",
-    ) -> pd.DataFrame:
+    ) -> pl.DataFrame:
         """
-        Make a request and return the result as a pandas DataFrame.
+        Make a request and return the result as a Polars DataFrame.
 
         Parameters
         ----------
@@ -146,7 +146,7 @@ class ThetaDataClient:
 
         Returns
         -------
-        pd.DataFrame
+        pl.DataFrame
             The API response data as a DataFrame
 
         Raises
