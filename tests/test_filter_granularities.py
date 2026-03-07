@@ -1,6 +1,6 @@
 """Tests for the filter_granularities functionality in optionalpha module."""
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
 import pytest
 import torch
 

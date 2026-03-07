@@ -6,7 +6,7 @@ import zipfile as zip_module  # Renamed to avoid parameter conflict
 from typing import Any, Dict, Optional
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import torch
 from tqdm import tqdm
 
@@ -30,18 +30,43 @@ def count_lines(file_path: str, is_zip: bool = False) -> int:
 
 def read_csv_with_progress(
     file_path: str, read_csv_kwargs: Dict[str, Any], zipfile: bool
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Read a CSV file with progress tracking, handling both regular and zip files."""
     total_lines = count_lines(file_path, zipfile)
-    chunksize = max(1000, min(100000, total_lines // 100))
-    read_csv_kwargs["chunksize"] = chunksize
-    chunks = []
+    dtype_mapping = {
+        "float32": pl.Float32,
+        "float64": pl.Float64,
+        "int32": pl.Int32,
+        "int64": pl.Int64,
+        "str": pl.String,
+    }
+    schema_overrides = {
+        col: dtype_mapping.get(str(dtype), dtype)
+        for col, dtype in read_csv_kwargs.get("dtype", {}).items()
+    }
+    has_header = read_csv_kwargs.get("header", "infer") is not None
+    new_columns = read_csv_kwargs.get("names")
     desc = f"Loading data from {file_path}"
     with tqdm(total=total_lines, unit="lines", desc=desc) as pbar:
-        for chunk in pd.read_csv(file_path, **read_csv_kwargs):
-            chunks.append(chunk)
-            pbar.update(len(chunk))
-    df = pd.concat(chunks, ignore_index=True)
+        if zipfile:
+            with zip_module.ZipFile(file_path, "r") as z_file:
+                filename = z_file.namelist()[0]
+                with z_file.open(filename) as csv_file:
+                    data = csv_file.read()
+            df = pl.read_csv(
+                data,
+                has_header=has_header,
+                new_columns=new_columns,
+                schema_overrides=schema_overrides,
+            )
+        else:
+            df = pl.read_csv(
+                file_path,
+                has_header=has_header,
+                new_columns=new_columns,
+                schema_overrides=schema_overrides,
+            )
+        pbar.update(total_lines)
     return df
 
 
@@ -50,7 +75,7 @@ def load_data(
     instrument: BaseInstrumentConfig,
     dtype: str = "float32",
     zipfile: bool = True,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Load data from CSV files."""
     source = Source.RAW if raw else Source.PROCESSED
     file_path = make_instrument_path(source=source, instrument=instrument)
@@ -110,13 +135,19 @@ def load_data(
 
     if raw:
         try:
-            df["date_time"] = pd.to_datetime(df["date"] + " " + df["time"])
+            df = df.with_columns(
+                pl.concat_str([pl.col("date"), pl.col("time")], separator=" ")
+                .str.to_datetime(strict=False)
+                .alias("date_time")
+            )
         except Exception as e:
             raise ValueError(
                 "Error converting 'date' and 'time' columns to datetime"
             ) from e
 
-        df = df.drop(columns=["date", "time"], inplace=False).set_index("date_time")
+        df = df.drop(["date", "time"]).select(
+            ["date_time", "open", "high", "low", "close", "volume"]
+        )
     return df
 
 

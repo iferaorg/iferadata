@@ -1,6 +1,6 @@
 """Tests for min_samples parameter in prepare_splits."""
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
 import pytest
 import torch
 
@@ -240,7 +240,9 @@ def test_min_samples_exclusion_mask():
     # Check that splits with fewer than 3 samples are not created
     for split in splits2:
         sample_count = split.mask.sum().item()
-        assert sample_count >= 3, f"Split has {sample_count} samples, less than min_samples=3"
+        assert (
+            sample_count >= 3
+        ), f"Split has {sample_count} samples, less than min_samples=3"
 
     # Verify we have fewer splits with min_samples=3
     assert len(splits2) < len(splits1)
@@ -321,7 +323,9 @@ def test_min_samples_with_child_splits():
     # Check that all splits (including child splits) have at least 3 samples
     for split in splits:
         sample_count = split.mask.sum().item()
-        assert sample_count >= 3, f"Split has {sample_count} samples, less than min_samples=3"
+        assert (
+            sample_count >= 3
+        ), f"Split has {sample_count} samples, less than min_samples=3"
 
 
 def test_min_samples_zero():

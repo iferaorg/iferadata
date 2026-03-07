@@ -1,9 +1,11 @@
 """Tests for the optionalpha module."""
 
 import os
+from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
+import polars as pl
 import pytest
 import torch
 
@@ -90,9 +92,11 @@ def test_parse_trade_log_simple(simple_html):
 
     # Check DataFrame shape
     assert len(df) == 2
+    assert isinstance(df, pl.DataFrame)
     assert list(df.columns) == [
         "symbol",
         "trade_type",
+        "date",
         "start_time",
         "end_time",
         "status",
@@ -100,27 +104,25 @@ def test_parse_trade_log_simple(simple_html):
         "profit",
     ]
 
-    # Check that index is DatetimeIndex
-    assert isinstance(df.index, pd.DatetimeIndex)
-    assert df.index.name == "date"
-
     # Check first row
     from datetime import time as dt_time
 
-    assert df.iloc[0]["symbol"] == "SPX"
-    assert df.iloc[0]["trade_type"] == "Long Call"
-    assert df.index[0] == pd.Timestamp("2022-01-10")
-    assert df.iloc[0]["start_time"] == dt_time(15, 47)
-    assert df.iloc[0]["end_time"] == dt_time(16, 0)
-    assert df.iloc[0]["status"] == "Expired"
-    assert df.iloc[0]["risk"] == 380.0
-    assert df.iloc[0]["profit"] == 1149.0
+    first_row = df.to_dicts()[0]
+    assert first_row["symbol"] == "SPX"
+    assert first_row["trade_type"] == "Long Call"
+    assert first_row["date"] == datetime(2022, 1, 10).date()
+    assert first_row["start_time"] == dt_time(15, 47)
+    assert first_row["end_time"] == dt_time(16, 0)
+    assert first_row["status"] == "Expired"
+    assert first_row["risk"] == 380.0
+    assert first_row["profit"] == 1149.0
 
     # Check second row (negative P/L)
-    assert df.iloc[1]["symbol"] == "SPX"
-    assert df.iloc[1]["trade_type"] == "Long Call"
-    assert df.index[1] == pd.Timestamp("2022-01-14")
-    assert df.iloc[1]["profit"] == -350.0
+    second_row = df.to_dicts()[1]
+    assert second_row["symbol"] == "SPX"
+    assert second_row["trade_type"] == "Long Call"
+    assert second_row["date"] == datetime(2022, 1, 14).date()
+    assert second_row["profit"] == -350.0
 
 
 def test_parse_trade_log_grid_example(grid_example_html):
@@ -134,6 +136,7 @@ def test_parse_trade_log_grid_example(grid_example_html):
     assert list(df.columns) == [
         "symbol",
         "trade_type",
+        "date",
         "start_time",
         "end_time",
         "status",
@@ -141,26 +144,17 @@ def test_parse_trade_log_grid_example(grid_example_html):
         "profit",
     ]
 
-    # Check that index is DatetimeIndex
-    assert isinstance(df.index, pd.DatetimeIndex)
-    assert df.index.name == "date"
-
     # Check data types
-    assert df["symbol"].dtype == object
-    assert df["trade_type"].dtype == object
-    assert pd.api.types.is_datetime64_any_dtype(df.index)
-    assert df["start_time"].dtype == object  # datetime.time objects
-    assert df["end_time"].dtype == object  # datetime.time objects
-    assert df["status"].dtype == object
-    assert pd.api.types.is_numeric_dtype(df["risk"])
-    assert pd.api.types.is_numeric_dtype(df["profit"])
+    assert df.schema["date"] == pl.Date
+    assert df.schema["risk"] in (pl.Float32, pl.Float64)
+    assert df.schema["profit"] in (pl.Float32, pl.Float64)
 
-    # Check for NaN values (should not exist in numeric columns)
-    assert df["risk"].isna().sum() == 0
-    assert df["profit"].isna().sum() == 0
+    # Check for null values (should not exist in numeric columns)
+    assert df["risk"].null_count() == 0
+    assert df["profit"].null_count() == 0
 
     # Check some sample values
-    first_row = df.iloc[0]
+    first_row = df.to_dicts()[0]
     assert first_row["symbol"] == "SPX"
     assert first_row["trade_type"] == "Long Call"
     assert first_row["status"] == "Expired"
@@ -205,10 +199,11 @@ def test_parse_trade_log_missing_dollar_values():
     df = parse_trade_log(html)
 
     # Check that missing values are replaced with 0
-    assert df.iloc[0]["risk"] == 0.0
-    assert df.iloc[0]["profit"] == 0.0
-    assert df["risk"].isna().sum() == 0
-    assert df["profit"].isna().sum() == 0
+    first_row = df.to_dicts()[0]
+    assert first_row["risk"] == 0.0
+    assert first_row["profit"] == 0.0
+    assert df["risk"].null_count() == 0
+    assert df["profit"].null_count() == 0
 
 
 def test_parse_trade_log_empty_string():
@@ -289,15 +284,15 @@ def test_parse_trade_log_result_no_nan_values(grid_example_html):
     df = parse_trade_log(grid_example_html)
 
     # Check numeric columns for NaN values
-    has_nan_risk: bool = bool(df["risk"].isna().any())
-    has_nan_profit: bool = bool(df["profit"].isna().any())
+    has_nan_risk: bool = bool(df["risk"].is_nan().any())
+    has_nan_profit: bool = bool(df["profit"].is_nan().any())
 
     assert not has_nan_risk
     assert not has_nan_profit
 
     # Check that numeric columns don't have NaN
-    assert df["risk"].isna().sum() == 0
-    assert df["profit"].isna().sum() == 0
+    assert df["risk"].is_nan().sum() == 0
+    assert df["profit"].is_nan().sum() == 0
 
 
 def test_parse_time_valid():
@@ -358,19 +353,22 @@ def test_parse_filter_log_simple(simple_filter_html):
 
     # Check DataFrame shape
     assert len(df) == 2
+    assert isinstance(df, pl.DataFrame)
     assert list(df.columns) == ["date", "filter_type", "description"]
 
     # Check first row (with description)
-    assert df.iloc[0]["date"] == pd.Timestamp("2022-01-03")
-    assert df.iloc[0]["filter_type"] == "Min opening range"
+    first_row = df.to_dicts()[0]
+    assert first_row["date"] == datetime(2022, 1, 3).date()
+    assert first_row["filter_type"] == "Min opening range"
     assert (
-        df.iloc[0]["description"] == "Opening Range: 4,758.17 - 4,795.86, Width: 0.79%"
+        first_row["description"] == "Opening Range: 4,758.17 - 4,795.86, Width: 0.79%"
     )
 
     # Check second row (without description)
-    assert df.iloc[1]["date"] == pd.Timestamp("2022-01-26")
-    assert df.iloc[1]["filter_type"] == "FOMC Meeting"
-    assert df.iloc[1]["description"] == ""
+    second_row = df.to_dicts()[1]
+    assert second_row["date"] == datetime(2022, 1, 26).date()
+    assert second_row["filter_type"] == "FOMC Meeting"
+    assert second_row["description"] == ""
 
 
 def test_parse_filter_log_range_width(filter_log_range_width):
@@ -384,17 +382,15 @@ def test_parse_filter_log_range_width(filter_log_range_width):
     assert list(df.columns) == ["date", "filter_type", "description"]
 
     # Check data types
-    assert pd.api.types.is_datetime64_any_dtype(df["date"])
-    assert df["filter_type"].dtype == object
-    assert df["description"].dtype == object
+    assert df.schema["date"] == pl.Date
 
-    # Check for NaN values (should not exist)
-    assert df["filter_type"].isna().sum() == 0
-    assert df["description"].isna().sum() == 0
+    # Check for null values (should not exist)
+    assert df["filter_type"].null_count() == 0
+    assert df["description"].null_count() == 0
 
     # Check some sample values
-    first_row = df.iloc[0]
-    assert first_row["date"] == pd.Timestamp("2022-01-03")
+    first_row = df.to_dicts()[0]
+    assert first_row["date"] == datetime(2022, 1, 3).date()
     assert first_row["filter_type"] == "Min opening range"
     assert "Opening Range:" in first_row["description"]
     assert "Width:" in first_row["description"]
@@ -414,17 +410,15 @@ def test_parse_filter_log_skip_fomc(filter_log_skip_fomc):
     assert list(df.columns) == ["date", "filter_type", "description"]
 
     # Check data types
-    assert pd.api.types.is_datetime64_any_dtype(df["date"])
-    assert df["filter_type"].dtype == object
-    assert df["description"].dtype == object
+    assert df.schema["date"] == pl.Date
 
-    # Check for NaN values (should not exist)
-    assert df["filter_type"].isna().sum() == 0
-    assert df["description"].isna().sum() == 0
+    # Check for null values (should not exist)
+    assert df["filter_type"].null_count() == 0
+    assert df["description"].null_count() == 0
 
     # Check some sample values
-    first_row = df.iloc[0]
-    assert first_row["date"] == pd.Timestamp("2022-01-26")
+    first_row = df.to_dicts()[0]
+    assert first_row["date"] == datetime(2022, 1, 26).date()
     assert first_row["filter_type"] == "FOMC Meeting"
     assert first_row["description"] == ""
 
@@ -464,10 +458,10 @@ def test_parse_filter_log_result_no_nan_values(filter_log_range_width):
     """Explicitly verify no NaN values in output."""
     df = parse_filter_log(filter_log_range_width)
 
-    # Check all columns for NaN values
-    has_nan_date: bool = bool(df["date"].isna().any())
-    has_nan_filter_type: bool = bool(df["filter_type"].isna().any())
-    has_nan_description: bool = bool(df["description"].isna().any())
+    # Check all columns for null values
+    has_nan_date: bool = bool(df["date"].is_null().any())
+    has_nan_filter_type: bool = bool(df["filter_type"].is_null().any())
+    has_nan_description: bool = bool(df["description"].is_null().any())
 
     assert not has_nan_date
     assert not has_nan_filter_type
@@ -549,9 +543,9 @@ def test_check_and_eliminate_duplicates_same_values():
 
     # Should have only 2 rows now
     assert len(result) == 2
-    assert result["date"].tolist() == [
-        pd.Timestamp("2022-01-10"),
-        pd.Timestamp("2022-01-11"),
+    assert list(result["date"]) == [
+        datetime(2022, 1, 10).date(),
+        datetime(2022, 1, 11).date(),
     ]
 
 

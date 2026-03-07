@@ -265,7 +265,7 @@ symbols_csv = stock_list_symbols(output_format="csv")
 symbols_json = stock_list_symbols(output_format="json")
 ```
 
-Both formats are automatically converted to pandas DataFrames for easy manipulation.
+Both formats are automatically converted to Polars DataFrames for easy manipulation.
 
 ## Error Handling
 
@@ -284,7 +284,7 @@ except httpx.HTTPStatusError as e:
 
 ## Notes
 
-- All functions that return lists/tables return pandas DataFrames
+- All functions that return lists/tables return Polars DataFrames
 - The default base URL is `http://localhost:25503/v3` (ThetaData Terminal)
 - Date parameters should be in YYYYMMDD format (e.g., "20240102")
 - Time parameters should be in HH:MM:SS format (e.g., "09:30:00")

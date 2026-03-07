@@ -3,14 +3,20 @@ Data models for financial instruments.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import datetime
 import yaml
 
-import pandas as pd
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from .decorators import singleton
+from .time_utils import (
+    derive_end_time_and_steps,
+    parse_date,
+    parse_timedelta,
+    timedelta_is_multiple,
+    timedelta_to_microseconds,
+)
 
 SECONDS_IN_DAY = 86400
 
@@ -32,12 +38,12 @@ class BaseInstrumentConfig(BaseModel):
     currency: str
     type: str
     interval: str
-    trading_start: pd.Timedelta = Field(..., alias="tradingStart")
-    trading_end: pd.Timedelta = Field(..., alias="tradingEnd")
-    liquid_start: pd.Timedelta = Field(..., alias="liquidStart")
-    liquid_end: pd.Timedelta = Field(..., alias="liquidEnd")
-    regular_start: pd.Timedelta = Field(..., alias="regularStart")
-    regular_end: pd.Timedelta = Field(..., alias="regularEnd")
+    trading_start: datetime.timedelta = Field(..., alias="tradingStart")
+    trading_end: datetime.timedelta = Field(..., alias="tradingEnd")
+    liquid_start: datetime.timedelta = Field(..., alias="liquidStart")
+    liquid_end: datetime.timedelta = Field(..., alias="liquidEnd")
+    regular_start: datetime.timedelta = Field(..., alias="regularStart")
+    regular_end: datetime.timedelta = Field(..., alias="regularEnd")
     contract_multiplier: int = Field(..., alias="contractMultiplier")
     tick_size: float = Field(..., alias="tickSize")
     remove_dates: Optional[List[datetime.date]] = Field(
@@ -45,7 +51,7 @@ class BaseInstrumentConfig(BaseModel):
     )
     start_date: datetime.date = Field(..., alias="startDate")
     days_of_week: List[int] = Field(..., alias="daysOfWeek", validate_default=True)
-    rollover_time: Optional[pd.Timedelta] = Field(
+    rollover_time: Optional[datetime.timedelta] = Field(
         None, alias="rolloverTime", validate_default=True
     )
     rollover_vol_alpha: Optional[float] = Field(
@@ -67,8 +73,8 @@ class BaseInstrumentConfig(BaseModel):
     last_update: Optional[float] = Field(default=None)
 
     # Derived Fields
-    time_step: pd.Timedelta = pd.Timedelta(0)  # type: ignore[assignment]
-    end_time: pd.Timedelta = pd.Timedelta(0)  # type: ignore[assignment]
+    time_step: datetime.timedelta = datetime.timedelta(0)
+    end_time: datetime.timedelta = datetime.timedelta(0)
     rollover_offset: int = 0
     total_steps: int = 0
 
@@ -103,7 +109,7 @@ class BaseInstrumentConfig(BaseModel):
     def parse_timedelta(cls, value):
         """Parse timedelta from string value."""
         try:
-            return pd.to_timedelta(value)
+            return parse_timedelta(value)
         except Exception as exc:
             raise ValueError(
                 f"Error parsing timedelta from value {value}: {exc}"
@@ -114,7 +120,7 @@ class BaseInstrumentConfig(BaseModel):
     def parse_start_date(cls, value):
         """Parse start_date from string value."""
         try:
-            return pd.to_datetime(value)
+            return parse_date(value)
         except Exception as exc:
             raise ValueError(f"Error parsing start_date: {exc}") from exc
 
@@ -125,7 +131,7 @@ class BaseInstrumentConfig(BaseModel):
         if value is None:
             return None
         try:
-            return [pd.to_datetime(date_str).date() for date_str in value]
+            return [parse_date(date_str) for date_str in value]
         except Exception as exc:
             raise ValueError(f"Error parsing remove_dates: {exc}") from exc
 
@@ -135,8 +141,7 @@ class BaseInstrumentConfig(BaseModel):
         """Parse days_of_week from string values."""
         if isinstance(value, list):
             return [int(day) for day in value]
-        else:
-            raise ValueError("days_of_week must be a list of integers.")
+        raise ValueError("days_of_week must be a list of integers.")
 
     @model_validator(mode="after")
     def compute_derived_fields(self) -> "BaseInstrumentConfig":
@@ -144,26 +149,14 @@ class BaseInstrumentConfig(BaseModel):
         try:
             if self.interval is None:
                 raise ValueError("Interval is required.")
-            self.time_step = pd.to_timedelta(self.interval)
+            self.time_step = parse_timedelta(self.interval)
             if self.trading_start is None or self.trading_end is None:
                 raise ValueError("Both trading_start and trading_end are required.")
-            all_steps = pd.timedelta_range(
-                start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=self.time_step
+            self.end_time, self.total_steps = derive_end_time_and_steps(
+                time_step=self.time_step,
+                trading_start=self.trading_start,
+                trading_end=self.trading_end,
             )
-            filtered_steps = all_steps[
-                all_steps < self.trading_end - self.trading_start
-            ]
-            if len(filtered_steps) > 0:
-                self.end_time = pd.Timedelta(filtered_steps[-1])  # type: ignore[assignment]
-            else:
-                self.end_time = pd.Timedelta(0)  # type: ignore[assignment]
-            total_seconds = self.end_time.total_seconds()
-            step_seconds = self.time_step.total_seconds()
-
-            if step_seconds <= 0:
-                raise ValueError("Invalid time_step: must be positive.")
-
-            self.total_steps = int(total_seconds / step_seconds) + 1
 
             if self.rollover_time is not None:
                 if self.rollover_time < self.trading_start:
@@ -185,7 +178,6 @@ class BaseInstrumentConfig(BaseModel):
         return self
 
     model_config = ConfigDict(
-        arbitrary_types_allowed=True,  # allow pandas.Timedelta
         alias_generator=to_camel,  # snake_case -> camelCase
         populate_by_name=True,  # allow field population by pythonic names
     )
@@ -295,13 +287,12 @@ class ConfigManager:
         self, allowed_intervals: List[str], interval: str
     ) -> Optional[str]:
         """Return the best parent interval from allowed_intervals for the requested one."""
-        requested_td = pd.to_timedelta(interval)
-        candidates: List[Tuple[pd.Timedelta, str]] = []
+        requested_td = parse_timedelta(interval)
+        candidates: List[Tuple[datetime.timedelta, str]] = []
         for allowed in allowed_intervals:
-            allowed_td = pd.to_timedelta(allowed)
-            if (
-                allowed_td < requested_td
-                and requested_td.total_seconds() % allowed_td.total_seconds() == 0
+            allowed_td = parse_timedelta(allowed)
+            if allowed_td < requested_td and timedelta_is_multiple(
+                child=requested_td, parent=allowed_td, allow_equal=False
             ):
                 candidates.append((allowed_td, allowed))
 
@@ -330,8 +321,8 @@ class ConfigManager:
             template_name = instrument_dict["template"]
             try:
                 template_dict = self.instruments_data["templates"][template_name]
-            except KeyError:
-                raise KeyError(f"Template '{template_name}' not found.")
+            except KeyError as exc:
+                raise KeyError(f"Template '{template_name}' not found.") from exc
             combined_dict = {**template_dict, **instrument_dict}
             combined_dict.pop("template", None)
         else:
@@ -383,8 +374,8 @@ class ConfigManager:
         self.reload_if_updated()
         try:
             broker_dict = self.brokers_data[broker_name]
-        except KeyError:
-            raise KeyError(f"Broker '{broker_name}' not found.")
+        except KeyError as exc:
+            raise KeyError(f"Broker '{broker_name}' not found.") from exc
 
         instruments_dict = {}
         defaults = broker_dict.get("defaults", {})
@@ -437,7 +428,9 @@ class ConfigManager:
         interval: str,
         contract_code: Optional[str] = None,
     ) -> InstrumentConfig:
-        """Get combined configuration for a specific instrument, interval, broker and optional contract code."""
+        """
+        Get combined configuration for instrument, interval, broker, and contract code.
+        """
         self.reload_if_updated()
 
         base_config = self.get_base_instrument_config(
@@ -480,52 +473,36 @@ class ConfigManager:
 
         if new_interval is not None:
             config_dict["interval"] = new_interval
-            time_step = pd.to_timedelta(new_interval)
-            parent_step_seconds = parent_config.time_step.total_seconds()
-            new_step_seconds = time_step.total_seconds()
+            time_step = parse_timedelta(new_interval)
+            parent_step_us = timedelta_to_microseconds(parent_config.time_step)
+            new_step_us = timedelta_to_microseconds(time_step)
+            day_us = SECONDS_IN_DAY * 1_000_000
 
             # Validate interval
-            if new_step_seconds < parent_step_seconds:
+            if new_step_us < parent_step_us:
                 raise ValueError(
-                    f"Child interval ({new_interval}) must be >= parent interval ({parent_config.interval})"
+                    "Child interval "
+                    f"({new_interval}) must be >= parent interval ({parent_config.interval})"
                 )
-            if new_step_seconds % parent_step_seconds != 0:
+            if new_step_us % parent_step_us != 0:
                 raise ValueError(
                     f"Child interval ({new_interval}) must be a multiple of parent interval"
                 )
-            if (
-                new_step_seconds < SECONDS_IN_DAY
-                and SECONDS_IN_DAY % new_step_seconds != 0
-            ):
+            if new_step_us < day_us and day_us % new_step_us != 0:
                 raise ValueError(
                     f"Interval ({new_interval}) must divide evenly into a day"
                 )
-            elif (
-                new_step_seconds > SECONDS_IN_DAY
-                and new_step_seconds % SECONDS_IN_DAY != 0
-            ):
+            if new_step_us > day_us and new_step_us % day_us != 0:
                 raise ValueError(
                     f"Interval ({new_interval}) must be a multiple of a day"
                 )
 
             # Recompute derived fields
-            all_steps = pd.timedelta_range(
-                start=pd.Timedelta(0), end=pd.Timedelta(days=1), freq=time_step
+            end_time, total_steps = derive_end_time_and_steps(
+                time_step=time_step,
+                trading_start=parent_config.trading_start,
+                trading_end=parent_config.trading_end,
             )
-            filtered_end_steps = all_steps[
-                all_steps < parent_config.trading_end - parent_config.trading_start
-            ]
-            if len(filtered_end_steps) > 0:
-                end_time = pd.Timedelta(filtered_end_steps[-1])
-            else:
-                end_time = pd.Timedelta(0)
-            total_seconds = end_time.total_seconds()  # type: ignore[attr-defined]
-            step_seconds = time_step.total_seconds()
-
-            if step_seconds <= 0:
-                raise ValueError("Invalid time_step: must be positive.")
-
-            total_steps = int(total_seconds / step_seconds) + 1
             config_dict["time_step"] = time_step
             config_dict["end_time"] = end_time
             config_dict["total_steps"] = total_steps

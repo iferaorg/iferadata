@@ -1,6 +1,6 @@
 """Tests for max_splits_per_filter parameter in prepare_splits."""
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
 import pytest
 import torch
 
@@ -188,7 +188,7 @@ def test_max_splits_per_filter_respects_equal_values():
     assert filter_a_left_split is not None
 
     # Verify that all samples with value 1 are either all in or all out
-    filter_values = torch.tensor(filters_df["filter_a"].values, dtype=torch.float32)
+    filter_values = torch.tensor(filters_df["filter_a"].to_numpy(), dtype=torch.float32)
     mask = filter_a_left_split.mask
 
     # Check value 1
@@ -452,7 +452,7 @@ def test_max_splits_per_filter_uneven_value_distribution():
     assert filter_a_left <= max_splits
 
     # Verify that all samples with value 1 stay together
-    filter_values = torch.tensor(filters_df["filter_a"].values, dtype=torch.float32)
+    filter_values = torch.tensor(filters_df["filter_a"].to_numpy(), dtype=torch.float32)
     for split in splits:
         for _, fname, _, direction in split.filters:
             if fname == "filter_a" and direction == "left":

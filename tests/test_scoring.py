@@ -1,6 +1,6 @@
 """Tests for the scoring functionality in optionalpha module."""
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
 import pytest
 import torch
 
@@ -162,7 +162,9 @@ def test_prepare_splits_keep_best_n_filters_splits():
         all_scores_sorted = sorted(all_scores_typed, reverse=True)
         # The top_n scores from all_splits should match top_splits scores
         expected_top_scores = all_scores_sorted[:keep_n]
-        assert set(scores_typed) == set(expected_top_scores), "Should keep the top scoring splits"
+        assert set(scores_typed) == set(
+            expected_top_scores
+        ), "Should keep the top scoring splits"
 
 
 def test_prepare_splits_keep_best_n_with_depth_2():
@@ -233,7 +235,9 @@ def test_prepare_splits_scoring_with_empty_masks():
         sums = torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         # Return -inf for empty masks
-        scores = torch.where(counts > 0, sums / counts, torch.full_like(sums, float("-inf")))
+        scores = torch.where(
+            counts > 0, sums / counts, torch.full_like(sums, float("-inf"))
+        )
         return scores
 
     X, y, splits = prepare_splits(

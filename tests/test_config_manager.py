@@ -1,3 +1,5 @@
+import datetime as dt
+
 import pytest
 
 from ifera import ConfigManager
@@ -52,3 +54,22 @@ def test_get_config_with_contract_code(config_manager: ConfigManager):
     )
     assert cfg.contract_code == "M24"
     assert cfg.broker_symbol == "CLM24"
+
+
+def test_base_config_uses_stdlib_timedelta_types(config_manager: ConfigManager):
+    cfg = config_manager.get_base_instrument_config(symbol="CL", interval="30m")
+
+    assert type(cfg.trading_start) is dt.timedelta
+    assert type(cfg.trading_end) is dt.timedelta
+    assert type(cfg.rollover_time) is dt.timedelta
+    assert type(cfg.time_step) is dt.timedelta
+    assert type(cfg.end_time) is dt.timedelta
+
+
+def test_derived_interval_fields_use_stdlib_timedelta(config_manager: ConfigManager):
+    cfg = config_manager.get_base_instrument_config(symbol="CL", interval="1h")
+
+    assert type(cfg.time_step) is dt.timedelta
+    assert type(cfg.end_time) is dt.timedelta
+    assert cfg.time_step == dt.timedelta(hours=1)
+    assert cfg.end_time == dt.timedelta(hours=22)

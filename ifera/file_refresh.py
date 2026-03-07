@@ -6,7 +6,6 @@ import time
 
 import torch
 import yaml
-import pandas as pd
 from einops import rearrange, repeat
 from tqdm import tqdm
 
@@ -19,6 +18,7 @@ from .enums import Source, extension_map, Scheme, ExpirationRule
 from .file_utils import make_path, write_tensor_to_gzip, read_tensor_from_gzip
 from .file_manager import FileManager
 from .date_utils import calculate_expiration
+from .time_utils import parse_timedelta, timedelta_is_multiple
 
 
 def download_file(
@@ -569,10 +569,10 @@ def aggregate_from_parent_tensor(  # pylint: disable=redefined-builtin
 
     parent_steps = parent_tensor.shape[1]
 
-    child_delta = pd.to_timedelta(interval)
-    parent_delta = pd.to_timedelta(parent_interval)
+    child_delta = parse_timedelta(interval)
+    parent_delta = parse_timedelta(parent_interval)
 
-    if child_delta % parent_delta != pd.Timedelta(0):
+    if not timedelta_is_multiple(child=child_delta, parent=parent_delta):
         raise ValueError("Child interval must be multiple of parent interval")
 
     multiplier = int(child_delta / parent_delta)

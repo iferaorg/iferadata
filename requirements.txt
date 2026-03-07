@@ -1,5 +1,5 @@
 numpy==2.4.0
-pandas==2.3.3
+polars==1.38.1
 tqdm==4.67.3
 boto3==1.42.58 
 pydantic==2.12.5

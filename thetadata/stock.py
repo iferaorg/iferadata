@@ -5,13 +5,13 @@ This module provides functions for accessing stock data from the ThetaData REST 
 """
 
 from typing import Optional
-import pandas as pd
+import polars as pl
 from .client import ThetaDataClient
 
 
 def stock_list_symbols(
     client: Optional[ThetaDataClient] = None, output_format: str = "csv"
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all traded stock symbols.
 
@@ -24,7 +24,7 @@ def stock_list_symbols(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with columns: symbol
     """
     endpoint = "/stock/list/symbols"
@@ -40,7 +40,7 @@ def stock_list_dates(
     symbol: str,
     client: Optional[ThetaDataClient] = None,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     List all available dates for a stock with a given request type and symbol.
 
@@ -57,7 +57,7 @@ def stock_list_dates(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with columns: symbol, date
     """
     endpoint = f"/stock/list/dates/{request_type}"
@@ -74,7 +74,7 @@ def stock_snapshot_ohlc(
     client: Optional[ThetaDataClient] = None,
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time OHLC snapshot for stocks.
 
@@ -91,7 +91,7 @@ def stock_snapshot_ohlc(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with OHLC data including timestamp, symbol, volume, high, low, count, close, open
     """
     endpoint = "/stock/snapshot/ohlc"
@@ -108,7 +108,7 @@ def stock_snapshot_trade(
     client: Optional[ThetaDataClient] = None,
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time last trade for stocks.
 
@@ -125,7 +125,7 @@ def stock_snapshot_trade(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade data including timestamp, symbol, sequence, size, condition, price
     """
     endpoint = "/stock/snapshot/trade"
@@ -142,7 +142,7 @@ def stock_snapshot_quote(
     client: Optional[ThetaDataClient] = None,
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get real-time last quote for stocks.
 
@@ -159,7 +159,7 @@ def stock_snapshot_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with quote data including timestamp, symbol, bid/ask prices and sizes
     """
     endpoint = "/stock/snapshot/quote"
@@ -178,7 +178,7 @@ def stock_history_eod(
     client: Optional[ThetaDataClient] = None,
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get end-of-day historical data for stocks.
 
@@ -199,7 +199,7 @@ def stock_history_eod(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with EOD data
     """
     endpoint = "/stock/history/eod"
@@ -225,7 +225,7 @@ def stock_history_ohlc(
     end_time: str = "16:00:00",
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical OHLC data for stocks.
 
@@ -250,7 +250,7 @@ def stock_history_ohlc(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with OHLC data
     """
     endpoint = "/stock/history/ohlc"
@@ -277,7 +277,7 @@ def stock_history_trade(
     end_time: str = "16:00:00",
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade data for stocks.
 
@@ -300,7 +300,7 @@ def stock_history_trade(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade data
     """
     endpoint = "/stock/history/trade"
@@ -326,7 +326,7 @@ def stock_history_quote(
     end_time: str = "16:00:00",
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical quote data for stocks.
 
@@ -349,7 +349,7 @@ def stock_history_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with quote data
     """
     endpoint = "/stock/history/quote"
@@ -376,7 +376,7 @@ def stock_history_trade_quote(
     venue: str = "nqb",
     exclusive: bool = True,
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get historical trade and quote data for stocks.
 
@@ -401,7 +401,7 @@ def stock_history_trade_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade and quote data
     """
     endpoint = "/stock/history/trade_quote"
@@ -427,7 +427,7 @@ def stock_at_time_trade(
     client: Optional[ThetaDataClient] = None,
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get trade data at a specific time for stocks.
 
@@ -448,7 +448,7 @@ def stock_at_time_trade(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with trade data at the specified time
     """
     endpoint = "/stock/at_time/trade"
@@ -467,7 +467,7 @@ def stock_at_time_quote(
     client: Optional[ThetaDataClient] = None,
     venue: str = "nqb",
     output_format: str = "csv",
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Get quote data at a specific time for stocks.
 
@@ -488,7 +488,7 @@ def stock_at_time_quote(
 
     Returns
     -------
-    pd.DataFrame
+    pl.DataFrame
         DataFrame with quote data at the specified time
     """
     endpoint = "/stock/at_time/quote"
