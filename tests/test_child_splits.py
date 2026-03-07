@@ -1,6 +1,6 @@
 """Tests for child splits functionality in prepare_splits."""
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
 import pytest
 import torch
 

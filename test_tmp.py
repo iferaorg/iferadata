@@ -1,4 +1,3 @@
-import pandas as pd
 import ifera
 import torch
 import numpy as np
@@ -10,7 +9,6 @@ import time
 from tqdm import tqdm
 from rich.live import Live
 from rich.table import Table
-
 
 # dm = ifera.DataManager()
 # cm = ifera.ConfigManager()
@@ -356,7 +354,7 @@ if __name__ == "__main__":
     time_n = base_env.instrument_data.data.shape[1]
 
     batch_size = date_n * time_n
-    
+
     # Create policies on CPU, they will be pickled and sent to the appropriate device during rollout
     base_device = torch.device("cpu")
     instrument_data = base_env.instrument_data.copy_to(device=base_device)

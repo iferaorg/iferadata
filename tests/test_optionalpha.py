@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
+import tests.polars_pandas_shim as pd
 import polars as pl
 import pytest
 import torch
