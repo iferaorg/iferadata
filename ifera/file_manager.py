@@ -13,10 +13,11 @@ import importlib
 import os
 import re
 from enum import Enum
-from functools import lru_cache
 from contextlib import contextmanager
-from typing import Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import networkx as nx
@@ -25,6 +26,11 @@ import yaml
 from .decorators import singleton
 from .enums import Scheme, Source
 from .github_utils import check_github_file_exists, get_github_last_modified
+from .parquet_datasets import (
+    local_dataset_exists,
+    local_dataset_mtime,
+    remove_local_dataset,
+)
 from .s3_utils import check_s3_file_exists, get_s3_last_modified, list_s3_objects
 from .settings import settings
 from .url_utils import make_instrument_url
@@ -68,8 +74,7 @@ def get_literal_prefix(pattern: str) -> str:
 
     if index == -1:
         return pattern
-    else:
-        return pattern[:index]
+    return pattern[:index]
 
 
 def pattern_to_regex(pattern_path: str) -> Tuple[str, List[str]]:
@@ -193,7 +198,11 @@ class FileOperations:
             path = parts.path
             if not os.path.isabs(path):
                 path = os.path.join(settings.DATA_FOLDER, path)
-            result = os.path.exists(path)
+            path_obj = Path(path)
+            if path_obj.suffix == ".parquet":
+                result = local_dataset_exists(path_obj)
+            else:
+                result = os.path.exists(path_obj)
         elif scheme == Scheme.S3:
             result = check_s3_file_exists(parts.path)
         elif scheme == Scheme.GITHUB:
@@ -215,18 +224,21 @@ class FileOperations:
         parts = urlparse(file)
         try:
             scheme = Scheme(parts.scheme)
-        except ValueError:
-            raise ValueError(f"Unsupported scheme: {parts.scheme}")
+        except ValueError as exc:
+            raise ValueError(f"Unsupported scheme: {parts.scheme}") from exc
 
         if scheme == Scheme.FILE:
             path = parts.path
             if not os.path.isabs(path):
                 path = os.path.join(settings.DATA_FOLDER, path)
-            if not os.path.exists(path):
+            path_obj = Path(path)
+            if path_obj.suffix == ".parquet":
+                result = local_dataset_mtime(path_obj)
+            elif not os.path.exists(path_obj):
                 result = None
             else:
                 result = datetime.datetime.fromtimestamp(
-                    os.path.getmtime(path), tz=datetime.timezone.utc
+                    os.path.getmtime(path_obj), tz=datetime.timezone.utc
                 )
         elif scheme == Scheme.S3:
             result = get_s3_last_modified(parts.path)
@@ -250,19 +262,27 @@ class FileOperations:
         parts = urlparse(file)
         try:
             scheme = Scheme(parts.scheme)
-        except ValueError:
-            raise ValueError(f"Unsupported scheme: {parts.scheme}")
+        except ValueError as exc:
+            raise ValueError(f"Unsupported scheme: {parts.scheme}") from exc
 
         if scheme == Scheme.FILE and scheme_filter == Scheme.FILE:
             path = parts.path
             if not os.path.isabs(path):
                 path = os.path.join(settings.DATA_FOLDER, path)
-            if os.path.exists(path):
-                os.remove(path)
+            path_obj = Path(path)
+            if path_obj.suffix == ".parquet":
+                remove_local_dataset(path_obj)
+            elif path_obj.exists():
+                os.remove(path_obj)
         elif scheme == Scheme.S3 and scheme_filter == Scheme.S3:
             raise NotImplementedError("S3 deletion not implemented")
         else:
             raise ValueError(f"Unsupported scheme: {parts.scheme}")
+
+
+def _default_file_operations() -> FileOperations:
+    """Create file operations lazily so tests can monkeypatch the class."""
+    return FileOperations()
 
 
 @dataclass
@@ -270,7 +290,7 @@ class FileManagerContext:
     """Context object carrying state for recursive refresh operations."""
 
     cache: Dict[str, bool] = field(default_factory=dict)
-    fop: FileOperations = field(default_factory=lambda: FileOperations())
+    fop: FileOperations = field(default_factory=_default_file_operations)
     temp_files: List[str] = field(default_factory=list)
 
     def cleanup_temp_files(self) -> None:
@@ -294,7 +314,7 @@ def import_function(func_str: str) -> Callable:
         module = importlib.import_module(module_name)
         return getattr(module, func_name)
     except (ValueError, ImportError, AttributeError) as e:
-        raise ImportError(f"Failed to import function '{func_str}': {e}")
+        raise ImportError(f"Failed to import function '{func_str}': {e}") from e
 
 
 class RuleType(Enum):
@@ -323,7 +343,7 @@ class FileManager:
         try:
             package_dir = os.path.dirname(os.path.abspath(__file__))
             file_path = os.path.join(package_dir, config_file)
-            with open(file_path, "r") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
                 if (
                     not isinstance(config, dict)
@@ -334,11 +354,11 @@ class FileManager:
                 self.dependency_rules = config["dependency_rules"]
                 self.refresh_rules = config["refresh_rules"]
         except (yaml.YAMLError, IOError) as e:
-            raise ValueError(f"Error loading config from {config_file}: {e}")
+            raise ValueError(f"Error loading config from {config_file}: {e}") from e
         self.persistent_context = None
 
     @contextmanager
-    def persistentContext(self):
+    def persistentContext(self):  # pylint: disable=invalid-name
         """Provide a context manager for persistent operations."""
         created = False
         if self.persistent_context is None:
@@ -355,19 +375,17 @@ class FileManager:
         """Get the dependency graph or refresh graph based on the rule type."""
         if rule_type == RuleType.DEPENDENCY:
             return self.dependency_graph
-        elif rule_type == RuleType.REFRESH:
+        if rule_type == RuleType.REFRESH:
             return self.refresh_graph
-        else:
-            raise ValueError(f"Invalid rule type: {rule_type}")
+        raise ValueError(f"Invalid rule type: {rule_type}")
 
     def get_rules(self, rule_type: RuleType) -> List[dict]:
         """Get the rules based on the rule type."""
         if rule_type == RuleType.DEPENDENCY:
             return self.dependency_rules
-        elif rule_type == RuleType.REFRESH:
+        if rule_type == RuleType.REFRESH:
             return self.refresh_rules
-        else:
-            raise ValueError(f"Invalid rule type: {rule_type}")
+        raise ValueError(f"Invalid rule type: {rule_type}")
 
     def add_dependencies(
         self,
@@ -681,6 +699,7 @@ class FileManager:
         dep_pattern: str,
         expansion_pattern: str,
         known_wildcards: dict,
+        recursive: bool = True,
     ) -> List[str]:
         """Handle wildcard expansion by matching available files."""
         try:
@@ -704,7 +723,10 @@ class FileManager:
         regex_str, missing_wildcards = pattern_to_regex_custom(s3_path_pattern)
 
         prefix = get_literal_prefix(s3_path_pattern)
-        object_keys = list_s3_objects(prefix)
+        if recursive:
+            object_keys = list_s3_objects(prefix)
+        else:
+            object_keys = list_s3_objects(prefix, recursive=False)
 
         matching_deps = []
         pattern_re = re.compile(regex_str)
@@ -757,9 +779,10 @@ class FileManager:
             return []
 
         expansion_pattern = dependency_entry["wildcard_expansion"]
+        recursive = bool(dependency_entry.get("recursive", True))
 
         return self._expand_using_wildcard(
-            dep_pattern, expansion_pattern, known_wildcards
+            dep_pattern, expansion_pattern, known_wildcards, recursive=recursive
         )
 
     def _refresh_function_dependencies(

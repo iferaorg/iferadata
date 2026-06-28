@@ -19,7 +19,6 @@ from ifera.file_manager import (
     substitute_pattern,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helper function tests
 # ---------------------------------------------------------------------------
@@ -265,6 +264,18 @@ def test_refresh_file_calls_process(monkeypatch, file_manager_instance):
     process_mock.assert_called_once_with(symbol="ABC", extra="value")
 
 
+def test_file_operations_local_parquet_dataset(tmp_path, monkeypatch):
+    dataset_root = tmp_path / "raw" / "foo.parquet"
+    dataset_root.mkdir(parents=True)
+    (dataset_root / "_manifest.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr("ifera.file_manager.settings.DATA_FOLDER", str(tmp_path))
+    fop = FileOperations()
+
+    assert fop.exists("file:raw/foo.parquet") is True
+    assert fop.get_mtime("file:raw/foo.parquet") is not None
+
+
 def test_refresh_stale_file_refresh_branch(monkeypatch, file_manager_refresh_instance):
     keys = ["raw/CL-AA.txt", "raw/CL-BB.txt"]
     monkeypatch.setattr("ifera.file_manager.list_s3_objects", lambda prefix: keys)
@@ -299,6 +310,24 @@ def test_refresh_stale_file_refresh_branch(monkeypatch, file_manager_refresh_ins
     fm = file_manager_refresh_instance
     fm.refresh_file("file:/tmp/output/CL.txt")
     combine_mock.assert_called_once_with(symbol="CL", codes=["AA", "BB"])
+
+
+def test_expand_dependency_wildcards_shallow_listing(monkeypatch):
+    dep_entry = {
+        "pattern": "s3:raw/data/{symbol}-{code}.parquet",
+        "wildcard_expansion": "s3:raw/data/{symbol}-{code}.parquet",
+        "recursive": False,
+    }
+    mock = MagicMock(return_value=["raw/data/CL-AA.parquet", "raw/data/CL-BB.parquet"])
+    monkeypatch.setattr("ifera.file_manager.list_s3_objects", mock)
+    fm = FileManager(config_file="../tests/test_dependencies.yml")
+    ctx = FileManagerContext()
+    result = fm._expand_dependency_wildcards(dep_entry, {"symbol": "CL"}, ctx)
+    mock.assert_called_once_with("raw/data/CL-", recursive=False)
+    assert result == [
+        "s3:raw/data/CL-AA.parquet",
+        "s3:raw/data/CL-BB.parquet",
+    ]
 
 
 def test_refresh_stale_file_refresh_branch_expansion_function(

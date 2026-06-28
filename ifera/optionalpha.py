@@ -500,6 +500,12 @@ def _extract_dollar_amount(cell) -> float:
 
 
 FILTERS_FOLDER = "data/results/option_alpha/filters/"
+_NUMBER_PATTERN = r"(\-?[\d,]+(?:\.\d+)?)"
+
+
+def _parse_number(value: str) -> float:
+    """Parse an Option Alpha number string that may include thousands separators."""
+    return float(value.replace(",", ""))
 
 
 def _read_filter_file(file_name: str) -> pl.DataFrame | None:
@@ -552,8 +558,7 @@ def _parse_description_with_regex(
     def default_parse(description):
         match = re.search(regex_pattern, description)
         if match:
-            val = float(match.group(1).replace(",", ""))
-            return val
+            return _parse_number(match.group(1))
         return None
 
     parser = parse_func if parse_func is not None else default_parse
@@ -615,6 +620,7 @@ def _check_and_eliminate_duplicates(
 
 
 def parse_simple_filter(file_name: str) -> pl.DataFrame | None:
+    """Parse a date-only filter file as a binary flag."""
     df = _read_filter_file(file_name)
     if df is None:
         return None
@@ -625,32 +631,46 @@ def parse_simple_filter(file_name: str) -> pl.DataFrame | None:
 
 
 def parse_simple_indicator(file_name: str) -> pl.DataFrame | None:
+    """Parse an indicator file whose description is a raw or labeled number."""
     df = _read_filter_file(file_name)
     if df is None:
         return None
 
+    def _parse_indicator(description):
+        if description == "":
+            return 0.0
+
+        try:
+            return float(description)
+        except ValueError:
+            match = re.search(rf":\s*{_NUMBER_PATTERN}", description)
+            if match:
+                return _parse_number(match.group(1))
+        return None
+
     df = df.with_columns(
-        pl.when(pl.col("description") == "")
-        .then(pl.lit("0"))
-        .otherwise(pl.col("description"))
-        .alias("description")
-    ).with_columns(pl.col("description").cast(pl.Float64).alias("indicator"))
+        pl.col("description")
+        .map_elements(_parse_indicator, return_dtype=pl.Float64)
+        .alias("indicator")
+    )
     df = cast(pl.DataFrame, _check_and_eliminate_duplicates(df, "indicator"))
     return df.select(["date", "indicator"])
 
 
 def parse_moving_average(file_name: str) -> pl.DataFrame | None:
+    """Parse moving-average filter files into price-above-average flags."""
     df = _read_filter_file(file_name)
     if df is None:
         return None
 
     def _parse_moving_average(description):
         match = re.search(
-            r"Price: \$(\-?[\d,]+\.\d+), [SE]MA: \$(\-?[\d,]+\.\d+)", description
+            rf"Price: \${_NUMBER_PATTERN}, [SE]MA: \${_NUMBER_PATTERN}",
+            description,
         )
         if match:
-            price = float(match.group(1).replace(",", ""))
-            ma = float(match.group(2).replace(",", ""))
+            price = _parse_number(match.group(1))
+            ma = _parse_number(match.group(2))
             return int(price > ma)
         return None
 
@@ -664,16 +684,19 @@ def parse_moving_average(file_name: str) -> pl.DataFrame | None:
 
 
 def parse_range_with(prefix: str) -> pl.DataFrame | None:
+    """Parse ORB opening-range width filters for prefixes that provide them."""
     file_name = f"{FILTERS_FOLDER}{prefix}-RANGE_WIDTH.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
 
     def _parse_range_width(description):
-        match = re.search(r"Opening Range: ([\d,]+\.\d+) - ([\d,]+\.\d+)", description)
+        match = re.search(
+            rf"Opening Range: {_NUMBER_PATTERN} - {_NUMBER_PATTERN}", description
+        )
         if match:
-            min_val = float(match.group(1).replace(",", ""))
-            max_val = float(match.group(2).replace(",", ""))
+            min_val = _parse_number(match.group(1))
+            max_val = _parse_number(match.group(2))
             return (max_val - min_val) / max_val if max_val != 0 else 0
         return None
 
@@ -687,56 +710,93 @@ def parse_range_with(prefix: str) -> pl.DataFrame | None:
 
 
 def parse_gex(file_name: str) -> pl.DataFrame | None:
+    """Parse any GEX filter description into a numeric GEX value."""
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(df, "gex", r":\s+(\-?[\d,]+(?:\.\d+)?)")
+    return _parse_description_with_regex(df, "gex", rf":\s+{_NUMBER_PATTERN}")
 
 
 def parse_change_percent(prefix: str) -> pl.DataFrame | None:
+    """Parse percent-change filters for a prefix."""
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_PERCENT.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
     return _parse_description_with_regex(
-        df, "change_percent", r"Below min: (\-?[\d,]+\.\d+)"
+        df, "change_percent", rf"Below min: {_NUMBER_PATTERN}"
     )
 
 
 def parse_change_stdev(prefix: str) -> pl.DataFrame | None:
+    """Parse standard-deviation change filters for a prefix."""
     file_name = f"{FILTERS_FOLDER}{prefix}-CHANGE_STDEV.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
     return _parse_description_with_regex(
-        df, "change_stdev", r"Change Std Devs: (\-?[\d,]+\.\d+)"
+        df, "change_stdev", rf"Change Std Devs: {_NUMBER_PATTERN}"
     )
 
 
 def parse_gap(prefix: str) -> pl.DataFrame | None:
+    """Parse opening-gap filters for a prefix."""
     file_name = f"{FILTERS_FOLDER}{prefix}-GAP.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(df, "gap", r"Gap: (\-?[\d,]+\.\d+)")
+    return _parse_description_with_regex(df, "gap", rf"Gap: {_NUMBER_PATTERN}")
 
 
 def parse_open_change(prefix: str) -> pl.DataFrame | None:
+    """Parse open-change percent filters for a prefix."""
     file_name = f"{FILTERS_FOLDER}{prefix}-OPEN_CHANGE.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
     return _parse_description_with_regex(
-        df, "open_change", r"Open Chg %: (\-?[\d,]+\.\d+)"
+        df, "open_change", rf"Open Chg %: {_NUMBER_PATTERN}"
     )
 
 
 def parse_vixc(prefix: str) -> pl.DataFrame | None:
+    """Parse absolute VIX change filters for a prefix."""
     file_name = f"{FILTERS_FOLDER}{prefix}-VIXC.txt"
     df = _read_filter_file(file_name)
     if df is None:
         return None
-    return _parse_description_with_regex(df, "vixc", r"VIX Change: (\-?[\d,]+\.\d+)")
+    return _parse_description_with_regex(df, "vixc", rf"VIX Change: {_NUMBER_PATTERN}")
+
+
+def parse_vixcp(prefix: str) -> pl.DataFrame | None:
+    """Parse VIX change percent filters for a prefix."""
+    file_name = f"{FILTERS_FOLDER}{prefix}-VIXCP.txt"
+    df = _read_filter_file(file_name)
+    if df is None:
+        return None
+    return _parse_description_with_regex(df, "vixcp", rf"VIX Change: {_NUMBER_PATTERN}")
+
+
+def parse_ba_spread(prefix: str) -> pl.DataFrame | None:
+    """Parse bid-ask spread filters for a prefix."""
+    file_name = f"{FILTERS_FOLDER}{prefix}-BA_SPREAD.txt"
+    df = _read_filter_file(file_name)
+    if df is None:
+        return None
+
+    def _parse_ba_spread(description):
+        match = re.search(
+            rf"Bid: \${_NUMBER_PATTERN} / Ask: \${_NUMBER_PATTERN}", description
+        )
+        if match:
+            bid = _parse_number(match.group(1))
+            ask = _parse_number(match.group(2))
+            return ask - bid
+        return None
+
+    return _parse_description_with_regex(
+        df, "ba_spread", "", parse_func=_parse_ba_spread
+    )
 
 
 def get_filters(prefix: str) -> pl.DataFrame:
@@ -766,7 +826,7 @@ def get_filters(prefix: str) -> pl.DataFrame:
     - Filter files are loaded from FILTERS_FOLDER.
     - The function attempts to load: RANGE_WIDTH, FIRST_BO, SKIP_CPI, SKIP_EOM,
       SKIP_EOQ, SKIP_FM, SKIP_FOMC, SKIP_FW, SKIP_ME, SKIP_PAY, SKIP_PCE,
-      SKIP_PPI, SKIP_TW, and ADX_14.
+      SKIP_PPI, SKIP_TW, ADX_14, VIXCP, and BA_SPREAD.
     """
     dfs = []
 
@@ -803,6 +863,8 @@ def get_filters(prefix: str) -> pl.DataFrame:
         ("gap", parse_gap),
         ("open_change", parse_open_change),
         ("vixc", parse_vixc),
+        ("vixcp", parse_vixcp),
+        ("ba_spread", parse_ba_spread),
     ]
     for _column_name, parse_func in metric_filters:
         metric_df = parse_func(prefix)
@@ -2007,29 +2069,36 @@ def _remove_redundant_splits(
 
 @torch.compile()
 def _compute_scores_tensor(
-    y: torch.Tensor, masks: torch.Tensor, score_func
+    profits: torch.Tensor, returns: torch.Tensor, masks: torch.Tensor, score_func
 ) -> torch.Tensor:
     """
     Compute scores for all masks using the score function (compilable wrapper).
 
     Parameters
     ----------
-    y : torch.Tensor
-        1-D tensor of target values (n_samples)
+    profits : torch.Tensor
+        1-D tensor of raw profit values (n_samples)
+    returns : torch.Tensor
+        1-D tensor of return-on-risk values (n_samples)
     masks : torch.Tensor
         2D boolean tensor of shape (n_splits, n_samples)
     score_func : callable
-        Function that takes y and masks and returns scores
+        Function that takes profits, returns, and masks, and returns scores
 
     Returns
     -------
     torch.Tensor
         1-D tensor of scores (n_splits,)
     """
-    return score_func(y, masks)
+    return score_func(profits, returns, masks)
 
 
-def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
+def _score_splits(
+    splits: list[Split],
+    profits: torch.Tensor,
+    returns: torch.Tensor,
+    score_func,
+) -> None:
     """
     Score splits using the provided score function.
 
@@ -2039,11 +2108,13 @@ def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
     ----------
     splits : list[Split]
         List of Split objects to score
-    y : torch.Tensor
-        1-D tensor of target values (n_samples)
+    profits : torch.Tensor
+        1-D tensor of raw profit values (n_samples)
+    returns : torch.Tensor
+        1-D tensor of return-on-risk values (n_samples)
     score_func : callable
-        Function that takes y (n_samples) and masks (batch_size, n_samples)
-        and returns a float tensor of scores (batch_size)
+        Function that takes profits, returns, and masks, and returns a float tensor
+        of scores (batch_size)
     """
     if len(splits) == 0:
         return
@@ -2053,10 +2124,10 @@ def _score_splits(splits: list[Split], y: torch.Tensor, score_func) -> None:
 
     # Call score_func to get scores for all splits (use compiled version if possible)
     try:
-        scores = _compute_scores_tensor(y, masks, score_func)
+        scores = _compute_scores_tensor(profits, returns, masks, score_func)
     except Exception:  # pylint: disable=broad-except
         # Fallback to non-compiled version if compilation fails
-        scores = score_func(y, masks)
+        scores = score_func(profits, returns, masks)
 
     # Assign scores to splits
     for i, split in enumerate(splits):
@@ -2451,7 +2522,8 @@ def _create_purged_ts_masks(
 
 def _evaluate_filters(
     depth_1_splits: list[Split],
-    y: torch.Tensor,
+    profits: torch.Tensor,
+    returns: torch.Tensor,
     score_func,
     filter_eval_folds: int,
     filter_eval_repeats: int,
@@ -2478,10 +2550,12 @@ def _evaluate_filters(
     ----------
     depth_1_splits : list[Split]
         List of depth 1 Split objects to evaluate
-    y : torch.Tensor
-        1-D tensor of target values (n_samples,)
+    profits : torch.Tensor
+        1-D tensor of raw profit values (n_samples,)
+    returns : torch.Tensor
+        1-D tensor of return-on-risk values (n_samples,)
     score_func : callable
-        Function that takes y and masks and returns scores
+        Function that takes profits, returns, and masks, and returns scores
     filter_eval_folds : int
         Number of time-series splits (folds) per repeat
     filter_eval_repeats : int
@@ -2509,8 +2583,8 @@ def _evaluate_filters(
     from rich.table import Table
 
     console = Console()
-    n_samples = len(y)
-    device = y.device
+    n_samples = len(returns)
+    device = returns.device
 
     # Step 1: Sort depth_1_splits into dict keyed by filter_id + direction
     filter_splits_dict: dict[tuple[str, str], list[Split]] = {}
@@ -2575,16 +2649,16 @@ def _evaluate_filters(
 
     # Step 7: Accumulators for results per filter group
     all_improvements_tensor = torch.zeros(
-        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
+        (n_filter_groups, n_buckets), dtype=returns.dtype, device=device
     )
     all_best_sample_counts_tensor = torch.zeros(
         (n_filter_groups, n_buckets), dtype=torch.long, device=device
     )
     all_train_scores_tensor = torch.zeros(
-        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
+        (n_filter_groups, n_buckets), dtype=returns.dtype, device=device
     )
     all_test_scores_tensor = torch.zeros(
-        (n_filter_groups, n_buckets), dtype=y.dtype, device=device
+        (n_filter_groups, n_buckets), dtype=returns.dtype, device=device
     )
 
     # Step 8: Process all CV buckets
@@ -2593,9 +2667,11 @@ def _evaluate_filters(
         for bucket_idx in range(n_buckets):
             train_idx, test_idx = cv_splits[bucket_idx]
 
-            # Get y values for train and test sets
-            y_train = y[train_idx]
-            y_test = y[test_idx]
+            # Get profit and return values for train and test sets
+            profits_train = profits[train_idx]
+            profits_test = profits[test_idx]
+            returns_train = returns[train_idx]
+            returns_test = returns[test_idx]
 
             # Get split masks intersected with train/test indices
             # train_masks[bucket_idx] is (n_samples,) boolean mask for train indices
@@ -2605,7 +2681,7 @@ def _evaluate_filters(
             test_split_masks = all_split_masks[:, test_idx]
 
             # Score all splits on training set at once
-            train_scores = score_func(y_train, train_split_masks)
+            train_scores = score_func(profits_train, returns_train, train_split_masks)
             # Shape: (n_total_splits,)
 
             # Find best split per filter group using segmented argmax
@@ -2646,14 +2722,14 @@ def _evaluate_filters(
             best_test_masks = test_split_masks[best_split_indices]
             # Shape: (n_filter_groups, len(test_idx))
 
-            test_scores = score_func(y_test, best_test_masks)
+            test_scores = score_func(profits_test, returns_test, best_test_masks)
             # Shape: (n_filter_groups,)
 
             # Calculate base test score (all samples in test set)
             base_test_mask = torch.ones(
                 (1, len(test_idx)), dtype=torch.bool, device=device
             )
-            base_test_score = score_func(y_test, base_test_mask)[0]
+            base_test_score = score_func(profits_test, returns_test, base_test_mask)[0]
 
             # Calculate improvements
             improvements = test_scores - base_test_score
@@ -2682,7 +2758,9 @@ def _evaluate_filters(
             dim=1, unbiased=True
         )  # (n_filter_groups,)
     else:
-        std_improvements = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
+        std_improvements = torch.zeros(
+            n_filter_groups, dtype=returns.dtype, device=device
+        )
     avg_sample_counts = all_best_sample_counts_tensor.float().mean(
         dim=1
     )  # (n_filter_groups,)
@@ -2695,7 +2773,7 @@ def _evaluate_filters(
         above_threshold_mask = all_improvements_tensor >= min_score_improvement
         pct_above = above_threshold_mask.float().mean(dim=1) * 100.0
     else:
-        pct_above = torch.zeros(n_filter_groups, dtype=y.dtype, device=device)
+        pct_above = torch.zeros(n_filter_groups, dtype=returns.dtype, device=device)
 
     for group_idx, key in enumerate(filter_keys):
         score_improvements[key] = float(avg_improvements[group_idx].item())
@@ -2869,8 +2947,9 @@ class SplitGenerator:
     min_samples : int, optional
         Minimum number of samples required on each side of a split. Default is 1.
     score_func : callable, optional
-        Function that takes y (n_samples) and masks (batch_size, n_samples) and
-        returns a float tensor containing a score for each batch. Default is None.
+        Function that takes profits (n_samples), returns (n_samples), and masks
+        (batch_size, n_samples), and returns a float tensor containing a score for
+        each batch. Default is None.
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
         score_func must also be provided. Default is None.
@@ -3016,7 +3095,8 @@ class SplitGenerator:
     def _evaluate_filters(
         self,
         depth_1_splits: list[Split],
-        y: torch.Tensor,
+        profits: torch.Tensor,
+        returns: torch.Tensor,
         verbose: str = "no",
     ) -> dict[tuple[str, str], float]:
         """
@@ -3026,8 +3106,10 @@ class SplitGenerator:
         ----------
         depth_1_splits : list[Split]
             List of depth 1 Split objects to evaluate
-        y : torch.Tensor
-            1-D tensor of target values (n_samples,)
+        profits : torch.Tensor
+            1-D tensor of raw profit values (n_samples,)
+        returns : torch.Tensor
+            1-D tensor of return-on-risk values (n_samples,)
         verbose : str, optional
             Controls printing. Default is "no".
 
@@ -3038,7 +3120,8 @@ class SplitGenerator:
         """
         return _evaluate_filters(
             depth_1_splits,
-            y,
+            profits,
+            returns,
             self.score_func,
             self.filter_eval_folds,
             self.filter_eval_repeats,
@@ -3139,8 +3222,12 @@ class SplitGenerator:
             )
         )
 
-        # Calculate RoR (y) as profit / risk
-        # Done early so it can be used for scoring
+        # Calculate raw profit and RoR (y) early so they can be used for scoring.
+        profits = torch.tensor(
+            trades_df["profit"].to_numpy(),
+            dtype=self.dtype,
+            device=self.device,
+        )
         y = torch.tensor(  # pylint: disable=invalid-name
             (trades_df["profit"] / trades_df["risk"]).to_numpy(),
             dtype=self.dtype,
@@ -3167,6 +3254,7 @@ class SplitGenerator:
             # Evaluate filters before scoring to get score improvements
             filter_score_improvements = self._evaluate_filters(
                 depth_1_splits,
+                profits,
                 y,
                 verbose,
             )
@@ -3211,7 +3299,7 @@ class SplitGenerator:
 
         # Score depth_1_splits if score_func is provided
         if self.score_func is not None:
-            _score_splits(depth_1_splits, y, self.score_func)
+            _score_splits(depth_1_splits, profits, y, self.score_func)
 
         # Start with depth 1 splits
         # If keep_best_n is specified, only keep top n in all_splits
@@ -3270,7 +3358,7 @@ class SplitGenerator:
                 # This avoids expensive operations on all splits when keep_best_n is set
                 if self.keep_best_n is not None and self.score_func is not None:
                     # Step 1: Score all new splits
-                    _score_splits(new_splits, y, self.score_func)
+                    _score_splits(new_splits, profits, y, self.score_func)
 
                     # Step 2: Sort new splits by descending score
                     new_splits.sort(
@@ -3336,7 +3424,7 @@ class SplitGenerator:
 
                     # Score new_splits if score_func is provided
                     if self.score_func is not None:
-                        _score_splits(new_splits, y, self.score_func)
+                        _score_splits(new_splits, profits, y, self.score_func)
 
                     # Add new splits to all_splits
                     all_splits.extend(new_splits)
@@ -3447,8 +3535,9 @@ def prepare_splits(
         created. This applies to both left and right splits independently, so they
         may have different thresholds. Also affects exclusion mask calculation.
     score_func : callable, optional
-        Function that takes y (n_samples) and masks (batch_size, n_samples) and
-        returns a float tensor containing a score for each batch. Default is None.
+        Function that takes profits (n_samples), returns (n_samples), and masks
+        (batch_size, n_samples), and returns a float tensor containing a score for
+        each batch. Default is None.
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
         score_func must also be provided. Default is None.

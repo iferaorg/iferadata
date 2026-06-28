@@ -3,7 +3,6 @@ Data processing functionality for financial data.
 """
 
 import datetime
-import zipfile as zip_file
 from typing import Optional, List, Tuple
 
 import numpy as np
@@ -14,6 +13,7 @@ from tqdm import tqdm
 from .config import BaseInstrumentConfig
 from .enums import Source
 from .file_utils import make_instrument_path
+from .parquet_datasets import partition_columns_for_source, write_parquet_dataset
 
 SECONDS_IN_DAY = 86400
 
@@ -399,7 +399,7 @@ def process_data(
     print("Performing final calculations...")
     df = perform_final_calculations(df, instrument)
 
-    cols = [
+    output_cols = [
         "ord_date",
         "time_seconds",
         "ord_trade_date",
@@ -410,23 +410,18 @@ def process_data(
         "close",
         "volume",
     ]
-    df = df.select(cols)
+    df = df.select(["trade_date", *output_cols])
 
     print("Saving processed data...")
+    _ = zipfile
     output_path = make_instrument_path(
         source=Source.PROCESSED, instrument=instrument, remove_file=True
     )
-
-    if zipfile:
-        csv_content = "" if df.height == 0 else df.write_csv(include_header=False)
-        with zip_file.ZipFile(str(output_path), "w", zip_file.ZIP_DEFLATED) as zf:
-            zf.writestr(output_path.stem + ".csv", csv_content)
-    else:
-        if df.height == 0:
-            with open(output_path, "w", encoding="utf-8"):
-                pass
-        else:
-            df.write_csv(str(output_path), include_header=False)
+    write_parquet_dataset(
+        output_path,
+        df,
+        partition_columns=partition_columns_for_source(Source.PROCESSED),
+    )
     print(f"Processed data saved to {output_path}")
 
 
@@ -503,7 +498,7 @@ def _forced_roll_date(instr, trading_days_ord: set[int]) -> int | None:
     return prev_trade_day.toordinal()
 
 
-def calculate_rollover(
+def calculate_rollover(  # pylint: disable=too-many-branches,too-many-statements
     instruments: List[BaseInstrumentConfig],
     data: List[torch.Tensor],
 ) -> Tuple[torch.Tensor, torch.Tensor, list[int]]:
@@ -530,10 +525,10 @@ def calculate_rollover(
     device = data[0].device
     dtype = data[0].dtype
 
-    OFFSET_CH = 3  # offset_time_seconds
-    ORD_TRD_CH = 2  # ord_trade_date
-    OPEN_CH = 4  # open
-    VOL_CH = 8  # volume
+    offset_ch = 3  # offset_time_seconds
+    ord_trd_ch = 2  # ord_trade_date
+    open_ch = 4  # open
+    vol_ch = 8  # volume
 
     cut_off = instruments[0].rollover_offset
     end_time = int(instruments[0].end_time.total_seconds())
@@ -566,13 +561,13 @@ def calculate_rollover(
 
         for d in range(n_days):
             # --- basic day-level arrays ---------------------------------------
-            ord_td = int(tens[d, 0, ORD_TRD_CH].item())
+            ord_td = int(tens[d, 0, ord_trd_ch].item())
 
             if ord_td < start_ord - 1:
                 continue
 
-            times_d = tens[d, :, OFFSET_CH]
-            vols_d = tens[d, :, VOL_CH]
+            times_d = tens[d, :, offset_ch]
+            vols_d = tens[d, :, vol_ch]
 
             # ①  Current-day volume up to (but **not incl.**) 15 : 30
             v_up_to_cutoff = vols_d[times_d < cut_off].sum().item()
@@ -580,8 +575,8 @@ def calculate_rollover(
             # ②  Previous-trading-day volume **after** 15 : 30
             v_prev_after_cutoff = 0.0
             if d > 0:  # not available on very first day
-                times_prev = tens[d - 1, :, OFFSET_CH]
-                vols_prev = tens[d - 1, :, VOL_CH]
+                times_prev = tens[d - 1, :, offset_ch]
+                vols_prev = tens[d - 1, :, vol_ch]
                 v_prev_after_cutoff = (
                     vols_prev[(times_prev >= cut_off) & (times_prev <= end_time)]
                     .sum()
@@ -596,7 +591,7 @@ def calculate_rollover(
             if mask_cutoff.numel() != 1:
                 raise RuntimeError("15 : 30 bar missing (or duplicated) in dataset")
             idx_cutoff: int = int(mask_cutoff.item())
-            price_cutoff = tens[d, idx_cutoff, OPEN_CH].item()
+            price_cutoff = tens[d, idx_cutoff, open_ch].item()
 
             stats[ord_td] = (liq_vol, price_cutoff)
 
@@ -610,7 +605,7 @@ def calculate_rollover(
     contract_forced_roll: list[int | None] = []
 
     for inst, tens in zip(instruments, data):
-        inst_trading_days_ord = tens[:, 0, ORD_TRD_CH].unique().int().tolist()
+        inst_trading_days_ord = tens[:, 0, ord_trd_ch].unique().int().tolist()
         contract_forced_roll.append(_forced_roll_date(inst, set(inst_trading_days_ord)))
 
     data = []  # free memory

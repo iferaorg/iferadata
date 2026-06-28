@@ -225,15 +225,16 @@ def test_prepare_splits_verbose_best_prints_one_split():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def simple_score_func(y, masks):
+    def simple_score_func(profits, returns, masks):
         """Simple score function."""
+        del profits
         scores = []
         for mask in masks:
             if mask.sum() > 0:
-                scores.append(y[mask].mean())
+                scores.append(returns[mask].mean())
             else:
                 scores.append(float("-inf"))
-        return torch.tensor(scores, dtype=y.dtype, device=y.device)
+        return torch.tensor(scores, dtype=returns.dtype, device=returns.device)
 
     # Capture stdout
     captured_output = io.StringIO()
@@ -297,15 +298,16 @@ def test_prepare_splits_verbose_all_with_score_func_sorts():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def simple_score_func(y, masks):
+    def simple_score_func(profits, returns, masks):
         """Simple score function."""
+        del profits
         scores = []
         for mask in masks:
             if mask.sum() > 0:
-                scores.append(y[mask].mean())
+                scores.append(returns[mask].mean())
             else:
                 scores.append(float("-inf"))
-        return torch.tensor(scores, dtype=y.dtype, device=y.device)
+        return torch.tensor(scores, dtype=returns.dtype, device=returns.device)
 
     # Capture stdout
     captured_output = io.StringIO()

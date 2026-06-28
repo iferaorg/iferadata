@@ -1,0 +1,512 @@
+AWS Lambda + S3 Batch Operations setup for the parquet migration
+
+This runbook creates one Lambda function from the code in this repository and
+uses it for two S3 Batch Operations jobs:
+
+1. one job for legacy raw zip objects under `raw/`
+2. one job for legacy processed zip objects under `processed/`
+
+The Lambda handler is:
+`ifera.s3_batch_parquet_migration.lambda_handler`
+
+Recommended approach
+
+- Build one Lambda zip package from this repo.
+- Create one Lambda function.
+- Publish a version and use that version ARN in Batch Operations.
+- Create two Batch Operations jobs, one for `raw/**/*.zip` and one for
+  `processed/**/*.zip`.
+- If the source bucket is versioned and you must target exact object versions,
+  use explicit CSV manifests with version IDs. Do not rely on a generated object
+  list in that case.
+
+Assumptions
+
+- The legacy objects are in a general purpose S3 bucket, not a directory bucket.
+- The largest single legacy zip object is well under the Lambda timeout and
+  `/tmp` limits. Start with 4096 MB memory and 4096 MB ephemeral storage and
+  increase if needed.
+- You will use Python 3.12 and x86_64 for the Lambda function.
+- You have AWS CLI credentials with permission to create IAM roles, Lambda
+  functions, and S3 Batch Operations jobs.
+
+Why the build package is not `requirements.txt`
+
+The repo-wide `requirements.txt` includes large and unrelated packages such as
+`torch`. The migration Lambda does not need them, and they would make the
+deployment package much larger than necessary. The dependency list below is
+inferred from the actual import graph used by:
+
+- `ifera/s3_batch_parquet_migration.py`
+- `ifera/parquet_datasets.py`
+- `ifera/s3_utils.py`
+- their transitive imports
+
+Step 1: Choose names and environment values
+
+Set these shell variables first and reuse them throughout the process:
+
+```bash
+export AWS_REGION="us-east-1"
+export ACCOUNT_ID="659168591895"
+export SOURCE_BUCKET="ifera-marketdata"
+export REPORT_BUCKET="ifera-marketdata"
+export FUNCTION_NAME="ifera-s3-batch-parquet-migration"
+export LAMBDA_ROLE_NAME="ifera-s3-batch-parquet-migration-role"
+export BATCH_ROLE_NAME="ifera-s3-batch-parquet-job-role"
+```
+
+If you want manifests and reports in separate locations, keep the same bucket or
+change them here:
+
+```bash
+export REPORT_PREFIX="batch-reports/parquet-migration"
+export MANIFEST_BUCKET="ifera-marketdata"
+```
+
+Step 2: Build the Lambda deployment zip from this repo
+
+From the repo root, create a Lambda-only requirements file:
+
+```bash
+mkdir -p build/lambda
+cat > build/lambda/lambda-requirements.txt <<'EOF'
+boto3==1.42.62
+polars==1.38.1
+tqdm==4.67.3
+PyYAML==6.0.3
+pydantic==2.12.5
+pydantic-settings==2.12.0
+readerwriterlock==1.0.9
+EOF
+```
+
+Install Linux-compatible wheels for x86_64 into a package directory. This is
+important because `polars` contains native code.
+
+```bash
+python -m pip install --upgrade pip
+rm -rf build/lambda/package build/lambda/ifera-s3-batch-parquet-migration.zip
+mkdir -p build/lambda/package
+python -m pip install \
+  --platform manylinux2014_x86_64 \
+  --implementation cp \
+  --python-version 3.12 \
+  --only-binary=:all: \
+  --upgrade \
+  -r build/lambda/lambda-requirements.txt \
+  --target build/lambda/package
+```
+
+Copy the `ifera` package into the deployment package and zip everything with the
+package contents at the root of the zip:
+
+```bash
+cp -r ifera build/lambda/package/
+find build/lambda/package -type d -name '__pycache__' -prune -exec rm -rf {} +
+cd build/lambda/package
+zip -r ../ifera-s3-batch-parquet-migration.zip .
+cd ../../..
+```
+
+Expected result:
+
+- the zip file exists at
+  `build/lambda/ifera-s3-batch-parquet-migration.zip`
+- the zip root contains the `ifera/` package directly
+
+Step 3: Create the Lambda execution role
+
+Create a trust policy for Lambda itself:
+
+```bash
+cat > build/lambda/lambda-trust-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+```
+
+Create the role and attach the CloudWatch Logs managed policy:
+
+```bash
+aws iam create-role \
+  --role-name "$LAMBDA_ROLE_NAME" \
+  --assume-role-policy-document file://build/lambda/lambda-trust-policy.json
+
+aws iam attach-role-policy \
+  --role-name "$LAMBDA_ROLE_NAME" \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+```
+
+Attach a least-privilege inline policy for reading legacy zip objects and
+writing parquet dataset objects in the same bucket:
+
+```bash
+cat > build/lambda/lambda-s3-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${SOURCE_BUCKET}/raw/*",
+        "arn:aws:s3:::${SOURCE_BUCKET}/processed/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::${SOURCE_BUCKET}",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "raw/*",
+            "processed/*"
+          ]
+        }
+      }
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy \
+  --role-name "$LAMBDA_ROLE_NAME" \
+  --policy-name ifera-s3-batch-parquet-migration-s3 \
+  --policy-document file://build/lambda/lambda-s3-policy.json
+```
+
+If the bucket uses SSE-KMS, also add the required KMS permissions for the key
+that protects the source and destination objects.
+
+Step 4: Create the Lambda function
+
+Wait a few seconds after creating the role, then create the function:
+
+```bash
+aws lambda create-function \
+  --region "$AWS_REGION" \
+  --function-name "$FUNCTION_NAME" \
+  --runtime python3.12 \
+  --architectures x86_64 \
+  --role "arn:aws:iam::${ACCOUNT_ID}:role/${LAMBDA_ROLE_NAME}" \
+  --handler ifera.s3_batch_parquet_migration.lambda_handler \
+  --zip-file fileb://build/lambda/ifera-s3-batch-parquet-migration.zip \
+  --timeout 900 \
+  --memory-size 4096 \
+  --ephemeral-storage '{"Size": 4096}'
+```
+
+If you later rebuild the zip, update the function code with:
+
+```bash
+aws lambda update-function-code \
+  --region "$AWS_REGION" \
+  --function-name "$FUNCTION_NAME" \
+  --zip-file fileb://build/lambda/ifera-s3-batch-parquet-migration.zip
+```
+
+Step 5: Publish a version and grant S3 Batch Operations permission to invoke it
+
+Using a published version is safer than using `$LATEST`. S3 Batch Operations can
+start calling a new function version mid-job if you use `$LATEST` or a moving
+alias and then update it during the run.
+
+Publish a version:
+
+```bash
+export FUNCTION_VERSION=$(
+  aws lambda publish-version \
+    --region "$AWS_REGION" \
+    --function-name "$FUNCTION_NAME" \
+    --query Version \
+    --output text
+)
+
+export FUNCTION_VERSION_ARN="arn:aws:lambda:${AWS_REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}:${FUNCTION_VERSION}"
+```
+
+Add a resource-based permission statement so S3 Batch Operations can invoke the
+function version:
+
+```bash
+aws lambda add-permission \
+  --region "$AWS_REGION" \
+  --function-name "$FUNCTION_NAME" \
+  --qualifier "$FUNCTION_VERSION" \
+  --statement-id "allow-s3-batch-ops-${FUNCTION_VERSION}" \
+  --action lambda:InvokeFunction \
+  --principal batchoperations.s3.amazonaws.com \
+  --source-account "$ACCOUNT_ID"
+```
+
+Step 6: Smoke-test the Lambda before creating Batch Operations jobs
+
+Create a test event that points to one known legacy zip object:
+
+```bash
+cat > build/lambda/test-event.json <<EOF
+{
+  "invocationSchemaVersion": "1.0",
+  "invocationId": "manual-test",
+  "job": {
+    "id": "manual-test-job"
+  },
+  "tasks": [
+    {
+      "taskId": "task-1",
+      "s3Key": "raw/futures/30m/CL.zip",
+      "s3VersionId": "null",
+      "s3BucketArn": "arn:aws:s3:::${SOURCE_BUCKET}"
+    }
+  ]
+}
+EOF
+```
+
+Invoke the published version:
+
+```bash
+aws lambda invoke \
+  --region "$AWS_REGION" \
+  --function-name "${FUNCTION_NAME}:${FUNCTION_VERSION}" \
+  --payload fileb://build/lambda/test-event.json \
+  build/lambda/test-response.json
+
+cat build/lambda/test-response.json
+```
+
+Check that:
+
+- the response contains `Succeeded` for the task
+- the destination dataset root was written, for example
+  `raw/.../*.parquet`
+- the dataset manifest object exists at the dataset root key, for example
+  `raw/futures/30m/CL.parquet`
+
+Step 7: Create the S3 Batch Operations job role for the explicit-manifest CLI flow
+
+You need a separate IAM role for S3 Batch Operations. This is not the Lambda
+execution role.
+
+If you use the S3 console with a generated object list, the simplest path is to
+let the console create the Batch Operations role for that job. The manual role
+below is primarily for the explicit-manifest CLI flow in the next section.
+
+Create the trust policy for S3 Batch Operations:
+
+```bash
+cat > build/lambda/batch-ops-trust-policy.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "batchoperations.s3.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+EOF
+
+aws iam create-role \
+  --role-name "$BATCH_ROLE_NAME" \
+  --assume-role-policy-document file://build/lambda/batch-ops-trust-policy.json
+```
+
+Attach a policy that lets the job read manifests, write completion reports, and
+invoke the Lambda version:
+
+```bash
+cat > build/lambda/batch-ops-policy.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+      "Resource": "${FUNCTION_VERSION_ARN}"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${MANIFEST_BUCKET}/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${REPORT_BUCKET}/${REPORT_PREFIX}/*"
+      ]
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy \
+  --role-name "$BATCH_ROLE_NAME" \
+  --policy-name ifera-s3-batch-job-policy \
+  --policy-document file://build/lambda/batch-ops-policy.json
+```
+
+Step 8: Create the two Batch Operations jobs
+
+Recommended job creation path for non-versioned buckets
+
+Use the S3 console and let S3 generate the object list from filters.
+
+Create the raw job
+
+1. Open the S3 console in `AWS_REGION`.
+2. Go to Batch Operations.
+3. Choose Create job.
+4. Scope:
+   choose Generate an object list.
+5. Source:
+   set the source bucket to `s3://SOURCE_BUCKET`.
+6. Filters:
+   set an object key prefix filter of `raw/`
+   set an object key suffix filter of `.zip`
+7. Operation:
+   choose Invoke AWS Lambda function.
+8. Function ARN:
+   paste `FUNCTION_VERSION_ARN`.
+9. Completion report:
+   enable it and write it to
+   `s3://REPORT_BUCKET/REPORT_PREFIX/raw/`
+10. Permissions:
+    prefer the console-created S3 Batch Operations role for this generated
+    object list workflow. If you want to manage this role yourself, extend the
+    policy from Step 7 to match AWS's generated-manifest permissions guidance.
+11. Review and submit the job.
+
+Create the processed job
+
+Repeat the same steps, but change:
+
+- prefix filter to `processed/`
+- completion report prefix to `REPORT_PREFIX/processed/`
+- description to something distinct, such as
+  `processed zip to parquet migration`
+
+Recommended job creation path for versioned buckets
+
+If the source bucket is versioned and you must guarantee that the migration
+targets exact object versions, do not use generated object lists. Instead:
+
+1. build an explicit CSV manifest for `raw/` with columns
+   `Bucket,Key,VersionId`
+2. build an explicit CSV manifest for `processed/` with columns
+   `Bucket,Key,VersionId`
+3. upload both manifest files to `MANIFEST_BUCKET`
+4. get each uploaded manifest object's ETag
+5. create one Batch Operations job per manifest using the CLI
+
+Raw manifest example create-job command:
+
+```bash
+export RAW_MANIFEST_KEY="batch-manifests/raw-migration.csv"
+export RAW_MANIFEST_ETAG="replace-with-etag"
+
+aws s3control create-job \
+  --region "$AWS_REGION" \
+  --account-id "$ACCOUNT_ID" \
+  --operation "{\"LambdaInvoke\": {\"FunctionArn\": \"${FUNCTION_VERSION_ARN}\"}}" \
+  --manifest "{\"Spec\": {\"Format\": \"S3BatchOperations_CSV_20180820\", \"Fields\": [\"Bucket\", \"Key\", \"VersionId\"]}, \"Location\": {\"ObjectArn\": \"arn:aws:s3:::${MANIFEST_BUCKET}/${RAW_MANIFEST_KEY}\", \"ETag\": \"${RAW_MANIFEST_ETAG}\"}}" \
+  --report "{\"Bucket\": \"arn:aws:s3:::${REPORT_BUCKET}\", \"Format\": \"Report_CSV_20180820\", \"Enabled\": true, \"Prefix\": \"${REPORT_PREFIX}/raw\", \"ReportScope\": \"AllTasks\"}" \
+  --priority 10 \
+  --role-arn "arn:aws:iam::${ACCOUNT_ID}:role/${BATCH_ROLE_NAME}" \
+  --description "raw zip to parquet migration"
+```
+
+Repeat with the processed manifest.
+
+Step 9: Monitor the jobs
+
+Watch all three places:
+
+- Lambda CloudWatch Logs for function-level failures
+- S3 Batch Operations job progress in the S3 console
+- the completion report CSV objects under `REPORT_PREFIX`
+
+Important expectations during the run
+
+- The Lambda writes partition files first and the dataset-root manifest object
+  last.
+- Retries are safe because the function writes deterministic destination keys.
+- A failed object should appear in the completion report with the Lambda error
+  string.
+
+Step 10: After the jobs complete
+
+Verify a sample of migrated datasets:
+
+1. confirm the dataset-root manifest object exists at each `*.parquet` key
+2. confirm partition files exist below each dataset root
+3. confirm raw datasets are partitioned by `date`
+4. confirm processed datasets are partitioned by `trade_date`
+5. run a normal application refresh or load path against migrated objects
+
+Only after validation:
+
+- keep the Lambda and Batch Operations reports until you finish smoke checks
+- delete legacy zip objects in a separate cleanup pass
+
+Notes and caveats
+
+- This Lambda is for S3 Batch Operations events, not normal S3 event triggers.
+- The current handler expects the standard Batch Operations invocation schema for
+  general purpose buckets.
+- If you update the function code, publish a new version and update future jobs
+  to use the new version ARN.
+- If you package any runtime-included SDK dependency yourself, package `boto3`
+  too. AWS documents that mixing a vendored SDK dependency with the runtime's
+  SDK can cause version misalignment.
+- Lambda zip packages are limited to 250 MB unzipped. Keep the deployment
+  package minimal.
+
+Official AWS references used for this runbook
+
+- Lambda zip packaging for Python:
+  https://docs.aws.amazon.com/lambda/latest/dg/python-package.html
+- Lambda execution roles:
+  https://docs.aws.amazon.com/lambda/latest/dg/lambda-intro-execution-role.html
+- Lambda ephemeral storage:
+  https://docs.aws.amazon.com/lambda/latest/dg/configuration-ephemeral-storage.html
+- S3 Batch Operations invoking Lambda:
+  https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops-invoke-lambda.html
+- S3 Batch Operations permissions:
+  https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops-iam-role-policies.html
+- S3 Batch Operations job creation:
+  https://docs.aws.amazon.com/AmazonS3/latest/userguide/batch-ops-create-job.html
+- Lambda resource-based permissions:
+  https://docs.aws.amazon.com/lambda/latest/dg/permissions-function-services.html

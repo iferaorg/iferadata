@@ -13,6 +13,7 @@ from tqdm import tqdm
 from .config import BaseInstrumentConfig
 from .enums import Source
 from .file_utils import make_instrument_path, read_tensor_from_gzip
+from .parquet_datasets import read_local_dataset_manifest
 
 
 def count_lines(file_path: str, is_zip: bool = False) -> int:
@@ -33,14 +34,14 @@ def read_csv_with_progress(
 ) -> pl.DataFrame:
     """Read a CSV file with progress tracking, handling both regular and zip files."""
     total_lines = count_lines(file_path, zipfile)
-    dtype_mapping = {
+    dtype_mapping: dict[str, Any] = {
         "float32": pl.Float32,
         "float64": pl.Float64,
         "int32": pl.Int32,
         "int64": pl.Int64,
         "str": pl.String,
     }
-    schema_overrides = {
+    schema_overrides: dict[str, Any] = {
         col: dtype_mapping.get(str(dtype), dtype)
         for col, dtype in read_csv_kwargs.get("dtype", {}).items()
     }
@@ -70,38 +71,109 @@ def read_csv_with_progress(
     return df
 
 
+def _polars_dtype(name: str) -> Any:
+    """Map a simple dtype name to a Polars type."""
+
+    dtype_mapping: dict[str, Any] = {
+        "float32": pl.Float32,
+        "float64": pl.Float64,
+        "int32": pl.Int32,
+        "int64": pl.Int64,
+        "str": pl.String,
+    }
+    return dtype_mapping[name]
+
+
 def load_data(
     raw: bool,
     instrument: BaseInstrumentConfig,
     dtype: str = "float32",
     zipfile: bool = True,
 ) -> pl.DataFrame:
-    """Load data from CSV files."""
+    """Load data from parquet datasets.
+
+    The ``zipfile`` argument is preserved for compatibility and ignored.
+    """
+
+    _ = zipfile
     source = Source.RAW if raw else Source.PROCESSED
     file_path = make_instrument_path(source=source, instrument=instrument)
-
-    read_csv_kwargs: Dict[str, Any] = {}
+    manifest = read_local_dataset_manifest(file_path)
+    if manifest is not None and not manifest.get("files"):
+        if raw:
+            return pl.DataFrame(
+                schema={
+                    "date_time": pl.Datetime,
+                    "open": _polars_dtype(dtype),
+                    "high": _polars_dtype(dtype),
+                    "low": _polars_dtype(dtype),
+                    "close": _polars_dtype(dtype),
+                    "volume": pl.Int32,
+                }
+            )
+        return pl.DataFrame(
+            schema={
+                "date": pl.Int32,
+                "time": pl.Int32,
+                "trade_date": pl.Int32,
+                "offset_time": pl.Int32,
+                "open": _polars_dtype(dtype),
+                "high": _polars_dtype(dtype),
+                "low": _polars_dtype(dtype),
+                "close": _polars_dtype(dtype),
+                "volume": pl.Int32,
+            }
+        )
+    try:
+        dataset_glob = str(file_path / "**/*.parquet")
+        df = pl.read_parquet(dataset_glob, hive_partitioning=True)
+    except Exception as e:
+        raise ValueError(f"Error reading parquet dataset at {file_path}: {e}") from e
 
     if raw:
-        read_csv_kwargs = {
-            "header": None,
-            "parse_dates": False,
-            "names": ["date", "time", "open", "high", "low", "close", "volume"],
-            "dtype": {
-                "open": dtype,
-                "high": dtype,
-                "low": dtype,
-                "close": dtype,
-                "volume": "int32",
-            },
-        }
-    else:
-        # pylint: disable=duplicate-code
-        # Use a different variable name to avoid redefinition
-        read_csv_kwargs = {
-            "header": None,
-            "parse_dates": False,
-            "names": [
+        try:
+            df = df.with_columns(
+                pl.concat_str(
+                    [pl.col("date").cast(pl.String), pl.col("time").cast(pl.String)],
+                    separator=" ",
+                )
+                .str.to_datetime(strict=False)
+                .alias("date_time")
+            )
+        except Exception as e:
+            raise ValueError(
+                "Error converting 'date' and 'time' columns to datetime"
+            ) from e
+
+        df = (
+            df.sort(["date", "time"])
+            .with_columns(
+                pl.col("open").cast(_polars_dtype(dtype)),
+                pl.col("high").cast(_polars_dtype(dtype)),
+                pl.col("low").cast(_polars_dtype(dtype)),
+                pl.col("close").cast(_polars_dtype(dtype)),
+                pl.col("volume").cast(pl.Int32),
+            )
+            .drop(["date", "time"])
+            .select(["date_time", "open", "high", "low", "close", "volume"])
+        )
+        return df
+
+    return (
+        df.sort(["trade_date", "offset_time_seconds"])
+        .with_columns(
+            pl.col("ord_date").cast(pl.Int32).alias("date"),
+            pl.col("time_seconds").cast(pl.Int32).alias("time"),
+            pl.col("ord_trade_date").cast(pl.Int32).alias("trade_date"),
+            pl.col("offset_time_seconds").cast(pl.Int32).alias("offset_time"),
+            pl.col("open").cast(_polars_dtype(dtype)),
+            pl.col("high").cast(_polars_dtype(dtype)),
+            pl.col("low").cast(_polars_dtype(dtype)),
+            pl.col("close").cast(_polars_dtype(dtype)),
+            pl.col("volume").cast(pl.Int32),
+        )
+        .select(
+            [
                 "date",
                 "time",
                 "trade_date",
@@ -111,44 +183,9 @@ def load_data(
                 "low",
                 "close",
                 "volume",
-            ],
-            "dtype": {
-                "open": dtype,
-                "high": dtype,
-                "low": dtype,
-                "close": dtype,
-                "volume": "int32",
-                "date": "int32",
-                "time": "int32",
-                "trade_date": "int32",
-                "offset_time": "int32",
-            },
-        }
-        # pylint: enable=duplicate-code
-
-    if zipfile:
-        read_csv_kwargs["compression"] = "zip"
-    try:
-        df = read_csv_with_progress(str(file_path), read_csv_kwargs, zipfile)
-    except Exception as e:
-        raise ValueError(f"Error reading CSV file at {file_path}: {e}") from e
-
-    if raw:
-        try:
-            df = df.with_columns(
-                pl.concat_str([pl.col("date"), pl.col("time")], separator=" ")
-                .str.to_datetime(strict=False)
-                .alias("date_time")
-            )
-        except Exception as e:
-            raise ValueError(
-                "Error converting 'date' and 'time' columns to datetime"
-            ) from e
-
-        df = df.drop(["date", "time"]).select(
-            ["date_time", "open", "high", "low", "close", "volume"]
+            ]
         )
-    return df
+    )
 
 
 def torch_dtype_to_numpy_dtype(dtype: torch.dtype) -> np.dtype:

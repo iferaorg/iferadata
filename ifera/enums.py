@@ -52,6 +52,14 @@ class ExpirationRule(Enum):
 
 
 extension_map = {
+    Source.RAW: ".parquet",
+    Source.PROCESSED: ".parquet",
+    Source.TENSOR: ".pt.gz",
+    Source.TENSOR_BACKADJUSTED: ".pt.gz",
+    Source.META: ".yml",
+}
+
+legacy_extension_map = {
     Source.RAW: ".zip",
     Source.PROCESSED: ".zip",
     Source.TENSOR: ".pt.gz",

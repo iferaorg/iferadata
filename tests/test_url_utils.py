@@ -18,7 +18,7 @@ def test_make_url_tensor_backadjusted(tmp_path, monkeypatch):
 
 def test_make_url_other_scheme():
     url = url_utils.make_url(Scheme.S3, Source.RAW, "data", "1d", "ABC")
-    assert url == "s3:raw/data/1d/ABC.zip"
+    assert url == "s3:raw/data/1d/ABC.parquet"
 
 
 def test_extract_date_and_clean_date():

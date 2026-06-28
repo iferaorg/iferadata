@@ -15,11 +15,13 @@ from ifera.optionalpha import (
     SplitGenerator,
     _extract_dollar_amount,
     _parse_time,
+    get_filters,
     parse_filter_log,
     parse_trade_log,
     prepare_splits,
 )
 from bs4 import BeautifulSoup
+import ifera.optionalpha as oa
 
 
 @pytest.fixture
@@ -426,6 +428,113 @@ def test_parse_filter_log_skip_fomc(filter_log_skip_fomc):
     assert (df["filter_type"] == "FOMC Meeting").all()
     # All rows should have no description in this file
     assert (df["description"] == "").all()
+
+
+def _filter_html(rows):
+    entries = []
+    for date_text, filter_type, description in rows:
+        desc_html = f"<desc>{description}</desc>" if description else ""
+        entries.append(f"""
+            <div class="flex">
+                <div style="width:12rem;">{date_text}</div>
+                <div style="flex:1;">{filter_type}{desc_html}</div>
+            </div>
+            """)
+    return f'<div class="rows">{"".join(entries)}</div>'
+
+
+def test_parse_spx_1000_vixcp_filter(tmp_path, monkeypatch):
+    """Test parsing the SPX-1000 VIX change percent filter."""
+    monkeypatch.setattr(oa, "FILTERS_FOLDER", f"{tmp_path}/")
+    filter_file = tmp_path / "SPX-1000-VIXCP.txt"
+    filter_file.write_text(
+        _filter_html(
+            [
+                ("Jan 3, 2022", "VIX Change Percent", "VIX Change: 7.61%, VIX: 23.32"),
+                ("Jan 4, 2022", "VIX Change Percent", "VIX Change: 0%, VIX: 19.85"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    df = oa.parse_vixcp("SPX-1000")
+
+    assert df is not None
+    assert df.to_dicts() == [
+        {"date": datetime(2022, 1, 3).date(), "vixcp": 7.61},
+        {"date": datetime(2022, 1, 4).date(), "vixcp": 0.0},
+    ]
+
+
+def test_parse_spx_1000_bid_ask_spread_filter(tmp_path, monkeypatch):
+    """Test parsing the SPX-1000 bid-ask spread filter."""
+    monkeypatch.setattr(oa, "FILTERS_FOLDER", f"{tmp_path}/")
+    filter_file = tmp_path / "SPX-1000-BA_SPREAD.txt"
+    filter_file.write_text(
+        _filter_html(
+            [
+                ("Jan 3, 2022", "Bid-Ask Spread", "Bid: $8.40 / Ask: $9.40"),
+                ("Jan 4, 2022", "Bid-Ask Spread", "Bid: $8.25 / Ask: $10.45"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    df = oa.parse_ba_spread("SPX-1000")
+
+    assert df is not None
+    assert df.to_dicts() == [
+        {"date": datetime(2022, 1, 3).date(), "ba_spread": pytest.approx(1.0)},
+        {"date": datetime(2022, 1, 4).date(), "ba_spread": pytest.approx(2.2)},
+    ]
+
+
+def test_get_filters_spx_1000_handles_missing_range_width(tmp_path, monkeypatch):
+    """Test loading SPX-1000 filters without an ORB range-width file."""
+    monkeypatch.setattr(oa, "FILTERS_FOLDER", f"{tmp_path}/")
+    (tmp_path / "SPX-1000-ADX_14.txt").write_text(
+        _filter_html([("Jan 3, 2022", "ADX", "14")]),
+        encoding="utf-8",
+    )
+    (tmp_path / "SPX-1000-IVR.txt").write_text(
+        _filter_html([("Jan 3, 2022", "IV Rank", "IV Rank: 23.38")]),
+        encoding="utf-8",
+    )
+    (tmp_path / "SPX-1000-VIXCP.txt").write_text(
+        _filter_html(
+            [("Jan 3, 2022", "VIX Change Percent", "VIX Change: 7.61%, VIX: 23.32")]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "SPX-1000-BA_SPREAD.txt").write_text(
+        _filter_html([("Jan 3, 2022", "Bid-Ask Spread", "Bid: $8.40 / Ask: $9.40")]),
+        encoding="utf-8",
+    )
+    (tmp_path / "SPX-1000-GEX-N16-TAG.txt").write_text(
+        _filter_html(
+            [
+                (
+                    "Jan 3, 2022",
+                    "Total Absolute GEX",
+                    "GEX (16 strikes, near) total absolute gex: 6,167,777,334.78",
+                )
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    df = get_filters("SPX-1000")
+
+    assert "range_width" not in df.columns
+    assert {"adx_14", "ivr", "vixcp", "ba_spread", "gex_n16_tag"}.issubset(df.columns)
+    assert df.select("ivr", "vixcp", "ba_spread", "gex_n16_tag").to_dicts() == [
+        {
+            "ivr": 23.38,
+            "vixcp": 7.61,
+            "ba_spread": pytest.approx(1.0),
+            "gex_n16_tag": 6167777334.78,
+        }
+    ]
 
 
 def test_parse_filter_log_empty_string():
@@ -1669,14 +1778,18 @@ def test_split_generator_with_score_func():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def simple_score_func(y: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+    def simple_score_func(
+        profits: torch.Tensor, returns: torch.Tensor, masks: torch.Tensor
+    ) -> torch.Tensor:
         """
-        Simple score function that sums masked y values.
+        Simple score function that sums masked return values.
 
         Parameters
         ----------
-        y : torch.Tensor
-            1-D tensor of target values (n_samples,)
+        profits : torch.Tensor
+            1-D tensor of raw profit values (n_samples,)
+        returns : torch.Tensor
+            1-D tensor of return-on-risk values (n_samples,)
         masks : torch.Tensor
             2-D boolean tensor of shape (batch_size, n_samples)
 
@@ -1685,7 +1798,8 @@ def test_split_generator_with_score_func():
         torch.Tensor
             1-D tensor of scores (batch_size,)
         """
-        return torch.sum(y.unsqueeze(0) * masks.float(), dim=1)
+        del profits
+        return torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
 
     generator = SplitGenerator(
         spread_width=20,

@@ -5,6 +5,7 @@ import pytest
 
 from ifera import file_utils
 from ifera.enums import Source
+from ifera.parquet_datasets import DATASET_MANIFEST_FILENAME
 
 
 def test_make_path_creates_directories(tmp_path, monkeypatch):
@@ -32,9 +33,11 @@ def test_make_path_tensor_backadjusted(tmp_path, monkeypatch):
 
 def test_make_path_remove_file(tmp_path, monkeypatch):
     monkeypatch.setattr(file_utils.settings, "DATA_FOLDER", str(tmp_path))
-    existing = Path(tmp_path, Source.RAW.value, "foo", "1h", "bar").with_suffix(".zip")
-    existing.parent.mkdir(parents=True)
-    existing.write_text("data")
+    existing = Path(tmp_path, Source.RAW.value, "foo", "1h", "bar").with_suffix(
+        ".parquet"
+    )
+    existing.mkdir(parents=True)
+    (existing / DATASET_MANIFEST_FILENAME).write_text("{}", encoding="utf-8")
     assert existing.exists()
 
     path = file_utils.make_path(Source.RAW, "foo", "1h", "bar", remove_file=True)
@@ -47,7 +50,7 @@ def test_make_instrument_path(tmp_path, monkeypatch, base_instrument_config):
     path = file_utils.make_instrument_path(Source.PROCESSED, base_instrument_config)
     expected = Path(
         tmp_path, Source.PROCESSED.value, "futures", "30m", "CL"
-    ).with_suffix(".zip")
+    ).with_suffix(".parquet")
     assert path == expected
 
 

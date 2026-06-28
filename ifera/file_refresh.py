@@ -1,5 +1,7 @@
 """Utility functions for refreshing and processing local data files."""
 
+# pylint: disable=redefined-builtin
+
 import datetime as dt
 import pathlib as pl
 import time
@@ -15,8 +17,14 @@ from .data_loading import load_data, load_data_tensor
 from .data_processing import process_data, calculate_rollover
 from .config import ConfigManager
 from .enums import Source, extension_map, Scheme, ExpirationRule
-from .file_utils import make_path, write_tensor_to_gzip, read_tensor_from_gzip
+from .file_utils import make_path, write_tensor_to_gzip
 from .file_manager import FileManager
+from .parquet_datasets import (
+    is_parquet_dataset_source,
+    sync_local_dataset_to_s3,
+    sync_s3_dataset_to_local,
+    touch_local_dataset_manifest,
+)
 from .date_utils import calculate_expiration
 from .time_utils import parse_timedelta, timedelta_is_multiple
 
@@ -39,7 +47,9 @@ def download_file(
 
     if f".{ext}" != extension_map[source_enum]:
         raise ValueError(
-            f"Extension '{ext}' does not match the expected extension for source '{source_enum.value}'."
+            "Extension "
+            f"'{ext}' does not match the expected extension for source "
+            f"'{source_enum.value}'."
         )
 
     if contract_code:
@@ -47,6 +57,10 @@ def download_file(
 
     path = f"{source}/{type}/{interval}/{symbol}.{ext}"
     file_path = make_path(source_enum, type, interval, symbol)
+    if is_parquet_dataset_source(source_enum):
+        sync_s3_dataset_to_local(path, file_path)
+        return
+
     download_s3_file(path, str(file_path))
 
 
@@ -61,7 +75,9 @@ def upload_file(source: str, type: str, interval: str, symbol: str, ext: str) ->
 
     if f".{ext}" != extension_map[source_enum]:
         raise ValueError(
-            f"Extension '{ext}' does not match the expected extension for source '{source_enum.value}'."
+            "Extension "
+            f"'{ext}' does not match the expected extension for source "
+            f"'{source_enum.value}'."
         )
 
     path = f"{source}/{type}/{interval}/{symbol}.{ext}"
@@ -80,6 +96,11 @@ def upload_file(source: str, type: str, interval: str, symbol: str, ext: str) ->
         < 1
     ):
         time.sleep(1)
+
+    if is_parquet_dataset_source(source_enum):
+        sync_local_dataset_to_s3(file_path, path)
+        touch_local_dataset_manifest(file_path)
+        return
 
     upload_s3_file(path, str(file_path))
 
@@ -106,7 +127,7 @@ def process_raw_file(
     )
 
     df = load_data(raw=True, instrument=instrument)
-    process_data(df, instrument=instrument, zipfile=True)
+    process_data(df, instrument=instrument, zipfile=False)
 
 
 def process_tensor_file(
@@ -124,7 +145,7 @@ def process_tensor_file(
     )
 
     # Load processed DataFrame
-    df = load_data(raw=False, instrument=instrument, zipfile=True)
+    df = load_data(raw=False, instrument=instrument, zipfile=False)
 
     # Convert to tensor
     tensor = torch.as_tensor(df.to_numpy(), dtype=torch.float32)
@@ -232,8 +253,6 @@ def process_futures_metadata(symbol: str) -> None:
         )
 
     cm = ConfigManager()
-    instrument = cm.get_base_instrument_config(symbol, "30m")
-
     with open(raw_yml_path, "r", encoding="utf-8") as fh:
         dates = yaml.safe_load(fh)
 
@@ -261,7 +280,8 @@ def process_futures_metadata(symbol: str) -> None:
             # Overwrite expiration_date with calculated value if not found
             if expiration is None:
                 print(
-                    f"Warning: Expiration date for {full_symbol} not found. Using last date in data."
+                    "Warning: Expiration date for "
+                    f"{full_symbol} not found. Using last date in data."
                 )
                 expiration = calculate_expiration(
                     month_code=contract_instrument.contract_code,  # type: ignore
@@ -315,8 +335,6 @@ def calculate_rollover_spec(symbol: str, contract_codes: list[str]) -> None:
         dates = yaml.safe_load(fh)
 
     cm = ConfigManager()
-    base_instrument = cm.get_base_instrument_config(symbol, "30m")
-
     contract_tensors = []
     contract_instruments = []
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -433,7 +451,7 @@ def contract_codes_for_backadjust(symbol: str, interval: str) -> list[dict]:
     return result
 
 
-def process_futures_backadjusted_tensor(
+def process_futures_backadjusted_tensor(  # pylint: disable=too-many-statements
     symbol: str, interval: str, contract_codes: list[str] | None = None
 ) -> None:
     """Create a back-adjusted futures tensor based on a rollover specification.

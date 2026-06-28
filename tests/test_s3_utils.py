@@ -12,6 +12,11 @@ def test_make_s3_key(base_instrument_config):
     assert key == "raw/futures/30m/CL.zip"
 
 
+def test_make_s3_key_parquet(base_instrument_config):
+    key = s3_utils.make_s3_key(Source.RAW, base_instrument_config, zipfile=False)  # type: ignore[arg-type]
+    assert key == "raw/futures/30m/CL.parquet"
+
+
 def test_download_s3_file(tmp_path, mock_s3, dummy_progress, monkeypatch):
     key = "foo/bar.csv"
     target = tmp_path / "bar.csv"
@@ -72,14 +77,35 @@ def test_get_s3_last_modified_cache(mock_s3):
     mock_s3.client.head_object.assert_not_called()
 
 
-def test_get_s3_last_modified_head(mock_s3):
+def test_check_s3_file_exists_parquet_uses_exact_listing(mock_s3):
+    key = "raw/futures/30m/CL.parquet"
+    ts = datetime.datetime.now(tz=datetime.timezone.utc)
+    mock_s3.client.list_objects_v2.return_value = {
+        "Contents": [{"Key": key, "LastModified": ts}]
+    }
+
+    assert s3_utils.check_s3_file_exists(key) is True
+    mock_s3.client.list_objects_v2.assert_called_once_with(
+        Bucket=s3_utils.settings.S3_BUCKET,
+        Prefix=key,
+        MaxKeys=1,
+    )
+    assert mock_s3.cached_prefixes == set()
+    assert mock_s3.last_modified[key] == ts
+
+
+def test_get_s3_last_modified_list_exact_key(mock_s3):
     key = "time2.csv"
     mock_s3.cache = False
     ts = datetime.datetime.now(tz=datetime.timezone.utc)
-    mock_s3.client.head_object.return_value = {"LastModified": ts}
+    mock_s3.client.list_objects_v2.return_value = {
+        "Contents": [{"Key": key, "LastModified": ts}]
+    }
     assert s3_utils.get_s3_last_modified(key) == ts
-    mock_s3.client.head_object.assert_called_once_with(
-        Bucket=s3_utils.settings.S3_BUCKET, Key=key
+    mock_s3.client.list_objects_v2.assert_called_once_with(
+        Bucket=s3_utils.settings.S3_BUCKET,
+        Prefix=key,
+        MaxKeys=1,
     )
 
 
@@ -87,6 +113,39 @@ def test_list_s3_objects_cache(mock_s3):
     mock_s3.last_modified.update({"pre/a": 1, "pre/b": 1, "other": 1})
     keys = s3_utils.list_s3_objects("pre")
     assert set(keys) == {"pre/a", "pre/b"}
+
+
+def test_list_s3_objects_shallow(mock_s3):
+    paginator = MagicMock()
+    paginator.paginate.return_value = [[{"Key": "pre/root.parquet"}]]
+    mock_s3.client.get_paginator.return_value = MagicMock(
+        paginate=MagicMock(
+            return_value=[
+                {
+                    "Contents": [{"Key": "pre/root.parquet"}],
+                }
+            ]
+        )
+    )
+    keys = s3_utils.list_s3_objects("pre/", recursive=False)
+    mock_s3.client.get_paginator.assert_called_once_with("list_objects_v2")
+    mock_s3.client.get_paginator.return_value.paginate.assert_called_once_with(
+        Bucket=s3_utils.settings.S3_BUCKET,
+        Prefix="pre/",
+        Delimiter="/",
+    )
+    assert keys == ["pre/root.parquet"]
+
+
+def test_put_and_get_s3_json_object(mock_s3):
+    payload = {"answer": 42}
+    mock_s3.client.list_objects_v2.return_value = {"Contents": []}
+    s3_utils.put_s3_json_object("meta.json", payload)
+    mock_s3.client.put_object.assert_called_once()
+    mock_s3.client.get_object.return_value = {
+        "Body": MagicMock(read=MagicMock(return_value=b'{"answer": 42}'))
+    }
+    assert s3_utils.get_s3_json_object("meta.json") == payload
 
 
 def test_delete_s3_file(mock_s3):

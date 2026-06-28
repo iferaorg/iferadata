@@ -3,12 +3,14 @@ File system utilities for the ifera package.
 """
 
 import gzip
+import shutil
 from pathlib import Path
 
 import torch
 
 from .config import BaseInstrumentConfig
 from .enums import Source, extension_map
+from .parquet_datasets import is_parquet_dataset_source
 from .settings import settings
 
 
@@ -30,7 +32,13 @@ def make_path(
 
     if remove_file:
         try:
-            path.unlink(missing_ok=True)
+            if is_parquet_dataset_source(source):
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
+            else:
+                path.unlink(missing_ok=True)
         except Exception as e:
             raise OSError(f"Error removing file {path}: {e}") from e
 
