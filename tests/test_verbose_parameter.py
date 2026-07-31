@@ -225,9 +225,9 @@ def test_prepare_splits_verbose_best_prints_one_split():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
         """Simple score function."""
-        del profits
+        del profits, date_ordinals
         scores = []
         for mask in masks:
             if mask.sum() > 0:
@@ -298,9 +298,9 @@ def test_prepare_splits_verbose_all_with_score_func_sorts():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
         """Simple score function."""
-        del profits
+        del profits, date_ordinals
         scores = []
         for mask in masks:
             if mask.sum() > 0:

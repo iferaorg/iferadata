@@ -1,6 +1,7 @@
 """Tests for the scoring functionality in optionalpha module."""
 
 import tests.polars_pandas_shim as pd
+import numpy as np
 import pytest
 import torch
 
@@ -29,11 +30,11 @@ def test_prepare_splits_with_score_func():
     )
 
     # Define a simple score function that returns the sum of returns for masked samples.
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
         # returns: (n_samples,)
         # masks: (batch_size, n_samples)
         # Return sum of returns for each mask
-        del profits
+        del profits, date_ordinals
         scores = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         return scores
 
@@ -66,8 +67,8 @@ def test_prepare_splits_score_func_can_use_raw_profit():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def masked_total_profit(profits, returns, masks):
-        del returns
+    def masked_total_profit(profits, returns, masks, date_ordinals):
+        del returns, date_ordinals
         return torch.sum(profits.unsqueeze(0) * masks.float(), dim=1)
 
     _, _, splits = prepare_splits(
@@ -137,8 +138,8 @@ def test_prepare_splits_keep_best_n_filters_splits():
     )
 
     # Define a score function that scores based on mean return value
-    def mean_score_func(profits, returns, masks):
-        del profits
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         # Return mean of returns for each mask
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
@@ -225,7 +226,8 @@ def test_prepare_splits_keep_best_n_with_depth_2():
     )
 
     # Define a simple score function
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
@@ -266,7 +268,8 @@ def test_prepare_splits_scoring_with_empty_masks():
     )
 
     # Define a score function that handles edge cases
-    def safe_score_func(profits, returns, masks):
+    def safe_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         # Return -inf for empty masks
@@ -304,7 +307,8 @@ def test_prepare_splits_keep_best_n_less_than_splits():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
     )
 
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         return torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
 
     _, _, splits = prepare_splits(
@@ -345,7 +349,8 @@ def test_prepare_splits_score_ordering():
     )
 
     # Score function that returns count of True values in mask
-    def count_score_func(profits, returns, masks):
+    def count_score_func(profits, returns, masks, date_ordinals):
+        del profits, returns, date_ordinals
         return torch.sum(masks.float(), dim=1)
 
     _, _, splits = prepare_splits(
@@ -391,7 +396,8 @@ def test_prepare_splits_early_exit_with_keep_best_n():
     )
 
     # Score function that heavily favors depth 1 splits
-    def depth_1_favoring_score_func(profits, returns, masks):
+    def depth_1_favoring_score_func(profits, returns, masks, date_ordinals):
+        del profits, returns, date_ordinals
         # Return high scores for masks with 1 or 2 True values
         counts = torch.sum(masks.float(), dim=1)
         # Give higher scores to depth 1 splits (typically have more samples)
@@ -421,7 +427,7 @@ def test_prepare_splits_early_exit_with_keep_best_n():
 
 
 def test_score_func_receives_correct_parameters():
-    """Test that score_func receives profits, returns, and masks with correct shapes."""
+    """Test that score_func receives profits, returns, masks, and dates."""
     trades_df = pd.DataFrame(
         {"risk": [100.0, 200.0, 150.0], "profit": [50.0, -100.0, 75.0]},
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
@@ -435,12 +441,16 @@ def test_score_func_receives_correct_parameters():
     n_samples = len(trades_df)
     received_shapes = []
     received_full_values = []
+    received_full_dates = []
 
-    def shape_checking_score_func(profits, returns, masks):
+    def shape_checking_score_func(profits, returns, masks, date_ordinals):
         # Record the shapes
-        received_shapes.append((profits.shape, returns.shape, masks.shape))
+        received_shapes.append(
+            (profits.shape, returns.shape, masks.shape, date_ordinals.shape)
+        )
         if profits.shape[0] == n_samples:
             received_full_values.append((profits.cpu(), returns.cpu()))
+            received_full_dates.append(date_ordinals.cpu())
         # Return dummy scores
         return torch.zeros(masks.shape[0])
 
@@ -464,10 +474,12 @@ def test_score_func_receives_correct_parameters():
     # 1. profits and returns are always 1D
     # 2. masks is always 2D
     # 3. masks second dimension matches the profit/return size
-    for profit_shape, return_shape, masks_shape in received_shapes:
+    for profit_shape, return_shape, masks_shape, date_shape in received_shapes:
         assert len(profit_shape) == 1, f"profits should be 1D, got {profit_shape}"
         assert len(return_shape) == 1, f"returns should be 1D, got {return_shape}"
         assert profit_shape == return_shape
+        assert len(date_shape) == 1, f"date ordinals should be 1D, got {date_shape}"
+        assert date_shape == profit_shape
         assert len(masks_shape) == 2, f"masks should be 2D, got {masks_shape}"
         assert (
             masks_shape[1] == profit_shape[0]
@@ -477,3 +489,9 @@ def test_score_func_receives_correct_parameters():
     full_profits, full_returns = received_full_values[-1]
     assert torch.equal(full_profits, torch.tensor([50.0, -100.0, 75.0]))
     assert torch.allclose(full_returns, torch.tensor([0.5, -0.5, 0.5]))
+    assert received_full_dates
+    expected_dates = np.array(["2022-01-10", "2022-01-11", "2022-01-12"]).astype(
+        "datetime64[D]"
+    )
+    expected_ordinals = torch.tensor(expected_dates.astype(np.int64))
+    assert torch.equal(received_full_dates[-1], expected_ordinals)

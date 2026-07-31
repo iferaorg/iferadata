@@ -51,7 +51,8 @@ def test_evaluate_filters_basic():
     )
 
     # Define a simple score function
-    def mean_score_func(profits, returns, masks):
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
@@ -113,7 +114,8 @@ def test_evaluate_filters_with_min_score_improvement():
         ),
     )
 
-    def mean_score_func(profits, returns, masks):
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
@@ -238,7 +240,8 @@ def test_evaluate_filters_with_custom_folds_and_repeats():
         ),
     )
 
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         return torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
 
     # Test with 4 folds and 3 repeats
@@ -296,7 +299,8 @@ def test_evaluate_filters_integration_with_depth_2():
         ),
     )
 
-    def mean_score_func(profits, returns, masks):
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
@@ -333,7 +337,8 @@ def test_evaluate_filters_with_small_dataset():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
     )
 
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         return torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
 
     # Test with small dataset - should handle padding correctly
@@ -459,7 +464,8 @@ def test_evaluate_filters_no_filters():
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11"], name="date"),
     )
 
-    def simple_score_func(profits, returns, masks):
+    def simple_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         return torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
 
     # Should handle gracefully even with no valid splits
@@ -545,7 +551,8 @@ def test_evaluate_filters_vectorized_multiple_filter_groups():
         ),
     )
 
-    def mean_score_func(profits, returns, masks):
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
@@ -615,7 +622,8 @@ def test_evaluate_filters_consistency():
         ),
     )
 
-    def mean_score_func(profits, returns, masks):
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))
@@ -883,7 +891,8 @@ def test_evaluate_filters_uses_purged_ts_cv():
         ),
     )
 
-    def mean_score_func(profits, returns, masks):
+    def mean_score_func(profits, returns, masks, date_ordinals):
+        del profits, date_ordinals
         sums = torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
         counts = torch.sum(masks.float(), dim=1)
         scores = torch.where(counts > 0, sums / counts, torch.zeros_like(sums))

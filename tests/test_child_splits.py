@@ -4,8 +4,12 @@ import tests.polars_pandas_shim as pd
 import pytest
 import torch
 
-from ifera.optionalpha import Split, prepare_splits
-from ifera.optionalpha import FilterInfo, _generate_child_splits
+from ifera.optionalpha import Split, SplitGenerator, prepare_splits
+from ifera.optionalpha import (
+    FilterInfo,
+    _calculate_exclusion_mask,
+    _generate_child_splits,
+)
 
 
 def test_max_depth_1_no_child_splits():
@@ -411,6 +415,87 @@ def test_child_splits_respect_exclusion_mask():
             assert torch.equal(
                 child.mask, expected_mask
             ), "Child mask should be AND of parents"
+
+
+def test_exclusion_mask_excludes_too_similar_splits():
+    """Test that similar-but-not-subset splits are excluded."""
+    device = torch.device("cpu")
+    parent = Split(
+        mask=torch.tensor([True, True, True, True, False, False, False, False]),
+        filters=[FilterInfo(0, "filter_a", 1.0, "left")],
+        parents=[],
+    )
+    similar_parent = Split(
+        mask=torch.tensor([True, True, True, False, True, False, False, False]),
+        filters=[FilterInfo(1, "filter_b", 1.0, "left")],
+        parents=[],
+    )
+    dissimilar_parent = Split(
+        mask=torch.tensor([False, False, True, True, False, False, True, True]),
+        filters=[FilterInfo(2, "filter_c", 1.0, "left")],
+        parents=[],
+    )
+
+    exclusion_mask = _calculate_exclusion_mask(
+        [parent],
+        [similar_parent, dissimilar_parent],
+        device,
+        min_samples=1,
+        similarity_threshold=0.75,
+    )
+
+    assert exclusion_mask.tolist() == [[True, False]]
+
+
+def test_split_generator_similarity_threshold_prevents_similar_parent_merge():
+    """Test that SplitGenerator applies the similarity threshold to child splits."""
+    dates = pd.DatetimeIndex([f"2022-01-{day:02d}" for day in range(1, 9)], name="date")
+    trades_df = pd.DataFrame(
+        {"risk": [100.0] * 8, "profit": [50.0] * 8},
+        index=dates,
+    )
+    filters_df = pd.DataFrame(
+        {
+            "filter_a": [1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+            "filter_b": [1.0, 1.0, 1.0, 2.0, 1.0, 2.0, 2.0, 2.0],
+        },
+        index=dates,
+    )
+
+    def has_child_from_similar_left_parents(splits):
+        for child in [split for split in splits if len(split.parents) > 0]:
+            for parent_set in child.parents:
+                parent_filters = {
+                    (filter_info.filter_name, filter_info.direction)
+                    for parent in parent_set
+                    for filter_info in parent.filters
+                }
+                if parent_filters == {("filter_a", "left"), ("filter_b", "left")}:
+                    return True
+        return False
+
+    generator_without_similarity_limit = SplitGenerator(
+        spread_width=20,
+        max_depth=2,
+        similarity_threshold=1.0,
+    )
+    _, _, unrestricted_splits = generator_without_similarity_limit.generate(
+        trades_df,
+        filters_df,
+    )
+
+    generator_with_similarity_limit = SplitGenerator(
+        spread_width=20,
+        max_depth=2,
+        similarity_threshold=0.75,
+    )
+    _, _, restricted_splits = generator_with_similarity_limit.generate(
+        trades_df,
+        filters_df,
+    )
+
+    assert has_child_from_similar_left_parents(unrestricted_splits)
+    assert not has_child_from_similar_left_parents(restricted_splits)
 
 
 def test_max_depth_with_max_splits_per_filter():

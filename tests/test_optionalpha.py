@@ -1779,7 +1779,10 @@ def test_split_generator_with_score_func():
     )
 
     def simple_score_func(
-        profits: torch.Tensor, returns: torch.Tensor, masks: torch.Tensor
+        profits: torch.Tensor,
+        returns: torch.Tensor,
+        masks: torch.Tensor,
+        date_ordinals: torch.Tensor,
     ) -> torch.Tensor:
         """
         Simple score function that sums masked return values.
@@ -1792,13 +1795,15 @@ def test_split_generator_with_score_func():
             1-D tensor of return-on-risk values (n_samples,)
         masks : torch.Tensor
             2-D boolean tensor of shape (batch_size, n_samples)
+        date_ordinals : torch.Tensor
+            1-D tensor of ordinal dates matching profits and returns
 
         Returns
         -------
         torch.Tensor
             1-D tensor of scores (batch_size,)
         """
-        del profits
+        del profits, date_ordinals
         return torch.sum(returns.unsqueeze(0) * masks.float(), dim=1)
 
     generator = SplitGenerator(

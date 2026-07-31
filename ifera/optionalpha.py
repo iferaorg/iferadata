@@ -1744,6 +1744,7 @@ def _compute_exclusion_mask_tensor(
     masks_a: torch.Tensor,
     masks_b: torch.Tensor,
     min_samples: int,
+    similarity_threshold: float,
 ) -> torch.Tensor:
     """
     Compute exclusion mask between two sets of masks (pure tensor operation).
@@ -1756,6 +1757,8 @@ def _compute_exclusion_mask_tensor(
         2D boolean tensor of shape (n_set_b, n_samples)
     min_samples : int
         Minimum number of samples required in the intersection
+    similarity_threshold : float
+        Similarity ratio at or above which two masks are considered too similar
 
     Returns
     -------
@@ -1779,8 +1782,14 @@ def _compute_exclusion_mask_tensor(
     b_subset_of_a = intersection_counts == mask_sums_b.unsqueeze(0)
     rule2_mask = a_subset_of_b | b_subset_of_a
 
+    # Rule 3: Too-similar masks are mutually exclusive.
+    false_match_counts = torch.matmul(1.0 - masks_a_float, (1.0 - masks_b_float).T)
+    equality_counts = intersection_counts + false_match_counts
+    similarity = equality_counts / masks_a.shape[1]
+    rule3_mask = similarity >= similarity_threshold
+
     # Combine rules
-    exclusion_mask = rule1_mask | rule2_mask
+    exclusion_mask = rule1_mask | rule2_mask | rule3_mask
 
     return exclusion_mask
 
@@ -1791,6 +1800,7 @@ def _calculate_exclusion_mask(
     device: torch.device,
     min_samples: int,
     masks_b_stacked: torch.Tensor | None = None,
+    similarity_threshold: float = 1.0,
 ) -> torch.Tensor:
     """
     Calculate exclusion mask between two separate parent sets.
@@ -1799,6 +1809,7 @@ def _calculate_exclusion_mask(
     based on:
     1. Insufficient intersection (overlap has fewer than min_samples samples)
     2. Subset relationship (one split's rows are subset of another's)
+    3. Similarity (masks agree on too many rows)
 
     Parameters
     ----------
@@ -1813,6 +1824,9 @@ def _calculate_exclusion_mask(
     masks_b_stacked : torch.Tensor | None, optional
         Pre-stacked masks for parent_set_b to avoid redundant stacking.
         If None, masks will be stacked from parent_set_b.
+    similarity_threshold : float, optional
+        Similarity ratio at or above which two masks are considered too similar.
+        Default is 1.0.
 
     Returns
     -------
@@ -1839,7 +1853,12 @@ def _calculate_exclusion_mask(
         masks_b = masks_b_stacked
 
     # Use compiled tensor function
-    return _compute_exclusion_mask_tensor(masks_a, masks_b, min_samples)
+    return _compute_exclusion_mask_tensor(
+        masks_a,
+        masks_b,
+        min_samples,
+        similarity_threshold,
+    )
 
 
 @torch.compile()
@@ -2069,7 +2088,11 @@ def _remove_redundant_splits(
 
 @torch.compile()
 def _compute_scores_tensor(
-    profits: torch.Tensor, returns: torch.Tensor, masks: torch.Tensor, score_func
+    profits: torch.Tensor,
+    returns: torch.Tensor,
+    masks: torch.Tensor,
+    score_func,
+    date_ordinals: torch.Tensor,
 ) -> torch.Tensor:
     """
     Compute scores for all masks using the score function (compilable wrapper).
@@ -2083,14 +2106,17 @@ def _compute_scores_tensor(
     masks : torch.Tensor
         2D boolean tensor of shape (n_splits, n_samples)
     score_func : callable
-        Function that takes profits, returns, and masks, and returns scores
+        Function that takes profits, returns, masks, and date ordinals, and returns
+        scores
+    date_ordinals : torch.Tensor
+        1-D tensor of ordinal dates matching profits and returns
 
     Returns
     -------
     torch.Tensor
         1-D tensor of scores (n_splits,)
     """
-    return score_func(profits, returns, masks)
+    return score_func(profits, returns, masks, date_ordinals)
 
 
 def _score_splits(
@@ -2098,6 +2124,7 @@ def _score_splits(
     profits: torch.Tensor,
     returns: torch.Tensor,
     score_func,
+    date_ordinals: torch.Tensor,
 ) -> None:
     """
     Score splits using the provided score function.
@@ -2113,8 +2140,10 @@ def _score_splits(
     returns : torch.Tensor
         1-D tensor of return-on-risk values (n_samples)
     score_func : callable
-        Function that takes profits, returns, and masks, and returns a float tensor
-        of scores (batch_size)
+        Function that takes profits, returns, masks, and date ordinals, and returns
+        a float tensor of scores (batch_size)
+    date_ordinals : torch.Tensor
+        1-D tensor of ordinal dates matching profits and returns
     """
     if len(splits) == 0:
         return
@@ -2124,10 +2153,12 @@ def _score_splits(
 
     # Call score_func to get scores for all splits (use compiled version if possible)
     try:
-        scores = _compute_scores_tensor(profits, returns, masks, score_func)
+        scores = _compute_scores_tensor(
+            profits, returns, masks, score_func, date_ordinals
+        )
     except Exception:  # pylint: disable=broad-except
         # Fallback to non-compiled version if compilation fails
-        scores = score_func(profits, returns, masks)
+        scores = score_func(profits, returns, masks, date_ordinals)
 
     # Assign scores to splits
     for i, split in enumerate(splits):
@@ -2524,6 +2555,7 @@ def _evaluate_filters(
     depth_1_splits: list[Split],
     profits: torch.Tensor,
     returns: torch.Tensor,
+    date_ordinals: torch.Tensor,
     score_func,
     filter_eval_folds: int,
     filter_eval_repeats: int,
@@ -2554,8 +2586,11 @@ def _evaluate_filters(
         1-D tensor of raw profit values (n_samples,)
     returns : torch.Tensor
         1-D tensor of return-on-risk values (n_samples,)
+    date_ordinals : torch.Tensor
+        1-D tensor of ordinal dates matching profits and returns
     score_func : callable
-        Function that takes profits, returns, and masks, and returns scores
+        Function that takes profits, returns, masks, and date ordinals, and returns
+        scores
     filter_eval_folds : int
         Number of time-series splits (folds) per repeat
     filter_eval_repeats : int
@@ -2680,8 +2715,12 @@ def _evaluate_filters(
             train_split_masks = all_split_masks[:, train_idx]
             test_split_masks = all_split_masks[:, test_idx]
 
+            train_date_ordinals = date_ordinals[train_idx]
+
             # Score all splits on training set at once
-            train_scores = score_func(profits_train, returns_train, train_split_masks)
+            train_scores = score_func(
+                profits_train, returns_train, train_split_masks, train_date_ordinals
+            )
             # Shape: (n_total_splits,)
 
             # Find best split per filter group using segmented argmax
@@ -2722,14 +2761,19 @@ def _evaluate_filters(
             best_test_masks = test_split_masks[best_split_indices]
             # Shape: (n_filter_groups, len(test_idx))
 
-            test_scores = score_func(profits_test, returns_test, best_test_masks)
+            test_date_ordinals = date_ordinals[test_idx]
+            test_scores = score_func(
+                profits_test, returns_test, best_test_masks, test_date_ordinals
+            )
             # Shape: (n_filter_groups,)
 
             # Calculate base test score (all samples in test set)
             base_test_mask = torch.ones(
                 (1, len(test_idx)), dtype=torch.bool, device=device
             )
-            base_test_score = score_func(profits_test, returns_test, base_test_mask)[0]
+            base_test_score = score_func(
+                profits_test, returns_test, base_test_mask, test_date_ordinals
+            )[0]
 
             # Calculate improvements
             improvements = test_scores - base_test_score
@@ -2947,9 +2991,9 @@ class SplitGenerator:
     min_samples : int, optional
         Minimum number of samples required on each side of a split. Default is 1.
     score_func : callable, optional
-        Function that takes profits (n_samples), returns (n_samples), and masks
-        (batch_size, n_samples), and returns a float tensor containing a score for
-        each batch. Default is None.
+        Function that takes profits (n_samples), returns (n_samples), masks
+        (batch_size, n_samples), and date ordinals (n_samples), and returns a
+        float tensor containing a score for each batch. Default is None.
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
         score_func must also be provided. Default is None.
@@ -2971,6 +3015,10 @@ class SplitGenerator:
     min_train_pct : float, optional
         Minimum training set size as percentage of total samples during filter
         evaluation CV (0.0 to 1.0). Default is 0.2 (20%).
+    similarity_threshold : float, optional
+        Maximum allowed mask similarity before two parent splits are considered too
+        similar to merge. Similarity is calculated as ``sum(a == b) / len(a)``.
+        Default is 1.0.
 
     Examples
     --------
@@ -3002,11 +3050,14 @@ class SplitGenerator:
         purge_pct: float = 0.1,
         embargo_pct: float = 0.0,
         min_train_pct: float = 0.2,
+        similarity_threshold: float = 1.0,
     ):
         """Initialize the SplitGenerator with hyperparameters."""
         # Validate parameters
         if keep_best_n is not None and score_func is None:
             raise ValueError("score_func must be provided when keep_best_n is not None")
+        if not 0.0 <= similarity_threshold <= 1.0:
+            raise ValueError("similarity_threshold must be between 0.0 and 1.0")
 
         self.spread_width = spread_width
         self.left_only_filters = (
@@ -3028,6 +3079,7 @@ class SplitGenerator:
         self.purge_pct = purge_pct
         self.embargo_pct = embargo_pct
         self.min_train_pct = min_train_pct
+        self.similarity_threshold = similarity_threshold
 
         # Initialize filter_granularities with default values
         default_granularities = {
@@ -3097,6 +3149,7 @@ class SplitGenerator:
         depth_1_splits: list[Split],
         profits: torch.Tensor,
         returns: torch.Tensor,
+        date_ordinals: torch.Tensor,
         verbose: str = "no",
     ) -> dict[tuple[str, str], float]:
         """
@@ -3110,6 +3163,8 @@ class SplitGenerator:
             1-D tensor of raw profit values (n_samples,)
         returns : torch.Tensor
             1-D tensor of return-on-risk values (n_samples,)
+        date_ordinals : torch.Tensor
+            1-D tensor of ordinal dates matching profits and returns
         verbose : str, optional
             Controls printing. Default is "no".
 
@@ -3122,6 +3177,7 @@ class SplitGenerator:
             depth_1_splits,
             profits,
             returns,
+            date_ordinals,
             self.score_func,
             self.filter_eval_folds,
             self.filter_eval_repeats,
@@ -3233,6 +3289,12 @@ class SplitGenerator:
             dtype=self.dtype,
             device=self.device,
         )
+        dates = trades_df["date"].to_numpy().astype("datetime64[D]")
+        date_ordinals = torch.tensor(
+            dates.astype(np.int64),
+            dtype=torch.long,
+            device=self.device,
+        )
 
         # Find all depth 1 splits
         depth_1_splits: list[Split] = []
@@ -3256,6 +3318,7 @@ class SplitGenerator:
                 depth_1_splits,
                 profits,
                 y,
+                date_ordinals,
                 verbose,
             )
 
@@ -3299,7 +3362,7 @@ class SplitGenerator:
 
         # Score depth_1_splits if score_func is provided
         if self.score_func is not None:
-            _score_splits(depth_1_splits, profits, y, self.score_func)
+            _score_splits(depth_1_splits, profits, y, self.score_func, date_ordinals)
 
         # Start with depth 1 splits
         # If keep_best_n is specified, only keep top n in all_splits
@@ -3340,6 +3403,7 @@ class SplitGenerator:
                     self.device,
                     self.min_samples,
                     masks_b_stacked=depth_1_masks_stacked,
+                    similarity_threshold=self.similarity_threshold,
                 )
 
                 # Generate child splits from non-exclusive parent pairs
@@ -3358,7 +3422,9 @@ class SplitGenerator:
                 # This avoids expensive operations on all splits when keep_best_n is set
                 if self.keep_best_n is not None and self.score_func is not None:
                     # Step 1: Score all new splits
-                    _score_splits(new_splits, profits, y, self.score_func)
+                    _score_splits(
+                        new_splits, profits, y, self.score_func, date_ordinals
+                    )
 
                     # Step 2: Sort new splits by descending score
                     new_splits.sort(
@@ -3424,7 +3490,9 @@ class SplitGenerator:
 
                     # Score new_splits if score_func is provided
                     if self.score_func is not None:
-                        _score_splits(new_splits, profits, y, self.score_func)
+                        _score_splits(
+                            new_splits, profits, y, self.score_func, date_ordinals
+                        )
 
                     # Add new splits to all_splits
                     all_splits.extend(new_splits)
@@ -3490,6 +3558,7 @@ def prepare_splits(
     purge_pct: float = 0.1,
     embargo_pct: float = 0.0,
     min_train_pct: float = 0.2,
+    similarity_threshold: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -3535,9 +3604,9 @@ def prepare_splits(
         created. This applies to both left and right splits independently, so they
         may have different thresholds. Also affects exclusion mask calculation.
     score_func : callable, optional
-        Function that takes profits (n_samples), returns (n_samples), and masks
-        (batch_size, n_samples), and returns a float tensor containing a score for
-        each batch. Default is None.
+        Function that takes profits (n_samples), returns (n_samples), masks
+        (batch_size, n_samples), and date ordinals (n_samples), and returns a
+        float tensor containing a score for each batch. Default is None.
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
         score_func must also be provided. Default is None.
@@ -3577,6 +3646,10 @@ def prepare_splits(
         Minimum training set size as percentage of total samples during filter
         evaluation CV (0.0 to 1.0). Default is 0.2 (20%). Ensures sufficient training
         data for stable evaluation.
+    similarity_threshold : float, optional
+        Maximum allowed mask similarity before two parent splits are considered too
+        similar to merge. Similarity is calculated as ``sum(a == b) / len(a)``.
+        Default is 1.0.
 
     Returns
     -------
@@ -3625,5 +3698,6 @@ def prepare_splits(
         purge_pct=purge_pct,
         embargo_pct=embargo_pct,
         min_train_pct=min_train_pct,
+        similarity_threshold=similarity_threshold,
     )
     return generator.generate(trades_df, filters_df, spread_width, verbose)
