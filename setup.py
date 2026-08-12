@@ -15,6 +15,8 @@ setup(
         "polars",
         "numpy",
         "torch",
+        "holidays",
+        "matplotlib",
         "boto3",
         "pydantic",
         "pydantic-settings",
