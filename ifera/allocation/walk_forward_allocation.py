@@ -17,6 +17,7 @@ import torch
 
 from . import capital_allocation
 from . import portfolio_allocation as portfolio
+from ._strategy_selection import validate_strategy_selection_parameters
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,9 @@ def walk_forward_capital_allocation_from_csv(
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
     allocation_alpha: float = 1.0,
     returns_dtype: type[pl.DataType] = pl.Float32,
+    max_strategies: int | None = None,
+    min_correlation: float | None = None,
+    max_correlation: float | None = None,
 ) -> portfolio.WalkForwardPortfolioAllocationResult:
     """Optimize rolling training windows and simulate allocations out of sample.
 
@@ -73,11 +77,23 @@ def walk_forward_capital_allocation_from_csv(
     a post-processing rule: changing overlap constraints or a nonlinear
     ``ADD_limit`` can mean the smoothed allocation does not satisfy the latest
     training fold's constraints, and it is not silently projected or clamped.
+    Strategy-selection limits are evaluated from each training window. When
+    any is requested, weights outside that fold's newly calculated support are
+    removed after smoothing, preserving its cardinality and pair constraints.
     """
     training_count = _validate_week_count(training_weeks, "training_weeks", True)
     embargo_count = _validate_week_count(embargo_weeks, "embargo_weeks", False)
     simulation_count = _validate_week_count(simulation_weeks, "simulation_weeks", True)
     allocation_alpha_value = _validate_allocation_alpha(allocation_alpha)
+    maximum, minimum_correlation, maximum_correlation = (
+        validate_strategy_selection_parameters(
+            max_strategies, min_correlation, max_correlation
+        )
+    )
+    selection_requested = any(
+        value is not None
+        for value in (maximum, minimum_correlation, maximum_correlation)
+    )
     annualization_value = portfolio._validate_annualization_periods(
         annualization_periods
     )
@@ -128,6 +144,9 @@ def walk_forward_capital_allocation_from_csv(
             refinement_runs=refinement_runs,
             refinement_divisor=refinement_divisor,
             ADD_limit=ADD_limit,
+            max_strategies=maximum,
+            min_correlation=minimum_correlation,
+            max_correlation=maximum_correlation,
         )
         calculated_allocation = allocation.detach().clone()
         applied_allocation = _applied_allocation(
@@ -135,6 +154,12 @@ def walk_forward_capital_allocation_from_csv(
             previous_applied_allocation,
             allocation_alpha_value,
         )
+        if selection_requested:
+            applied_allocation = torch.where(
+                calculated_allocation > 0.0,
+                applied_allocation,
+                torch.zeros_like(applied_allocation),
+            )
         previous_applied_allocation = applied_allocation
         weights = applied_allocation.to(device="cpu", dtype=torch.float64).tolist()
         simulation_frames.append(

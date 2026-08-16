@@ -52,6 +52,9 @@ def _fixed_optimizer(
         max_total_allocation: float = 1.0,
         refinement_runs: int = 0,
         refinement_divisor: float = 2.0,
+        max_strategies: int | None = None,
+        min_correlation: float | None = None,
+        max_correlation: float | None = None,
         diagnostics: capital_allocation.CapitalAllocationDiagnostics | None = None,
     ) -> torch.Tensor:
         if captured is not None:
@@ -70,6 +73,9 @@ def _fixed_optimizer(
                     "max_total_allocation": max_total_allocation,
                     "refinement_runs": refinement_runs,
                     "refinement_divisor": refinement_divisor,
+                    "max_strategies": max_strategies,
+                    "min_correlation": min_correlation,
+                    "max_correlation": max_correlation,
                     "diagnostics": diagnostics,
                 }
             )
@@ -1016,12 +1022,18 @@ def test_walk_forward_bootstrap_draws_fresh_indices_for_every_training_fold(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
-    """Independent optimizer calls create a new bootstrap sample for each fold."""
+    """Each fold shares one sample across subsets and refreshes it next fold."""
     directory = _portfolio_directory(tmp_path, "walk_forward_bootstrap")
     _write_complete_market_strategy(
-        directory / "strategy.csv",
+        directory / "alpha.csv",
         datetime.date(2025, 1, 6),
         datetime.date(2025, 1, 31),
+    )
+    _write_complete_market_strategy(
+        directory / "beta.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 31),
+        multiplier=2.0,
     )
     randint_calls: list[tuple[int, tuple[int, ...]]] = []
     original_randint = torch.randint
@@ -1044,6 +1056,7 @@ def test_walk_forward_bootstrap_draws_fresh_indices_for_every_training_fold(
         bootstrap_on=True,
         bootstrap_runs=2,
         bootstrap_length=3,
+        max_strategies=1,
         show_plot=False,
     )
 

@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 import torch
 
+from ._capital_allocation_candidates import (
+    constrained_allocation_unit_batches as _constrained_allocation_unit_batches,
+)
 from ._capital_allocation_diagnostics import (
     CapitalAllocationDiagnostics,
     finalize_allocation_diagnostics as _finalize_allocation_diagnostics,
@@ -42,6 +45,10 @@ from ._capital_allocation_refinement import (
     validate_parameters as _validate_refinement_parameters,
     validate_final_increment as _validate_final_refinement_increment,
 )
+from ._strategy_selection import (
+    StrategySelectionConstraints,
+    resolve_strategy_selection_constraints as _resolve_strategy_selection_constraints,
+)
 
 if TYPE_CHECKING:
     from .portfolio_allocation import (
@@ -52,18 +59,6 @@ if TYPE_CHECKING:
 _MAX_CANDIDATES_PER_BATCH = 1_000_000
 # Torch's public stubs omit the compiler configuration context decorator.
 _COMPILER_CONFIG_PATCH = getattr(torch.compiler.config, "patch")
-
-
-class _ExpansionFrame(NamedTuple):
-    """State needed to resume one vectorized prefix expansion."""
-
-    prefixes: torch.Tensor
-    clique_usage: torch.Tensor
-    column: int
-    cumulative_counts: torch.Tensor
-    child_counts: torch.Tensor
-    next_child: int
-    child_count: int
 
 
 @torch.no_grad()
@@ -82,6 +77,9 @@ def find_optimal_capital_allocation(
     refinement_divisor: float = 2.0,
     diagnostics: CapitalAllocationDiagnostics | None = None,
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
+    max_strategies: int | None = None,
+    min_correlation: float | None = None,
+    max_correlation: float | None = None,
 ) -> torch.Tensor:
     """Return the best long-only allocation on an overlap-constrained grid.
 
@@ -113,6 +111,15 @@ def find_optimal_capital_allocation(
     every maximal clique of pairwise non-disjoint strategies. Thus ordinary
     overlapping strategies share the capital budget, while disjoint strategies
     may reuse it and the global sum of allocations may exceed that budget.
+
+    Optional strategy-selection limits constrain the positive support of an
+    allocation. ``max_strategies`` caps its size, while every pair in the
+    support must satisfy the inclusive correlation bounds. Correlations are
+    calculated after replacing inactive NaNs with zero. Undefined correlations
+    are incompatible whenever either bound is specified. Candidate prefixes
+    are pruned before scoring, so each valid allocation is evaluated once. As
+    with allocation-vector refinement generally, local refinements follow only
+    the current winner; they do not independently refine every possible support.
 
     The requested grid increment is reduced, when necessary, to the largest
     reciprocal of an integer that does not exceed it. For example, ``0.3``
@@ -168,6 +175,11 @@ def find_optimal_capital_allocation(
             candidate's bootstrap ADD. Defaults to ``None``.
         ADD_limit: Optional inclusive ADD floor in ``[-1, 0]``. For example,
             ``-0.1`` requires ADD of negative ten percent or better.
+        max_strategies: Optional positive limit on nonzero strategy allocations.
+        min_correlation: Optional inclusive minimum pairwise correlation in
+            ``[-1, 1]`` for strategies with nonzero allocations.
+        max_correlation: Optional inclusive maximum pairwise correlation in
+            ``[-1, 1]`` for strategies with nonzero allocations.
 
     Returns:
         A one-dimensional tensor containing the optimal strategy allocations.
@@ -209,6 +221,13 @@ def find_optimal_capital_allocation(
         raise TypeError("dtype must be float16, bfloat16, float32, or float64")
 
     target_device = _resolve_device(device)
+    selection_constraints = _resolve_strategy_selection_constraints(
+        returns,
+        max_strategies,
+        min_correlation,
+        max_correlation,
+        target_device,
+    )
     calculation_dtype = _resolve_calculation_dtype(returns.dtype, target_dtype)
     strategy_count = returns.shape[1]
     calculation_returns = returns.to(device=target_device, dtype=calculation_dtype)
@@ -232,8 +251,10 @@ def find_optimal_capital_allocation(
     cliques_by_strategy = _clique_indices_by_strategy(
         maximal_cliques, strategy_count, target_device
     )
-    uses_prefix_expansion = (not ordinary_simplex and not fully_disjoint) or (
-        refinement_runs_value > 0 and bool(maximal_cliques)
+    uses_prefix_expansion = (
+        selection_constraints is not None
+        or (not ordinary_simplex and not fully_disjoint)
+        or (refinement_runs_value > 0 and bool(maximal_cliques))
     )
     batch_size = min(
         _MAX_CANDIDATES_PER_BATCH,
@@ -266,6 +287,7 @@ def find_optimal_capital_allocation(
         fully_disjoint,
         target_device,
         batch_size,
+        selection_constraints,
     )
 
     best_score = torch.full(
@@ -312,34 +334,20 @@ def find_optimal_capital_allocation(
         refinement_increment /= refinement_divisor_value
         while True:
             refinement_center = best_allocation
-            _, previous_unit_indices = _refinement_grid_lower_bounds(
-                refinement_center,
-                allocation_unit_limit,
-                refinement_increment,
-                max_total_allocation_value,
-            )
-            if maximal_cliques:
-                clique_unit_limits = _refinement_clique_unit_limits(
+            previous_unit_indices, allocation_unit_batches = (
+                _refined_allocation_unit_batches(
                     refinement_center,
-                    previous_unit_indices,
-                    maximal_cliques,
                     allocation_unit_limit,
                     refinement_increment,
                     max_total_allocation_value,
-                )
-                allocation_unit_batches = _constrained_allocation_unit_batches(
-                    allocation_unit_limit,
-                    strategy_count,
-                    len(maximal_cliques),
+                    maximal_cliques,
                     cliques_by_strategy,
                     target_device,
                     batch_size,
-                    clique_unit_limits=clique_unit_limits,
+                    target_dtype,
+                    selection_constraints,
                 )
-            else:
-                allocation_unit_batches = _cartesian_allocation_unit_batches(
-                    allocation_unit_limit, strategy_count, target_device, batch_size
-                )
+            )
 
             allocation_batches = (
                 _refinement_units_to_allocations(
@@ -379,6 +387,66 @@ def find_optimal_capital_allocation(
     )
 
 
+def _refined_allocation_unit_batches(
+    refinement_center: torch.Tensor,
+    allocation_unit_limit: int,
+    refinement_increment: float,
+    max_total_allocation: float,
+    maximal_cliques: list[tuple[int, ...]],
+    cliques_by_strategy: list[torch.Tensor],
+    device: torch.device,
+    batch_size: int,
+    target_dtype: torch.dtype,
+    selection_constraints: StrategySelectionConstraints | None,
+) -> tuple[torch.Tensor, Iterator[torch.Tensor]]:
+    """Build one local grid and its valid-only candidate generator."""
+    strategy_count = refinement_center.numel()
+    _, previous_unit_indices = _refinement_grid_lower_bounds(
+        refinement_center,
+        allocation_unit_limit,
+        refinement_increment,
+        max_total_allocation,
+    )
+    clique_unit_limits = None
+    if maximal_cliques:
+        clique_unit_limits = _refinement_clique_unit_limits(
+            refinement_center,
+            previous_unit_indices,
+            maximal_cliques,
+            allocation_unit_limit,
+            refinement_increment,
+            max_total_allocation,
+        )
+    if not maximal_cliques and selection_constraints is None:
+        return previous_unit_indices, _cartesian_allocation_unit_batches(
+            allocation_unit_limit, strategy_count, device, batch_size
+        )
+
+    positive_unit_starts = None
+    if selection_constraints is not None:
+        first_points = _refinement_units_to_allocations(
+            torch.zeros((1, strategy_count), device=device, dtype=torch.int64),
+            refinement_center,
+            previous_unit_indices,
+            refinement_increment,
+            target_dtype,
+        )[0]
+        positive_unit_starts = tuple(
+            0 if value > 0.0 else 1 for value in first_points.to(device="cpu").tolist()
+        )
+    return previous_unit_indices, _constrained_allocation_unit_batches(
+        allocation_unit_limit,
+        strategy_count,
+        len(maximal_cliques),
+        cliques_by_strategy,
+        device,
+        batch_size,
+        clique_unit_limits=clique_unit_limits,
+        selection_constraints=selection_constraints,
+        positive_unit_starts=positive_unit_starts,
+    )
+
+
 def find_optimal_capital_allocation_from_csv(
     portfolio_name: str,
     alpha: float,
@@ -397,6 +465,9 @@ def find_optimal_capital_allocation_from_csv(
     refinement_divisor: float = 2.0,
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
     returns_dtype: type | None = None,
+    max_strategies: int | None = None,
+    min_correlation: float | None = None,
+    max_correlation: float | None = None,
 ) -> PortfolioAllocationResult:
     """Load a named CSV portfolio, optimize it, and report the result.
 
@@ -432,6 +503,9 @@ def find_optimal_capital_allocation_from_csv(
         refinement_divisor,
         ADD_limit=ADD_limit,
         returns_dtype=returns_dtype,
+        max_strategies=max_strategies,
+        min_correlation=min_correlation,
+        max_correlation=max_correlation,
     )
 
 
@@ -457,6 +531,9 @@ def walk_forward_capital_allocation_from_csv(
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
     allocation_alpha: float = 1.0,
     returns_dtype: type | None = None,
+    max_strategies: int | None = None,
+    min_correlation: float | None = None,
+    max_correlation: float | None = None,
 ) -> WalkForwardPortfolioAllocationResult:
     """Lazily run walk-forward portfolio optimization from CSV backtests."""
     from .portfolio_allocation import (  # pylint: disable=import-outside-toplevel
@@ -490,6 +567,9 @@ def walk_forward_capital_allocation_from_csv(
         ADD_limit=ADD_limit,
         allocation_alpha=allocation_alpha,
         returns_dtype=returns_dtype,
+        max_strategies=max_strategies,
+        min_correlation=min_correlation,
+        max_correlation=max_correlation,
     )
 
 
@@ -610,8 +690,30 @@ def _initial_allocation_unit_batches(
     fully_disjoint: bool,
     device: torch.device,
     batch_size: int,
+    selection_constraints: StrategySelectionConstraints | None = None,
 ) -> Iterator[torch.Tensor]:
     """Return the fastest valid-only generator for the initial global grid."""
+    selection_is_redundant = (
+        selection_constraints is not None
+        and ordinary_simplex
+        and selection_constraints.maximum_active
+        >= min(strategy_count, allocation_unit_limit)
+        and all(
+            conflicts.numel() == 0
+            for conflicts in selection_constraints.prior_conflicts
+        )
+    )
+    if selection_constraints is not None and not selection_is_redundant:
+        return _constrained_allocation_unit_batches(
+            allocation_unit_limit,
+            strategy_count,
+            len(maximal_cliques),
+            cliques_by_strategy,
+            device,
+            batch_size,
+            selection_constraints=selection_constraints,
+            positive_unit_starts=(1,) * strategy_count,
+        )
     if ordinary_simplex:
         return _simplex_allocation_unit_batches(
             allocation_unit_limit, strategy_count, device, batch_size
@@ -671,132 +773,6 @@ def _cartesian_allocation_unit_batches(
             allocation_units[:, column] = torch.remainder(work, base)
             work.div_(base, rounding_mode="floor")
         yield allocation_units
-
-
-def _constrained_allocation_unit_batches(
-    allocation_unit_limit: int,
-    strategy_count: int,
-    clique_count: int,
-    cliques_by_strategy: list[torch.Tensor],
-    device: torch.device,
-    batch_size: int,
-    clique_unit_limits: torch.Tensor | None = None,
-) -> Iterator[torch.Tensor]:
-    """Yield valid batches under arbitrary overlap-clique constraints."""
-    integer_limit = torch.iinfo(torch.int64).max
-    if allocation_unit_limit >= integer_limit:
-        raise ValueError("the allocation limit is too large to index")
-    if clique_unit_limits is None:
-        clique_unit_limits = torch.full(
-            (clique_count,), allocation_unit_limit, device=device, dtype=torch.int64
-        )
-    if clique_unit_limits.shape != (clique_count,):
-        raise ValueError("clique_unit_limits must have one value per clique")
-    safe_batch_size = min(batch_size, integer_limit // (allocation_unit_limit + 1))
-    prefixes = torch.empty((1, 0), device=device, dtype=torch.int64)
-    clique_usage = torch.zeros((1, clique_count), device=device, dtype=torch.int64)
-    column = 0
-    expansion_stack: list[_ExpansionFrame] = []
-
-    while True:
-        if column == strategy_count:
-            yield prefixes
-        else:
-            expansion = _make_constrained_expansion(
-                prefixes,
-                clique_usage,
-                column,
-                allocation_unit_limit,
-                clique_unit_limits,
-                cliques_by_strategy,
-            )
-            prefixes, clique_usage, next_child = _constrained_child_batch(
-                expansion, cliques_by_strategy, safe_batch_size
-            )
-            if next_child < expansion.child_count:
-                expansion_stack.append(expansion._replace(next_child=next_child))
-            column += 1
-            continue
-
-        if not expansion_stack:
-            return
-        expansion = expansion_stack.pop()
-        prefixes, clique_usage, next_child = _constrained_child_batch(
-            expansion, cliques_by_strategy, safe_batch_size
-        )
-        if next_child < expansion.child_count:
-            expansion_stack.append(expansion._replace(next_child=next_child))
-        column = expansion.column + 1
-
-
-def _make_constrained_expansion(
-    prefixes: torch.Tensor,
-    clique_usage: torch.Tensor,
-    column: int,
-    allocation_unit_limit: int,
-    clique_unit_limits: torch.Tensor,
-    cliques_by_strategy: list[torch.Tensor],
-) -> _ExpansionFrame:
-    """Prepare counts for one valid-only prefix expansion."""
-    constraint_indices = cliques_by_strategy[column]
-    if constraint_indices.numel() == 0:
-        limits = torch.full(
-            (prefixes.shape[0],),
-            allocation_unit_limit,
-            device=prefixes.device,
-            dtype=torch.int64,
-        )
-    else:
-        used = clique_usage[:, constraint_indices]
-        remaining = clique_unit_limits[constraint_indices].unsqueeze(0) - used
-        limits = torch.amin(remaining, dim=1)
-        limits.clamp_max_(allocation_unit_limit)
-
-    child_counts = limits + 1
-    cumulative_counts = torch.cumsum(child_counts, dim=0)
-    child_count = int(cumulative_counts[-1].item())
-    return _ExpansionFrame(
-        prefixes,
-        clique_usage,
-        column,
-        cumulative_counts,
-        child_counts,
-        0,
-        child_count,
-    )
-
-
-def _constrained_child_batch(
-    expansion: _ExpansionFrame,
-    cliques_by_strategy: list[torch.Tensor],
-    batch_size: int,
-) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Expand the next bounded child range from a saved prefix state."""
-    stop = min(expansion.next_child + batch_size, expansion.child_count)
-    flat_indices = torch.arange(
-        expansion.next_child,
-        stop,
-        device=expansion.prefixes.device,
-        dtype=torch.int64,
-    )
-    parent_indices = torch.searchsorted(
-        expansion.cumulative_counts, flat_indices, right=True
-    )
-    values = (
-        flat_indices
-        - expansion.cumulative_counts[parent_indices]
-        + expansion.child_counts[parent_indices]
-    )
-    child_prefixes = torch.cat(
-        (expansion.prefixes[parent_indices], values.unsqueeze(1)), dim=1
-    )
-    child_usage = expansion.clique_usage[parent_indices]
-    constraint_indices = cliques_by_strategy[expansion.column]
-    if constraint_indices.numel() > 0:
-        child_usage[:, constraint_indices] = child_usage[
-            :, constraint_indices
-        ] + values.unsqueeze(1)
-    return child_prefixes, child_usage, stop
 
 
 def _make_rank_boundaries(

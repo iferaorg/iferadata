@@ -18,6 +18,10 @@ from tqdm.auto import tqdm  # pylint: disable=unused-import
 from ifera.settings import settings
 
 from . import capital_allocation
+from ._strategy_selection import (
+    strategy_correlation_matrix as _strategy_correlation_matrix,
+    validate_strategy_selection_parameters as _validate_strategy_selection_parameters,
+)
 
 __all__ = [
     "PortfolioAllocationResult",
@@ -30,7 +34,6 @@ __all__ = [
 ]
 
 _ANNUALIZATION_PERIODS = 252
-_CORRELATION_ZERO_TOLERANCE = 1e-12
 _CSV_DATE_FORMATS = (
     "%b %-d, %Y %-I:%M%p",
     "%b %-d, %Y",
@@ -150,6 +153,9 @@ def find_optimal_capital_allocation_from_csv(
     refinement_divisor: float = 2.0,
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
     returns_dtype: type[pl.DataType] = pl.Float32,
+    max_strategies: int | None = None,
+    min_correlation: float | None = None,
+    max_correlation: float | None = None,
 ) -> PortfolioAllocationResult:
     """Optimize and report allocations for the CSV strategies in a portfolio.
 
@@ -174,6 +180,8 @@ def find_optimal_capital_allocation_from_csv(
     Pairwise strategy correlations likewise use the complete series after
     replacing inactive values with zero. Correlations involving a constant
     strategy are reported as undefined and excluded from correlation summaries.
+    Optional support limits search all valid strategy combinations together;
+    the result retains every filename and assigns zero to excluded strategies.
 
     Args:
         portfolio_name: Name of the directory below ``results/portfolios``.
@@ -197,6 +205,11 @@ def find_optimal_capital_allocation_from_csv(
         returns_dtype: Floating-point dtype used to load and store strategy
             returns. Must be ``polars.Float32`` or ``polars.Float64`` and
             defaults to ``polars.Float32``.
+        max_strategies: Optional positive limit on nonzero strategy allocations.
+        min_correlation: Optional inclusive minimum correlation between any two
+            strategies with nonzero allocations.
+        max_correlation: Optional inclusive maximum correlation between any two
+            strategies with nonzero allocations.
 
     Returns:
         Strategy names, optimal allocation, combined daily results, financial
@@ -209,6 +222,11 @@ def find_optimal_capital_allocation_from_csv(
     """
     annualization_value = _validate_annualization_periods(annualization_periods)
     risk_free_value = _validate_risk_free_rate(risk_free_rate)
+    maximum, minimum_correlation, maximum_correlation = (
+        _validate_strategy_selection_parameters(
+            max_strategies, min_correlation, max_correlation
+        )
+    )
     if not isinstance(show_plot, bool):
         raise TypeError("show_plot must be a bool")
 
@@ -234,6 +252,9 @@ def find_optimal_capital_allocation_from_csv(
         refinement_divisor=refinement_divisor,
         diagnostics=optimizer_diagnostics,
         ADD_limit=ADD_limit,
+        max_strategies=maximum,
+        min_correlation=minimum_correlation,
+        max_correlation=maximum_correlation,
     )
     weights = allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
     daily_results = _combined_daily_results(
@@ -287,6 +308,9 @@ def walk_forward_capital_allocation_from_csv(
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
     allocation_alpha: float = 1.0,
     returns_dtype: type[pl.DataType] = pl.Float32,
+    max_strategies: int | None = None,
+    min_correlation: float | None = None,
+    max_correlation: float | None = None,
 ) -> WalkForwardPortfolioAllocationResult:
     """Run rolling portfolio optimization and report out-of-sample results.
 
@@ -313,6 +337,11 @@ def walk_forward_capital_allocation_from_csv(
     smoothed allocation. Smoothing is post-processing, so the applied allocation
     is not projected back into a later fold's potentially changed overlap,
     maximum-allocation, or ``ADD_limit`` constraints.
+
+    Strategy support and correlation limits are recalculated independently from
+    each fold's training returns. When any such limit is requested, EMA weights
+    outside the newly selected support are set to zero so excluded strategies
+    remain unused in that simulation period.
     """
     from .walk_forward_allocation import (  # pylint: disable=import-outside-toplevel
         walk_forward_capital_allocation_from_csv as run_walk_forward,
@@ -340,6 +369,9 @@ def walk_forward_capital_allocation_from_csv(
         ADD_limit=ADD_limit,
         allocation_alpha=allocation_alpha,
         returns_dtype=returns_dtype,
+        max_strategies=max_strategies,
+        min_correlation=min_correlation,
+        max_correlation=max_correlation,
     )
 
 
@@ -737,29 +769,6 @@ def _portfolio_statistics(
         best_day=float(summary["best_day"] or 0.0),
         worst_day=float(summary["worst_day"] or 0.0),
     )
-
-
-def _strategy_correlation_matrix(returns: torch.Tensor) -> torch.Tensor:
-    """Return a CPU float64 Pearson matrix with inactive NaNs replaced by zero."""
-    filled_returns = torch.nan_to_num(
-        returns.detach().to(device="cpu", dtype=torch.float64), nan=0.0
-    )
-    column_scales = filled_returns.abs().amax(dim=0)
-    safe_scales = torch.where(
-        column_scales > 0.0, column_scales, torch.ones_like(column_scales)
-    )
-    scaled_returns = filled_returns / safe_scales
-    centered_returns = scaled_returns - scaled_returns.mean(dim=0, keepdim=True)
-    norms = centered_returns.square().sum(dim=0).sqrt()
-    cross_products = centered_returns.transpose(0, 1) @ centered_returns
-    denominators = torch.outer(norms, norms)
-    correlation_matrix = torch.full_like(cross_products, math.nan)
-    nonconstant = torch.amax(scaled_returns, dim=0) > torch.amin(scaled_returns, dim=0)
-    defined = (denominators > 0.0) & torch.outer(nonconstant, nonconstant)
-    correlation_matrix[defined] = cross_products[defined] / denominators[defined]
-    correlation_matrix.clamp_(-1.0, 1.0)
-    correlation_matrix[correlation_matrix.abs() <= _CORRELATION_ZERO_TOLERANCE] = 0.0
-    return correlation_matrix
 
 
 def _valid_pairwise_correlations(

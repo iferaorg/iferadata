@@ -1,3 +1,5 @@
+from sys import exit
+
 import ifera
 import torch
 import numpy as np
@@ -9,6 +11,40 @@ import time
 from tqdm import tqdm
 from rich.live import Live
 from rich.table import Table
+
+
+
+import importlib
+import torch
+import ifera.allocation.capital_allocation as capital_allocation
+import ifera.allocation.portfolio_allocation as portfolio_allocation
+import ifera.allocation.walk_forward_allocation as walk_forward_allocation
+importlib.reload(capital_allocation)
+importlib.reload(portfolio_allocation)
+importlib.reload(walk_forward_allocation)
+
+torch.set_float32_matmul_precision('high')
+
+result = walk_forward_allocation.walk_forward_capital_allocation_from_csv(
+    "pf_002_full",
+    alpha=0.0,
+    grid_increment=0.2,
+    training_weeks=104,
+    embargo_weeks=0,
+    simulation_weeks=1,
+    bootstrap_on=True,
+    bootstrap_runs=1024 * 16,
+    bootstrap_length=512,
+    percentile=10,
+    refinement_runs=6,
+    refinement_divisor=2.0,
+    max_total_allocation=0.8,
+    ADD_limit=-0.1,
+    allocation_alpha=0.05,
+    max_correlation=0.2
+)
+
+exit(0)
 
 # dm = ifera.DataManager()
 # cm = ifera.ConfigManager()

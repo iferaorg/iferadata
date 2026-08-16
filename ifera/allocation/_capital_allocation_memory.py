@@ -42,7 +42,7 @@ def candidate_batch_size(
         prefix_stack_bytes = _PREFIX_STACK_MEMORY_SAFETY_FACTOR * (
             4 * strategy_count * (strategy_count - 1)
             + 8 * strategy_count * clique_count
-            + 16 * strategy_count
+            + 24 * strategy_count
         )
     candidate_bytes = max(
         path_bytes + (strategy_count + clique_count) * 32 + prefix_stack_bytes,
