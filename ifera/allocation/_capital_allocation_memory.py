@@ -6,8 +6,8 @@ import torch
 
 _BOOTSTRAP_MEMORY_SAFETY_FACTOR = 2
 _BOOTSTRAP_RUN_CHUNK_SIZE = 16
-_BATCH_MEMORY_BUDGET_BYTES = 1024 * 1024 * 1024
-_MAX_CANDIDATES_PER_BATCH = 1_000_000
+_BATCH_MEMORY_BUDGET_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_CANDIDATES_PER_BATCH = 4 * 1024 * 1024
 _PREFIX_STACK_MEMORY_SAFETY_FACTOR = 4
 
 
@@ -33,7 +33,9 @@ def candidate_batch_size(
             + bootstrap_runs * (2 * element_size + 8)
         )
         path_bytes = _BOOTSTRAP_MEMORY_SAFETY_FACTOR * bootstrap_path_bytes
-        bootstrap_index_bytes = bootstrap_runs * bootstrap_length * 8
+        # The compiled higher-order map pads/copies indices into equal chunks;
+        # reserve both that input and the original shared index matrix.
+        bootstrap_index_bytes = 2 * bootstrap_runs * bootstrap_length * 8
 
     prefix_stack_bytes = 0
     if uses_prefix_expansion:

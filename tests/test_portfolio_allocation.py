@@ -11,8 +11,8 @@ import polars as pl
 import pytest
 import torch
 
-import ifera.capital_allocation as capital_allocation
-import ifera.portfolio_allocation as portfolio_allocation
+import ifera.allocation.capital_allocation as capital_allocation
+import ifera.allocation.portfolio_allocation as portfolio_allocation
 from ifera.settings import settings
 
 matplotlib.use("Agg", force=True)
@@ -85,6 +85,55 @@ def _fixed_optimizer(
     return optimizer
 
 
+def _sequential_optimizer(
+    allocations: list[list[float]], captured: list[dict[str, object]]
+):
+    """Return successive allocations while retaining every training invocation."""
+
+    def optimizer(
+        returns: torch.Tensor,
+        alpha: float,
+        grid_increment: float,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        call_index = len(captured)
+        captured.append(
+            {
+                "returns": returns.clone(),
+                "alpha": alpha,
+                "grid_increment": grid_increment,
+                **kwargs,
+            }
+        )
+        dtype = kwargs.get("dtype") or returns.dtype
+        device = kwargs.get("device") or returns.device
+        return torch.tensor(allocations[call_index], dtype=dtype, device=device)
+
+    return optimizer
+
+
+def _write_complete_market_strategy(
+    path: Path,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    multiplier: float = 1.0,
+) -> tuple[list[datetime.date], dict[datetime.date, float]]:
+    """Write one observation per NYSE session with date-identifiable returns."""
+    market_dates = portfolio_allocation._nyse_market_dates(start_date, end_date)[
+        "date"
+    ].to_list()
+    fractional_returns = {
+        market_date: multiplier * (index + 1) / 100.0
+        for index, market_date in enumerate(market_dates)
+    }
+    _write_strategy(
+        path,
+        [f"{market_date.isoformat()} 10:00:00" for market_date in market_dates],
+        [fractional_returns[market_date] * 100.0 for market_date in market_dates],
+    )
+    return market_dates, fractional_returns
+
+
 def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
@@ -112,6 +161,7 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         "calendar_case",
         alpha=0.7,
         grid_increment=0.3,
+        returns_dtype=pl.Float64,
         device="cpu",
         dtype=torch.float32,
         bootstrap_on=True,
@@ -189,6 +239,57 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         index for index, line in enumerate(output_lines) if line.startswith("ADD:")
     )
     assert output_lines[add_line + 1].startswith("ADD (bootstrap):")
+
+
+def test_wrapper_defaults_csv_returns_to_float32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """CSV return storage and optimizer input default to single precision."""
+    directory = _portfolio_directory(tmp_path, "default_returns_dtype")
+    _write_strategy(
+        directory / "strategy.csv",
+        ["Jan 13, 2025 10:00am", "Jan 14, 2025 10:00am"],
+        [12.5, -6.25],
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _fixed_optimizer([1.0], captured),
+    )
+
+    result = portfolio_allocation.find_optimal_capital_allocation_from_csv(
+        "default_returns_dtype",
+        alpha=0.0,
+        grid_increment=1.0,
+        device="cpu",
+        show_plot=False,
+    )
+
+    assert isinstance(captured["returns"], torch.Tensor)
+    assert captured["returns"].dtype is torch.float32
+    assert result.daily_results.schema["strategy"] == pl.Float32
+    assert result.allocation.dtype is torch.float32
+
+
+def test_wrapper_rejects_nonfloating_returns_dtype(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The CSV dtype cannot discard fractions or silently promote after division."""
+    directory = _portfolio_directory(tmp_path, "invalid_returns_dtype")
+    _write_strategy(directory / "strategy.csv", ["Jan 13, 2025 10:00am"], [1.0])
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+
+    with pytest.raises(ValueError, match="returns_dtype|Float32|Float64"):
+        portfolio_allocation.find_optimal_capital_allocation_from_csv(
+            "invalid_returns_dtype",
+            alpha=0.0,
+            grid_increment=1.0,
+            returns_dtype=pl.Int64,
+            device="cpu",
+            show_plot=False,
+        )
 
 
 def test_wrapper_reports_pairwise_diversification_from_inactive_zero_returns(
@@ -540,6 +641,726 @@ def test_wrapper_displays_equity_curve_on_log_scale(
     plt.close("all")
 
 
+def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Each fold retrains on a fixed window and clips only its final simulation."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_windows")
+    all_dates, alpha_returns = _write_complete_market_strategy(
+        directory / "alpha.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 19),
+    )
+    _, beta_returns = _write_complete_market_strategy(
+        directory / "beta.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 19),
+        multiplier=2.0,
+    )
+    optimizer_calls: list[dict[str, object]] = []
+    progress_calls: list[tuple[int, dict[str, object]]] = []
+
+    def recording_tqdm(iterable, **kwargs):
+        items = tuple(iterable)
+        progress_calls.append((len(items), kwargs))
+        return items
+
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _sequential_optimizer([[1.0, 0.0], [0.0, 1.0]], optimizer_calls),
+    )
+    monkeypatch.setattr(portfolio_allocation, "tqdm", recording_tqdm, raising=False)
+
+    result = capital_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_windows",
+        alpha=0.4,
+        grid_increment=0.5,
+        training_weeks=2,
+        embargo_weeks=1,
+        simulation_weeks=2,
+        returns_dtype=pl.Float64,
+        device="cpu",
+        bootstrap_on=True,
+        bootstrap_runs=7,
+        bootstrap_length=8,
+        percentile=9.0,
+        ADD_limit=-0.2,
+        max_total_allocation=1.5,
+        refinement_runs=2,
+        refinement_divisor=3.0,
+        show_plot=False,
+    )
+
+    assert isinstance(result, portfolio_allocation.WalkForwardPortfolioAllocationResult)
+    assert result.strategy_names == ("alpha", "beta")
+    assert len(optimizer_calls) == 2
+    expected_training_ranges = (
+        (datetime.date(2025, 1, 6), datetime.date(2025, 1, 17)),
+        (datetime.date(2025, 1, 21), datetime.date(2025, 1, 31)),
+    )
+    for call, (start_date, end_date) in zip(optimizer_calls, expected_training_ranges):
+        training_dates = [
+            market_date
+            for market_date in all_dates
+            if start_date <= market_date <= end_date
+        ]
+        expected_returns = torch.tensor(
+            [
+                [alpha_returns[market_date], beta_returns[market_date]]
+                for market_date in training_dates
+            ],
+            dtype=torch.float64,
+        )
+        torch.testing.assert_close(call["returns"], expected_returns)
+        assert call["alpha"] == 0.4
+        assert call["grid_increment"] == 0.5
+        assert call["bootstrap_on"] is True
+        assert call["bootstrap_runs"] == 7
+        assert call["bootstrap_length"] == 8
+        assert call["percentile"] == 9.0
+        assert call["ADD_limit"] == -0.2
+        assert call["max_total_allocation"] == 1.5
+        assert call["refinement_runs"] == 2
+        assert call["refinement_divisor"] == 3.0
+
+    assert len(result.folds) == 2
+    first_fold, second_fold = result.folds
+    assert first_fold.training_start_date == datetime.date(2025, 1, 6)
+    assert first_fold.training_end_date == datetime.date(2025, 1, 17)
+    assert first_fold.simulation_start_date == datetime.date(2025, 1, 27)
+    assert first_fold.simulation_end_date == datetime.date(2025, 2, 7)
+    torch.testing.assert_close(
+        first_fold.allocation, torch.tensor([1.0, 0.0], dtype=torch.float64)
+    )
+    torch.testing.assert_close(
+        first_fold.calculated_allocation,
+        torch.tensor([1.0, 0.0], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        first_fold.applied_allocation,
+        torch.tensor([1.0, 0.0], dtype=torch.float64),
+    )
+    assert second_fold.training_start_date == datetime.date(2025, 1, 21)
+    assert second_fold.training_end_date == datetime.date(2025, 1, 31)
+    assert second_fold.simulation_start_date == datetime.date(2025, 2, 10)
+    assert second_fold.simulation_end_date == datetime.date(2025, 2, 19)
+    torch.testing.assert_close(
+        second_fold.allocation, torch.tensor([0.0, 1.0], dtype=torch.float64)
+    )
+    torch.testing.assert_close(
+        second_fold.calculated_allocation,
+        torch.tensor([0.0, 1.0], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        second_fold.applied_allocation,
+        torch.tensor([0.0, 1.0], dtype=torch.float64),
+    )
+
+    expected_simulation_dates = [
+        market_date
+        for market_date in all_dates
+        if datetime.date(2025, 1, 27) <= market_date <= datetime.date(2025, 2, 19)
+    ]
+    expected_combined_returns = [
+        (
+            alpha_returns[market_date]
+            if market_date <= datetime.date(2025, 2, 7)
+            else beta_returns[market_date]
+        )
+        for market_date in expected_simulation_dates
+    ]
+    assert result.daily_results["date"].to_list() == expected_simulation_dates
+    assert result.daily_results["combined_return"].to_list() == pytest.approx(
+        expected_combined_returns
+    )
+    expected_equity: list[float] = []
+    current_equity = 1.0
+    for combined_return in expected_combined_returns:
+        current_equity *= 1.0 + combined_return
+        expected_equity.append(current_equity)
+    assert result.daily_results["equity"].to_list() == pytest.approx(expected_equity)
+    assert result.statistics.start_date == datetime.date(2025, 1, 27)
+    assert result.statistics.end_date == datetime.date(2025, 2, 19)
+    assert result.statistics.market_days == len(expected_simulation_dates)
+    assert result.statistics.bootstrap_average_drawdown is None
+    assert result.diversification.highest_correlation == pytest.approx(1.0)
+    expected_concentration = (10.0 / 17.0) ** 2 + (7.0 / 17.0) ** 2
+    assert result.diversification.allocation_concentration == pytest.approx(
+        expected_concentration
+    )
+
+    assert len(progress_calls) == 1
+    progress_length, progress_kwargs = progress_calls[0]
+    assert progress_kwargs.get("total", progress_length) == 2
+    output = capsys.readouterr().out
+    for statistic_name in (
+        "CAGR",
+        "CMGR",
+        "Win rate",
+        "ADD",
+        "MaxDD",
+        "Sharpe ratio",
+        "Sortino ratio",
+        "Portfolio robustness / diversification",
+    ):
+        assert statistic_name in output
+    assert "ADD (bootstrap)" not in output
+
+
+def test_walk_forward_allocation_alpha_recursively_smooths_applied_allocations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """EMA uses the prior applied allocation for returns and aggregate reporting."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_allocation_alpha")
+    all_dates, alpha_returns = _write_complete_market_strategy(
+        directory / "alpha.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 31),
+    )
+    _, beta_returns = _write_complete_market_strategy(
+        directory / "beta.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 31),
+        multiplier=2.0,
+    )
+    calculated = ([1.0, 0.0], [0.0, 1.0], [0.8, 0.2])
+    optimizer_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _sequential_optimizer([list(item) for item in calculated], optimizer_calls),
+    )
+
+    result = capital_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_allocation_alpha",
+        alpha=0.0,
+        grid_increment=0.1,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        returns_dtype=pl.Float64,
+        allocation_alpha=0.25,
+        device="cpu",
+        show_plot=False,
+    )
+
+    expected_applied = (
+        torch.tensor([1.0, 0.0], dtype=torch.float64),
+        torch.tensor([0.75, 0.25], dtype=torch.float64),
+        torch.tensor([0.7625, 0.2375], dtype=torch.float64),
+    )
+    assert len(result.folds) == 3
+    for fold, expected_calculated, expected_smoothed in zip(
+        result.folds, calculated, expected_applied, strict=True
+    ):
+        torch.testing.assert_close(
+            fold.calculated_allocation,
+            torch.tensor(expected_calculated, dtype=torch.float64),
+        )
+        torch.testing.assert_close(fold.applied_allocation, expected_smoothed)
+        # The original result field remains an alias for the allocation actually used.
+        torch.testing.assert_close(fold.allocation, expected_smoothed)
+
+    simulation_periods = (
+        (datetime.date(2025, 1, 13), datetime.date(2025, 1, 17)),
+        (datetime.date(2025, 1, 21), datetime.date(2025, 1, 24)),
+        (datetime.date(2025, 1, 27), datetime.date(2025, 1, 31)),
+    )
+    expected_returns: list[float] = []
+    expected_dates: list[datetime.date] = []
+    simulation_day_counts: list[int] = []
+    for (period_start, period_end), applied in zip(
+        simulation_periods, expected_applied, strict=True
+    ):
+        period_dates = [
+            market_date
+            for market_date in all_dates
+            if period_start <= market_date <= period_end
+        ]
+        simulation_day_counts.append(len(period_dates))
+        expected_dates.extend(period_dates)
+        expected_returns.extend(
+            applied[0].item() * alpha_returns[market_date]
+            + applied[1].item() * beta_returns[market_date]
+            for market_date in period_dates
+        )
+
+    assert result.daily_results["date"].to_list() == expected_dates
+    assert result.daily_results["combined_return"].to_list() == pytest.approx(
+        expected_returns
+    )
+    expected_equity = math.prod(1.0 + value for value in expected_returns)
+    assert result.statistics.ending_equity == pytest.approx(expected_equity)
+    expected_average = sum(
+        allocation * day_count
+        for allocation, day_count in zip(
+            expected_applied, simulation_day_counts, strict=True
+        )
+    ) / sum(simulation_day_counts)
+    torch.testing.assert_close(result.average_allocation, expected_average)
+    expected_concentration = float(torch.square(expected_average).sum().item())
+    assert result.diversification.allocation_concentration == pytest.approx(
+        expected_concentration
+    )
+
+
+def test_walk_forward_excludes_an_initial_partial_calendar_week(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A dataset beginning after an available Monday session starts next week."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_partial_start")
+    _, returns_by_date = _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 7),
+        datetime.date(2025, 1, 31),
+    )
+    optimizer_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _sequential_optimizer([[1.0], [1.0]], optimizer_calls),
+    )
+
+    result = portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_partial_start",
+        alpha=0.0,
+        grid_increment=1.0,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        device="cpu",
+        show_plot=False,
+    )
+
+    expected_first_training_dates = [
+        datetime.date(2025, 1, 13),
+        datetime.date(2025, 1, 14),
+        datetime.date(2025, 1, 15),
+        datetime.date(2025, 1, 16),
+        datetime.date(2025, 1, 17),
+    ]
+    torch.testing.assert_close(
+        optimizer_calls[0]["returns"],
+        torch.tensor(
+            [
+                [returns_by_date[market_date]]
+                for market_date in expected_first_training_dates
+            ],
+            dtype=torch.float32,
+        ),
+    )
+    assert result.folds[0].training_start_date == datetime.date(2025, 1, 13)
+    assert result.daily_results["date"].item(0) == datetime.date(2025, 1, 21)
+    assert all(
+        market_date >= datetime.date(2025, 1, 21)
+        for market_date in result.daily_results["date"]
+    )
+
+
+def test_walk_forward_keeps_holiday_shortened_initial_week(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Starting on Tuesday after a Monday NYSE holiday is a complete week."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_holiday_start")
+    _, returns_by_date = _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 21),
+        datetime.date(2025, 1, 31),
+    )
+    optimizer_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _sequential_optimizer([[1.0]], optimizer_calls),
+    )
+
+    result = portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_holiday_start",
+        alpha=0.0,
+        grid_increment=1.0,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        device="cpu",
+        show_plot=False,
+    )
+
+    expected_training_dates = [
+        datetime.date(2025, 1, 21),
+        datetime.date(2025, 1, 22),
+        datetime.date(2025, 1, 23),
+        datetime.date(2025, 1, 24),
+    ]
+    torch.testing.assert_close(
+        optimizer_calls[0]["returns"],
+        torch.tensor(
+            [[returns_by_date[market_date]] for market_date in expected_training_dates],
+            dtype=torch.float32,
+        ),
+    )
+    assert len(result.folds) == 1
+    assert result.folds[0].training_start_date == datetime.date(2025, 1, 21)
+    assert result.folds[0].training_end_date == datetime.date(2025, 1, 24)
+    assert result.folds[0].simulation_start_date == datetime.date(2025, 1, 27)
+
+
+def test_walk_forward_bootstrap_draws_fresh_indices_for_every_training_fold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Independent optimizer calls create a new bootstrap sample for each fold."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_bootstrap")
+    _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 31),
+    )
+    randint_calls: list[tuple[int, tuple[int, ...]]] = []
+    original_randint = torch.randint
+
+    def recording_randint(high, size, **kwargs):
+        randint_calls.append((high, size))
+        return original_randint(high, size, **kwargs)
+
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(torch, "randint", recording_randint)
+
+    result = portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_bootstrap",
+        alpha=0.1,
+        grid_increment=1.0,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        device="cpu",
+        bootstrap_on=True,
+        bootstrap_runs=2,
+        bootstrap_length=3,
+        show_plot=False,
+    )
+
+    assert randint_calls == [(4, (2, 3)), (5, (2, 3)), (4, (2, 3))]
+    assert len(result.folds) == 3
+    assert result.statistics.bootstrap_average_drawdown is None
+    assert "ADD (bootstrap)" not in capsys.readouterr().out
+
+
+def test_walk_forward_displays_equity_and_stepwise_allocation_plots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The report plots equity, then every strategy's allocation by simulation."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_plot")
+    _write_complete_market_strategy(
+        directory / "alpha.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 19),
+    )
+    _write_complete_market_strategy(
+        directory / "beta.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 19),
+        multiplier=2.0,
+    )
+    optimizer_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _sequential_optimizer([[0.25, 0.75], [0.8, 0.2]], optimizer_calls),
+    )
+    displayed_axes: list[matplotlib.axes.Axes] = []
+
+    def record_displayed_axis() -> None:
+        figure = plt.gcf()
+        assert len(figure.axes) == 1
+        displayed_axes.append(figure.axes[0])
+
+    monkeypatch.setattr(plt, "show", record_displayed_axis)
+
+    portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_plot",
+        alpha=0.0,
+        grid_increment=0.25,
+        training_weeks=2,
+        embargo_weeks=1,
+        simulation_weeks=2,
+        allocation_alpha=0.5,
+        device="cpu",
+        show_plot=True,
+    )
+
+    assert len(displayed_axes) == 2
+    equity_axis, allocation_axis = displayed_axes
+    assert equity_axis.get_yscale() == "log"
+
+    allocation_lines = allocation_axis.get_lines()
+    solid_lines = {
+        line.get_label(): line
+        for line in allocation_lines
+        if line.get_linestyle() == "-"
+    }
+    dashed_lines = [line for line in allocation_lines if line.get_linestyle() == "--"]
+    assert set(solid_lines) == {"alpha", "beta"}
+    assert len(dashed_lines) == 2
+    assert len({line.get_color() for line in solid_lines.values()}) == 2
+    expected_dates = [
+        datetime.date(2025, 1, 27),
+        datetime.date(2025, 2, 10),
+        datetime.date(2025, 2, 20),
+    ]
+    expected_calculated = {
+        "alpha": [0.25, 0.8, 0.8],
+        "beta": [0.75, 0.2, 0.2],
+    }
+    expected_applied = {
+        "alpha": [0.25, 0.525, 0.525],
+        "beta": [0.75, 0.475, 0.475],
+    }
+    for strategy_name, solid_line in solid_lines.items():
+        calculated_line = next(
+            line for line in dashed_lines if line.get_color() == solid_line.get_color()
+        )
+        for line in (solid_line, calculated_line):
+            assert list(line.get_xdata()) == expected_dates
+            assert line.get_drawstyle() == "steps-post"
+        assert list(solid_line.get_ydata()) == pytest.approx(
+            expected_applied[strategy_name]
+        )
+        assert list(calculated_line.get_ydata()) == pytest.approx(
+            expected_calculated[strategy_name]
+        )
+        assert calculated_line.get_linewidth() < solid_line.get_linewidth()
+        calculated_alpha = calculated_line.get_alpha()
+        solid_alpha = solid_line.get_alpha()
+        assert calculated_alpha is not None
+        assert calculated_alpha < (1.0 if solid_alpha is None else solid_alpha)
+    assert allocation_axis.get_yscale() == "linear"
+    assert allocation_axis.get_ylabel() == "Allocation"
+    assert "walk_forward_plot" in allocation_axis.get_title()
+    legend = allocation_axis.get_legend()
+    assert legend is not None
+    assert [text.get_text() for text in legend.get_texts()] == ["alpha", "beta"]
+    assert "%" in allocation_axis.yaxis.get_major_formatter()(0.25)
+    plt.close("all")
+
+
+def test_walk_forward_show_plot_false_displays_no_figures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Disabling plots suppresses both equity and allocation figures."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_no_plot")
+    _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 17),
+    )
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _fixed_optimizer([1.0]),
+    )
+    displayed_figures: list[object] = []
+    monkeypatch.setattr(plt, "show", lambda: displayed_figures.append(plt.gcf()))
+
+    portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_no_plot",
+        alpha=0.0,
+        grid_increment=1.0,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        device="cpu",
+        show_plot=False,
+    )
+
+    assert displayed_figures == []
+    plt.close("all")
+
+
+@pytest.mark.parametrize(
+    ("parameter_name", "invalid_value", "error_type"),
+    [
+        ("training_weeks", True, TypeError),
+        ("training_weeks", 1.0, TypeError),
+        ("training_weeks", 0, ValueError),
+        ("training_weeks", -1, ValueError),
+        ("embargo_weeks", True, TypeError),
+        ("embargo_weeks", 1.0, TypeError),
+        ("embargo_weeks", -1, ValueError),
+        ("simulation_weeks", True, TypeError),
+        ("simulation_weeks", 1.0, TypeError),
+        ("simulation_weeks", 0, ValueError),
+        ("simulation_weeks", -1, ValueError),
+    ],
+)
+def test_walk_forward_rejects_invalid_week_parameters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parameter_name: str,
+    invalid_value: object,
+    error_type: type[Exception],
+):
+    """Walk-forward durations are integer whole weeks with documented bounds."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_invalid_weeks")
+    _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 17),
+    )
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    parameters: dict[str, object] = {
+        "training_weeks": 1,
+        "embargo_weeks": 0,
+        "simulation_weeks": 1,
+    }
+    parameters[parameter_name] = invalid_value
+
+    with pytest.raises(error_type, match=parameter_name):
+        portfolio_allocation.walk_forward_capital_allocation_from_csv(
+            "walk_forward_invalid_weeks",
+            alpha=0.0,
+            grid_increment=1.0,
+            device="cpu",
+            show_plot=False,
+            **parameters,
+        )
+
+
+@pytest.mark.parametrize(
+    ("invalid_value", "error_type"),
+    [
+        (True, TypeError),
+        ("0.5", TypeError),
+        (None, TypeError),
+        (-0.01, ValueError),
+        (1.01, ValueError),
+        (math.nan, ValueError),
+        (math.inf, ValueError),
+        (-math.inf, ValueError),
+    ],
+)
+def test_walk_forward_rejects_invalid_allocation_alpha(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_value: object,
+    error_type: type[Exception],
+):
+    """Allocation smoothing is a finite real coefficient from zero through one."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_invalid_alpha")
+    _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 17),
+    )
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+
+    with pytest.raises(error_type, match="allocation_alpha"):
+        portfolio_allocation.walk_forward_capital_allocation_from_csv(
+            "walk_forward_invalid_alpha",
+            alpha=0.0,
+            grid_increment=1.0,
+            training_weeks=1,
+            embargo_weeks=0,
+            simulation_weeks=1,
+            allocation_alpha=invalid_value,  # type: ignore[arg-type]
+            device="cpu",
+            show_plot=False,
+        )
+
+
+def test_walk_forward_wrappers_forward_allocation_alpha(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Both public lazy facades preserve the requested smoothing coefficient."""
+    import ifera.allocation.walk_forward_allocation as walk_forward_allocation
+
+    sentinel = object()
+    internal_calls: list[dict[str, object]] = []
+    facade_calls: list[dict[str, object]] = []
+
+    def fake_internal(**kwargs: object):
+        internal_calls.append(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        walk_forward_allocation,
+        "walk_forward_capital_allocation_from_csv",
+        fake_internal,
+    )
+    result = portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "forward_alpha",
+        alpha=0.0,
+        grid_increment=1.0,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        returns_dtype=pl.Float64,
+        allocation_alpha=0.375,
+        show_plot=False,
+    )
+    assert result is sentinel
+    assert internal_calls[0]["allocation_alpha"] == 0.375
+    assert internal_calls[0]["returns_dtype"] == pl.Float64
+
+    def fake_facade(**kwargs: object):
+        facade_calls.append(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        portfolio_allocation,
+        "walk_forward_capital_allocation_from_csv",
+        fake_facade,
+    )
+    result = capital_allocation.walk_forward_capital_allocation_from_csv(
+        "forward_alpha",
+        alpha=0.0,
+        grid_increment=1.0,
+        training_weeks=1,
+        embargo_weeks=0,
+        simulation_weeks=1,
+        returns_dtype=pl.Float64,
+        allocation_alpha=0.625,
+        show_plot=False,
+    )
+    assert result is sentinel
+    assert facade_calls[0]["allocation_alpha"] == 0.625
+    assert facade_calls[0]["returns_dtype"] == pl.Float64
+
+
+def test_walk_forward_rejects_dataset_without_a_simulation_period(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """At least one session must remain after the initial training and embargo."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_no_simulation")
+    _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 1, 10),
+    )
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+
+    with pytest.raises(ValueError, match="simulation|walk.forward|period"):
+        portfolio_allocation.walk_forward_capital_allocation_from_csv(
+            "walk_forward_no_simulation",
+            alpha=0.0,
+            grid_increment=1.0,
+            training_weeks=1,
+            embargo_weeks=0,
+            simulation_weeks=1,
+            device="cpu",
+            show_plot=False,
+        )
+
+
 def test_direct_wrapper_accepts_case_insensitive_columns_and_optimizes_disjoint_series(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -562,7 +1383,7 @@ def test_direct_wrapper_accepts_case_insensitive_columns_and_optimizes_disjoint_
     )
 
     assert result.strategy_names == ("left", "right")
-    assert torch.equal(result.allocation, torch.tensor([1.0, 1.0], dtype=torch.float64))
+    assert torch.equal(result.allocation, torch.tensor([1.0, 1.0], dtype=torch.float32))
     assert result.daily_results["combined_return"].to_list() == pytest.approx(
         [0.1, 0.2]
     )

@@ -1,5 +1,8 @@
 """Find capital allocations with a drawdown-penalized Kelly grid search."""
 
+# Public CSV facades intentionally mirror the reporting functions' signatures.
+# pylint: disable=duplicate-code
+
 from __future__ import annotations
 
 import math
@@ -8,21 +11,31 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 
-from ifera._capital_allocation_diagnostics import (
+from ._capital_allocation_diagnostics import (
     CapitalAllocationDiagnostics,
     finalize_allocation_diagnostics as _finalize_allocation_diagnostics,
     prepare_diagnostics as _prepare_diagnostics,
     validate_bootstrap_parameters as _validate_bootstrap_parameters,
 )
-from ifera._capital_allocation_memory import (
+from ._capital_allocation_drawdown import (
+    bootstrap_average_drawdown as _bootstrap_average_drawdown,
+    negative_rms_drawdown as _negative_rms_drawdown,
+)
+from ._capital_allocation_memory import (
     candidate_batch_size as _candidate_batch_size,
 )
-from ifera._capital_allocation_parameters import (
+from ._capital_allocation_parameters import (
+    SUPPORTED_DTYPES as _SUPPORTED_DTYPES,
+    resolve_allocation_unit_limit as _resolve_allocation_unit_limit,
+    resolve_calculation_dtype as _resolve_calculation_dtype,
+    resolve_device as _resolve_device,
+    resolve_grid_steps as _resolve_grid_steps,
     validate_add_limit as _validate_add_limit,
     validate_alpha as _validate_alpha,
     validate_max_total_allocation as _validate_max_total_allocation,
+    validate_returns as _validate_returns,
 )
-from ifera._capital_allocation_refinement import (
+from ._capital_allocation_refinement import (
     clique_unit_limits as _refinement_clique_unit_limits,
     grid_lower_bounds as _refinement_grid_lower_bounds,
     units_to_allocations as _refinement_units_to_allocations,
@@ -31,14 +44,14 @@ from ifera._capital_allocation_refinement import (
 )
 
 if TYPE_CHECKING:
-    from ifera.portfolio_allocation import PortfolioAllocationResult
+    from .portfolio_allocation import (
+        PortfolioAllocationResult,
+        WalkForwardPortfolioAllocationResult,
+    )
 
-_BOOTSTRAP_RUN_CHUNK_SIZE = 16
 _MAX_CANDIDATES_PER_BATCH = 1_000_000
-_RECIPROCAL_ULP_TOLERANCE = 4
-_SUPPORTED_DTYPES = frozenset(
-    (torch.float16, torch.bfloat16, torch.float32, torch.float64)
-)
+# Torch's public stubs omit the compiler configuration context decorator.
+_COMPILER_CONFIG_PATCH = getattr(torch.compiler.config, "patch")
 
 
 class _ExpansionFrame(NamedTuple):
@@ -383,17 +396,23 @@ def find_optimal_capital_allocation_from_csv(
     refinement_runs: int = 0,
     refinement_divisor: float = 2.0,
     ADD_limit: float | None = None,  # pylint: disable=invalid-name
+    returns_dtype: type | None = None,
 ) -> PortfolioAllocationResult:
     """Load a named CSV portfolio, optimize it, and report the result.
 
     The reporting implementation is imported lazily so the tensor-only search
     does not require Polars, the NYSE calendar, or Matplotlib at import time.
-    See :func:`ifera.portfolio_allocation.find_optimal_capital_allocation_from_csv`
+    See :func:`ifera.allocation.find_optimal_capital_allocation_from_csv`
     for the complete behavior and return-value documentation.
     """
-    from ifera.portfolio_allocation import (  # pylint: disable=import-outside-toplevel
+    from .portfolio_allocation import (  # pylint: disable=import-outside-toplevel
         find_optimal_capital_allocation_from_csv as find_from_csv,
     )
+
+    if returns_dtype is None:
+        from polars import Float32  # pylint: disable=import-outside-toplevel
+
+        returns_dtype = Float32
 
     return find_from_csv(
         portfolio_name,
@@ -412,77 +431,66 @@ def find_optimal_capital_allocation_from_csv(
         refinement_runs,
         refinement_divisor,
         ADD_limit=ADD_limit,
+        returns_dtype=returns_dtype,
     )
 
 
-def _validate_returns(returns: torch.Tensor) -> None:
-    """Validate the return-series tensor."""
-    if not isinstance(returns, torch.Tensor):
-        raise TypeError("returns must be a torch.Tensor")
-    if returns.ndim != 2:
-        raise ValueError("returns must have shape (time, strategies)")
-    if returns.shape[0] == 0 or returns.shape[1] == 0:
-        raise ValueError("returns must contain at least one time and one strategy")
-    if returns.dtype not in _SUPPORTED_DTYPES:
-        raise TypeError(
-            "returns must have a float16, bfloat16, float32, or float64 dtype"
-        )
-    if bool(torch.isinf(returns).any().item()):
-        raise ValueError("returns must not contain infinite values")
+def walk_forward_capital_allocation_from_csv(
+    portfolio_name: str,
+    alpha: float,
+    grid_increment: float,
+    training_weeks: int,
+    embargo_weeks: int,
+    simulation_weeks: int,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+    bootstrap_on: bool = False,
+    bootstrap_runs: int = 1024,
+    bootstrap_length: int = 256,
+    percentile: float = 10.0,
+    max_total_allocation: float = 1.0,
+    annualization_periods: int = 252,
+    risk_free_rate: float = 0.0,
+    show_plot: bool = True,
+    refinement_runs: int = 0,
+    refinement_divisor: float = 2.0,
+    ADD_limit: float | None = None,  # pylint: disable=invalid-name
+    allocation_alpha: float = 1.0,
+    returns_dtype: type | None = None,
+) -> WalkForwardPortfolioAllocationResult:
+    """Lazily run walk-forward portfolio optimization from CSV backtests."""
+    from .portfolio_allocation import (  # pylint: disable=import-outside-toplevel
+        walk_forward_capital_allocation_from_csv as run_walk_forward,
+    )
 
+    if returns_dtype is None:
+        from polars import Float32  # pylint: disable=import-outside-toplevel
 
-def _resolve_grid_steps(grid_increment: float) -> int:
-    """Return the integer number of intervals for the adjusted grid."""
-    try:
-        increment = float(grid_increment)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("grid_increment must be a real number") from exc
-    if not math.isfinite(increment) or not 0.0 < increment <= 1.0:
-        raise ValueError("grid_increment must be finite and in (0, 1]")
+        returns_dtype = Float32
 
-    reciprocal = 1.0 / increment
-    if not math.isfinite(reciprocal):
-        raise ValueError("grid_increment is too small")
-    nearest_integer = round(reciprocal)
-    reciprocal_error = abs(reciprocal - nearest_integer)
-    if reciprocal_error <= _RECIPROCAL_ULP_TOLERANCE * math.ulp(reciprocal):
-        return nearest_integer
-    return math.ceil(reciprocal)
-
-
-def _resolve_allocation_unit_limit(max_total_allocation: float, grid_steps: int) -> int:
-    """Return the largest integer grid-unit cap within the requested maximum."""
-    scaled_allocation = max_total_allocation * grid_steps
-    if not math.isfinite(scaled_allocation):
-        raise ValueError("max_total_allocation is too large for the grid")
-    nearest_integer = round(scaled_allocation)
-    allocation_error = abs(scaled_allocation - nearest_integer)
-    if allocation_error <= _RECIPROCAL_ULP_TOLERANCE * math.ulp(scaled_allocation):
-        allocation_unit_limit = nearest_integer
-    else:
-        allocation_unit_limit = math.floor(scaled_allocation)
-    if allocation_unit_limit >= torch.iinfo(torch.int64).max:
-        raise ValueError("max_total_allocation is too large to index")
-    return allocation_unit_limit
-
-
-def _resolve_device(device: torch.device | str | None) -> torch.device:
-    """Return the requested device or the preferred default device."""
-    if device is not None:
-        return torch.device(device)
-    if torch.cuda.is_available():
-        return torch.device("cuda:0")
-    return torch.device("cpu")
-
-
-def _resolve_calculation_dtype(
-    returns_dtype: torch.dtype, allocation_dtype: torch.dtype
-) -> torch.dtype:
-    """Choose a common calculation dtype with at least float32 precision."""
-    calculation_dtype = torch.promote_types(returns_dtype, allocation_dtype)
-    if torch.empty((), dtype=calculation_dtype).element_size() < 4:
-        return torch.float32
-    return calculation_dtype
+    return run_walk_forward(
+        portfolio_name=portfolio_name,
+        alpha=alpha,
+        grid_increment=grid_increment,
+        training_weeks=training_weeks,
+        embargo_weeks=embargo_weeks,
+        simulation_weeks=simulation_weeks,
+        device=device,
+        dtype=dtype,
+        bootstrap_on=bootstrap_on,
+        bootstrap_runs=bootstrap_runs,
+        bootstrap_length=bootstrap_length,
+        percentile=percentile,
+        max_total_allocation=max_total_allocation,
+        annualization_periods=annualization_periods,
+        risk_free_rate=risk_free_rate,
+        show_plot=show_plot,
+        refinement_runs=refinement_runs,
+        refinement_divisor=refinement_divisor,
+        ADD_limit=ADD_limit,
+        allocation_alpha=allocation_alpha,
+        returns_dtype=returns_dtype,
+    )
 
 
 def _find_maximal_overlap_cliques(active: torch.Tensor) -> list[tuple[int, ...]]:
@@ -902,6 +910,10 @@ def _update_best_allocation(
     return best_score, best_allocation, best_bootstrap_drawdown
 
 
+# CUDA Inductor's map-to-loop lowering extracts a scalar loop index. Scope
+# scalar capture to scoring calls so the compiler can trace that operation.
+@_COMPILER_CONFIG_PATCH(capture_scalar_outputs=True)
+@torch.compile()
 def _allocation_scores(
     allocations: torch.Tensor,
     transposed_returns: torch.Tensor,
@@ -946,43 +958,3 @@ def _allocation_scores(
         )
         bootstrap_drawdown_output.append(bootstrap_drawdowns)
     return scores
-
-
-def _bootstrap_average_drawdown(
-    portfolio_returns: torch.Tensor,
-    bootstrap_indices: torch.Tensor,
-    percentile: float,
-) -> torch.Tensor:
-    """Return the lower-percentile ADD across shared resampled paths."""
-    run_count = bootstrap_indices.shape[0]
-    run_drawdowns = torch.empty(
-        (portfolio_returns.shape[0], run_count),
-        device=portfolio_returns.device,
-        dtype=portfolio_returns.dtype,
-    )
-    for start in range(0, run_count, _BOOTSTRAP_RUN_CHUNK_SIZE):
-        stop = min(start + _BOOTSTRAP_RUN_CHUNK_SIZE, run_count)
-        sampled_log_returns = portfolio_returns[:, bootstrap_indices[start:stop]]
-        sampled_log_returns.log1p_()
-        run_drawdowns[:, start:stop] = _negative_rms_drawdown(
-            sampled_log_returns, dim=2
-        )
-    return torch.quantile(
-        run_drawdowns,
-        percentile / 100.0,
-        dim=1,
-        interpolation="linear",
-    )
-
-
-def _negative_rms_drawdown(
-    portfolio_log_returns: torch.Tensor, dim: int
-) -> torch.Tensor:
-    """Return negative RMS fractional drawdown along a time dimension."""
-    log_equity = portfolio_log_returns.cumsum_(dim=dim)
-    running_peak = torch.cummax(log_equity, dim=dim).values
-    running_peak.clamp_min_(0.0)
-    log_equity.sub_(running_peak).expm1_()
-    average_drawdown = log_equity.square_().mean(dim=dim).sqrt_().neg_()
-    average_drawdown.clamp_min_(-1.0)
-    return average_drawdown

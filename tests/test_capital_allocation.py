@@ -1,14 +1,15 @@
 """Tests for grid-search capital allocation."""
 
+import importlib
 import itertools
 import math
 
 import pytest
 import torch
 
-import ifera._capital_allocation_memory as capital_allocation_memory
-import ifera.capital_allocation as capital_allocation
-from ifera.capital_allocation import find_optimal_capital_allocation
+import ifera.allocation._capital_allocation_memory as capital_allocation_memory
+import ifera.allocation.capital_allocation as capital_allocation
+from ifera.allocation import find_optimal_capital_allocation
 
 
 def _grid_steps(requested_increment: float) -> int:
@@ -59,6 +60,31 @@ def _bootstrap_average_drawdown(
     run_drawdowns = -torch.sqrt(torch.mean(daily_drawdown.square(), dim=1))
     pessimistic_drawdown = torch.quantile(run_drawdowns, percentile / 100.0)
     return float(pessimistic_drawdown)
+
+
+def _portfolio_bootstrap_drawdown_oracle(
+    portfolio_returns: torch.Tensor,
+    bootstrap_indices: torch.Tensor,
+    percentile: float,
+) -> torch.Tensor:
+    """Calculate each portfolio's bootstrap ADD without production helpers."""
+    sampled_returns = portfolio_returns[:, bootstrap_indices]
+    wealth = torch.cumprod(1.0 + sampled_returns, dim=2)
+    initial_wealth = torch.ones(
+        (*wealth.shape[:2], 1),
+        device=wealth.device,
+        dtype=wealth.dtype,
+    )
+    wealth_with_initial = torch.cat((initial_wealth, wealth), dim=2)
+    running_peak = torch.cummax(wealth_with_initial, dim=2).values[:, :, 1:]
+    daily_drawdown = wealth / running_peak - 1.0
+    run_drawdowns = -torch.sqrt(torch.mean(daily_drawdown.square(), dim=2))
+    return torch.quantile(
+        run_drawdowns,
+        percentile / 100.0,
+        dim=1,
+        interpolation="linear",
+    )
 
 
 def _bootstrap_objective(
@@ -938,6 +964,133 @@ def test_bootstrap_matches_fixed_shared_row_sample_oracle(monkeypatch):
     assert randint_calls == [(4, (4, 5), torch.device("cpu"), torch.int64)]
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("run_count", [1, 15, 16, 17, 32, 33])
+@pytest.mark.parametrize("percentile", [0.0, 10.0, 100.0])
+def test_bootstrap_drawdown_matches_oracle_across_chunk_boundaries(
+    dtype: torch.dtype,
+    run_count: int,
+    percentile: float,
+):
+    """Chunking preserves ADD results, including the percentile endpoints."""
+    # Zeros represent already-normalized inactive strategy days at this layer.
+    portfolio_returns = torch.tensor(
+        [
+            [0.04, -0.03, 0.00, 0.06, -0.08, 0.02, 0.01],
+            [-0.02, 0.00, 0.05, -0.04, 0.03, -0.01, 0.07],
+            [0.00, 0.02, -0.01, 0.00, -0.03, 0.04, -0.02],
+        ],
+        dtype=dtype,
+    )
+    original_returns = portfolio_returns.clone()
+    run = torch.arange(run_count, dtype=torch.int64).unsqueeze(1)
+    day = torch.arange(11, dtype=torch.int64).unsqueeze(0)
+    bootstrap_indices = (run * 3 + day * 5 + run * day) % portfolio_returns.shape[1]
+    expected = _portfolio_bootstrap_drawdown_oracle(
+        portfolio_returns, bootstrap_indices, percentile
+    )
+
+    actual = capital_allocation._bootstrap_average_drawdown(
+        portfolio_returns, bootstrap_indices, percentile
+    )
+
+    rtol, atol = (3e-6, 2e-7) if dtype == torch.float32 else (1e-12, 1e-14)
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+    assert torch.equal(portfolio_returns, original_returns)
+
+
+def test_bootstrap_drawdown_eager_uses_bounded_chunks(monkeypatch):
+    """Eager bootstrap evaluation never materializes more than 16 runs at once."""
+    portfolio_returns = torch.tensor(
+        [[0.04, -0.03, 0.00, 0.06, -0.08, 0.02, 0.01]],
+        dtype=torch.float32,
+    )
+    bootstrap_indices = (
+        torch.arange(33 * 11, dtype=torch.int64).reshape(33, 11)
+        % portfolio_returns.shape[1]
+    )
+    expected = _portfolio_bootstrap_drawdown_oracle(
+        portfolio_returns, bootstrap_indices, 25.0
+    )
+    drawdown_module = importlib.import_module(
+        capital_allocation._bootstrap_average_drawdown.__module__
+    )
+    original_drawdown = drawdown_module.negative_rms_drawdown
+    observed_run_counts = []
+
+    def recording_drawdown(sampled_log_returns, dim):
+        observed_run_counts.append(sampled_log_returns.shape[1])
+        return original_drawdown(sampled_log_returns, dim)
+
+    monkeypatch.setattr(drawdown_module, "negative_rms_drawdown", recording_drawdown)
+
+    actual = capital_allocation._bootstrap_average_drawdown(
+        portfolio_returns, bootstrap_indices, 25.0
+    )
+
+    torch.testing.assert_close(actual, expected, rtol=3e-6, atol=2e-7)
+    assert observed_run_counts == [16, 16, 1]
+
+
+@pytest.mark.parametrize("run_count", [17, 33])
+def test_compiled_bootstrap_drawdown_maps_padded_chunks_in_one_graph(
+    run_count,
+):
+    """Compiled bootstrap ADD maps padded chunks, then trims real runs."""
+    portfolio_returns = torch.tensor(
+        [
+            [0.04, -0.03, 0.00, 0.06, -0.08, 0.02, 0.01, -0.05, 0.03],
+            [-0.02, 0.05, -0.01, 0.00, 0.07, -0.04, 0.02, 0.01, -0.03],
+        ],
+        dtype=torch.float32,
+    )
+    generator = torch.Generator(device="cpu").manual_seed(1700 + run_count)
+    bootstrap_indices = torch.randint(
+        portfolio_returns.shape[1],
+        (run_count, 13),
+        generator=generator,
+        dtype=torch.int64,
+    )
+    original_returns = portfolio_returns.clone()
+    original_indices = bootstrap_indices.clone()
+    expected = _portfolio_bootstrap_drawdown_oracle(
+        portfolio_returns, bootstrap_indices, 37.0
+    )
+    captured_graphs = []
+
+    def capture_graph(graph_module, _example_inputs):
+        captured_graphs.append(graph_module)
+        return graph_module.forward
+
+    compiled = torch.compile(
+        lambda returns, indices: capital_allocation._bootstrap_average_drawdown(
+            returns, indices, 37.0
+        ),
+        backend=capture_graph,
+        fullgraph=True,
+    )
+
+    actual = compiled(portfolio_returns, bootstrap_indices)
+
+    torch.testing.assert_close(actual, expected, rtol=3e-6, atol=2e-7)
+    assert torch.equal(portfolio_returns, original_returns)
+    assert torch.equal(bootstrap_indices, original_indices)
+    assert len(captured_graphs) == 1
+    while_loop_nodes = [
+        node
+        for node in captured_graphs[0].graph.nodes
+        if node.op == "call_function"
+        and node.target is torch.ops.higher_order.while_loop
+    ]
+    map_nodes = [
+        node
+        for node in captured_graphs[0].graph.nodes
+        if node.op == "call_function" and node.target is torch.ops.higher_order.map_impl
+    ]
+    assert while_loop_nodes == []
+    assert len(map_nodes) == 1
+
+
 @pytest.mark.parametrize("alpha", [0.0, 0.01])
 def test_bootstrap_add_limit_uses_percentile_add_and_reuses_scoring_result(
     monkeypatch, alpha
@@ -1405,6 +1558,56 @@ def test_bootstrap_cuda_scores_match_cpu():
     )
 
     assert torch.allclose(actual.cpu(), expected)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_compiled_float32_cuda_bootstrap_add_limit_matches_eager():
+    """Compiled scoring supports the reported bootstrap ADD-limit CUDA path."""
+    device = torch.device("cuda:0")
+    allocations = torch.tensor(
+        [[0.0, 0.0], [0.5, 0.0], [0.0, 0.5], [0.5, 0.5], [1.0, 0.0]],
+        device=device,
+        dtype=torch.float32,
+    )
+    transposed_returns = torch.tensor(
+        [
+            [0.03, -0.02, 0.01, 0.00, -0.04, 0.02, 0.01, -0.01, 0.03],
+            [-0.01, 0.04, 0.00, 0.02, -0.03, 0.01, -0.02, 0.03, 0.00],
+        ],
+        device=device,
+        dtype=torch.float32,
+    )
+    bootstrap_indices = (
+        torch.arange(17 * 13, device=device, dtype=torch.int64).reshape(17, 13) * 5 + 3
+    ) % transposed_returns.shape[1]
+    score_kwargs = {
+        "bootstrap_indices": bootstrap_indices,
+        "percentile": 10.0,
+        "add_limit": -0.015,
+    }
+    capture_scalar_outputs_before = torch.compiler.config.capture_scalar_outputs
+
+    with torch.compiler.set_stance("force_eager"):
+        expected = capital_allocation._allocation_scores(
+            allocations,
+            transposed_returns,
+            0.0,
+            **score_kwargs,
+        )
+
+    actual = capital_allocation._allocation_scores(
+        allocations,
+        transposed_returns,
+        0.0,
+        **score_kwargs,
+    )
+    torch.cuda.synchronize(device)
+
+    assert torch.compiler.config.capture_scalar_outputs == capture_scalar_outputs_before
+    assert torch.isfinite(expected).any()
+    assert torch.isneginf(expected).any()
+    assert torch.equal(torch.isneginf(actual), torch.isneginf(expected))
+    torch.testing.assert_close(actual, expected, rtol=3e-5, atol=2e-6)
 
 
 @pytest.mark.parametrize(
