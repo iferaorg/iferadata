@@ -70,6 +70,7 @@ class PortfolioStatistics:
     sharpe_ratio: float
     sortino_ratio: float
     calmar_ratio: float
+    portfolio_score: float
     profit_factor: float
     exposure: float
     best_day: float
@@ -314,34 +315,28 @@ def walk_forward_capital_allocation_from_csv(
 ) -> WalkForwardPortfolioAllocationResult:
     """Run rolling portfolio optimization and report out-of-sample results.
 
-    Calendar weeks are Monday-anchored. A partial first week is discarded,
-    except when the first date is that week's first NYSE session because of a
-    market holiday. Each fold trains over ``training_weeks``, skips
-    ``embargo_weeks``, and applies its independently calculated allocation for
-    ``simulation_weeks``. The full structure then advances by
-    ``simulation_weeks`` until the data ends; the final simulation may be
-    partial.
+    Weeks are Monday-anchored; an incomplete first week is discarded. Each fold trains over
+    ``training_weeks``, skips ``embargo_weeks``, and applies its allocation for
+    ``simulation_weeks``. The structure advances by ``simulation_weeks`` until
+    the data ends; the final simulation may be partial.
 
-    Every fold invokes :func:`ifera.allocation.find_optimal_capital_allocation`
-    from scratch,
-    including independent bootstrap samples when enabled. Reported statistics
-    are calculated only from the concatenated out-of-sample periods and always
-    use historical ADD; bootstrap ADD is not reported.
-    ``returns_dtype`` controls the synchronized strategy-return storage and
-    optimizer inputs, and defaults to ``polars.Float32``.
+    Every fold gets fresh optimizer state and bootstrap samples. Regime searches
+    within one fold replay the same row samples for a fair comparison. Reported
+    statistics use only concatenated out-of-sample periods and historical ADD;
+    bootstrap ADD is not reported. ``returns_dtype`` controls synchronized
+    return storage and optimizer inputs, and defaults to ``polars.Float32``.
 
-    ``allocation_alpha`` optionally smooths changes after the first fold using
-    ``applied = allocation_alpha * calculated + (1 - allocation_alpha) *
-    previous_applied``. It must be finite and between zero and one, inclusive.
-    The optimizer itself always runs independently and is not influenced by the
-    smoothed allocation. Smoothing is post-processing, so the applied allocation
-    is not projected back into a later fold's potentially changed overlap,
-    maximum-allocation, or ``ADD_limit`` constraints.
+    ``allocation_alpha`` optionally smooths fold optima with a recursive EMA.
+    With strategy-selection limits, a discovery pass finds the supports that
+    ever win, then each support's independent EMA is prewarmed from the first
+    fold and advanced in the background on every fold. The simulation switches
+    to the state of the currently selected support without smoothing across
+    regime boundaries. Counterfactual targets use only that support's columns
+    and the fold's own training data, so cataloging future-winning supports does
+    not introduce future returns into earlier targets.
 
-    Strategy support and correlation limits are recalculated independently from
-    each fold's training returns. When any such limit is requested, EMA weights
-    outside the newly selected support are set to zero so excluded strategies
-    remain unused in that simulation period.
+    EMA is post-processing and is not projected back into a later fold's
+    potentially changed overlap, maximum-allocation, or ``ADD_limit`` constraints.
     """
     from .walk_forward_allocation import (  # pylint: disable=import-outside-toplevel
         walk_forward_capital_allocation_from_csv as run_walk_forward,
@@ -738,6 +733,7 @@ def _portfolio_statistics(
         start_date, end_date, ending_log_equity, periods_per_year=12
     )
     annualization_scale = math.sqrt(annualization_periods)
+    average_drawdown = float(summary["average_drawdown"])
     max_drawdown = float(summary["max_drawdown"])
     gross_profit = float(summary["gross_profit"] or 0.0)
     gross_loss = float(summary["gross_loss"] or 0.0)
@@ -753,7 +749,7 @@ def _portfolio_statistics(
         cagr=cagr,
         cmgr=cmgr,
         win_rate=(int(summary["winning_days"]) / active_days if active_days else 0.0),
-        average_drawdown=float(summary["average_drawdown"]),
+        average_drawdown=average_drawdown,
         bootstrap_average_drawdown=bootstrap_average_drawdown,
         max_drawdown=max_drawdown,
         max_drawdown_duration=_max_drawdown_duration(daily_results),
@@ -764,6 +760,7 @@ def _portfolio_statistics(
         sortino_ratio=_safe_ratio(average_excess_return, downside_deviation)
         * annualization_scale,
         calmar_ratio=_safe_ratio(cagr, abs(max_drawdown)),
+        portfolio_score=_safe_ratio(cmgr, abs(average_drawdown)),
         profit_factor=_safe_ratio(gross_profit, gross_loss),
         exposure=active_days / market_days,
         best_day=float(summary["best_day"] or 0.0),
@@ -890,10 +887,15 @@ def _print_report(portfolio_name: str, result: PortfolioAllocationResult) -> Non
     print(f"Period: {statistics.start_date} to {statistics.end_date}")
     print("Allocations:")
     weights = result.allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
+    unused_strategy_names = []
     for strategy_name, weight in zip(result.strategy_names, weights):
-        print(f"  {strategy_name}: {_format_percentage(weight)}")
+        if weight > 0.0:
+            print(f"  {strategy_name}: {_format_percentage(weight)}")
+        else:
+            unused_strategy_names.append(strategy_name)
     print(f"  Total: {_format_percentage(sum(weights))}")
-
+    if unused_strategy_names:
+        print("Strategies not used:\n  " + "\n  ".join(unused_strategy_names))
     _print_combined_statistics(statistics)
     _print_diversification(result.diversification)
 
@@ -918,6 +920,7 @@ def _print_combined_statistics(statistics: PortfolioStatistics) -> None:
     print(f"  Sharpe ratio: {_format_ratio(statistics.sharpe_ratio)}")
     print(f"  Sortino ratio: {_format_ratio(statistics.sortino_ratio)}")
     print(f"  Calmar ratio: {_format_ratio(statistics.calmar_ratio)}")
+    print(f"  Portfolio score: {_format_ratio(statistics.portfolio_score)}")
     print(f"  Profit factor: {_format_ratio(statistics.profit_factor)}")
     print(
         "  Annualized volatility: "

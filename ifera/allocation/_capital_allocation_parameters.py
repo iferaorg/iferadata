@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import operator
 
 import torch
 
@@ -52,6 +53,21 @@ def validate_add_limit(add_limit: float | None) -> float | None:
     if not math.isfinite(add_limit_value) or not -1.0 <= add_limit_value <= 0.0:
         raise ValueError("ADD_limit must be finite and in [-1, 0]")
     return add_limit_value
+
+
+def validate_bootstrap_seed(bootstrap_seed: int | None) -> int | None:
+    """Return an optional nonnegative int64 bootstrap seed."""
+    if bootstrap_seed is None:
+        return None
+    if isinstance(bootstrap_seed, bool):
+        raise TypeError("bootstrap_seed must be an integer or None")
+    try:
+        seed_value = operator.index(bootstrap_seed)
+    except TypeError as exc:
+        raise TypeError("bootstrap_seed must be an integer or None") from exc
+    if not 0 <= seed_value <= torch.iinfo(torch.int64).max:
+        raise ValueError("bootstrap_seed must be in the int64 range")
+    return seed_value
 
 
 def validate_max_total_allocation(max_total_allocation: float) -> float:

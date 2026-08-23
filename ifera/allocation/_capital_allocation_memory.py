@@ -6,9 +6,10 @@ import torch
 
 _BOOTSTRAP_MEMORY_SAFETY_FACTOR = 2
 _BOOTSTRAP_RUN_CHUNK_SIZE = 16
-_BATCH_MEMORY_BUDGET_BYTES = 4 * 1024 * 1024 * 1024
+_BATCH_MEMORY_BUDGET_BYTES = 12 * 1024 * 1024 * 1024
 _MAX_CANDIDATES_PER_BATCH = 4 * 1024 * 1024
 _PREFIX_STACK_MEMORY_SAFETY_FACTOR = 4
+_CUDA_FREE_MEMORY_SAFETY_FACTOR = 2
 
 
 def candidate_batch_size(
@@ -52,7 +53,7 @@ def candidate_batch_size(
     memory_budget = _BATCH_MEMORY_BUDGET_BYTES
     if device.type == "cuda":
         free_memory, _ = torch.cuda.mem_get_info(device)
-        memory_budget = min(memory_budget, free_memory // 4)
+        memory_budget = min(memory_budget, free_memory // _CUDA_FREE_MEMORY_SAFETY_FACTOR)
     if bootstrap_index_bytes >= memory_budget:
         raise ValueError("bootstrap index tensor exceeds the search memory budget")
     memory_budget -= bootstrap_index_bytes

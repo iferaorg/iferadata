@@ -35,6 +35,7 @@ from ._capital_allocation_parameters import (
     resolve_grid_steps as _resolve_grid_steps,
     validate_add_limit as _validate_add_limit,
     validate_alpha as _validate_alpha,
+    validate_bootstrap_seed as _validate_bootstrap_seed,
     validate_max_total_allocation as _validate_max_total_allocation,
     validate_returns as _validate_returns,
 )
@@ -80,6 +81,7 @@ def find_optimal_capital_allocation(
     max_strategies: int | None = None,
     min_correlation: float | None = None,
     max_correlation: float | None = None,
+    bootstrap_seed: int | None = None,
 ) -> torch.Tensor:
     """Return the best long-only allocation on an overlap-constrained grid.
 
@@ -180,6 +182,8 @@ def find_optimal_capital_allocation(
             ``[-1, 1]`` for strategies with nonzero allocations.
         max_correlation: Optional inclusive maximum pairwise correlation in
             ``[-1, 1]`` for strategies with nonzero allocations.
+        bootstrap_seed: Optional nonnegative int64 seed. Reusing it regenerates
+            the same bootstrap row indices without retaining the index tensor.
 
     Returns:
         A one-dimensional tensor containing the optimal strategy allocations.
@@ -201,6 +205,7 @@ def find_optimal_capital_allocation(
     ) = _validate_bootstrap_parameters(
         bootstrap_on, bootstrap_runs, bootstrap_length, percentile
     )
+    bootstrap_seed_value = _validate_bootstrap_seed(bootstrap_seed)
     max_total_allocation_value = _validate_max_total_allocation(max_total_allocation)
     refinement_runs_value, refinement_divisor_value = _validate_refinement_parameters(
         refinement_runs, refinement_divisor
@@ -269,14 +274,17 @@ def find_optimal_capital_allocation(
             bootstrap_length_value if bootstrap_needed else 0,
         ),
     )
-    bootstrap_indices = None
-    if bootstrap_needed:
-        bootstrap_indices = torch.randint(
+    bootstrap_indices = (
+        _sample_bootstrap_indices(
             returns.shape[0],
-            (bootstrap_runs_value, bootstrap_length_value),
-            device=target_device,
-            dtype=torch.int64,
+            bootstrap_runs_value,
+            bootstrap_length_value,
+            target_device,
+            bootstrap_seed_value,
         )
+        if bootstrap_needed
+        else None
+    )
 
     allocation_unit_batches = _initial_allocation_unit_batches(
         allocation_unit_limit,
@@ -384,6 +392,27 @@ def find_optimal_capital_allocation(
         percentile_value,
         best_bootstrap_drawdown,
         _bootstrap_average_drawdown,
+    )
+
+
+def _sample_bootstrap_indices(
+    time_count: int,
+    bootstrap_runs: int,
+    bootstrap_length: int,
+    device: torch.device,
+    bootstrap_seed: int | None,
+) -> torch.Tensor:
+    """Sample bootstrap rows, optionally from a reproducible local generator."""
+    size = (bootstrap_runs, bootstrap_length)
+    if bootstrap_seed is None:
+        return torch.randint(time_count, size, device=device, dtype=torch.int64)
+    generator = torch.Generator(device=device).manual_seed(bootstrap_seed)
+    return torch.randint(
+        time_count,
+        size,
+        device=device,
+        dtype=torch.int64,
+        generator=generator,
     )
 
 

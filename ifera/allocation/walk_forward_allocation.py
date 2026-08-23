@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import math
 import operator
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
+from functools import partial
 from numbers import Real
 
 import polars as pl
@@ -28,6 +30,33 @@ class _WalkForwardWindow:
     training_stop: date
     simulation_start: date
     simulation_stop: date
+
+
+_Support = tuple[int, ...]
+_AllocationOptimizer = Callable[..., torch.Tensor]
+
+
+@dataclass(frozen=True)
+class _DiscoveredFold:
+    """A first-pass fold with its selected strategy regime."""
+
+    window: _WalkForwardWindow
+    training_start_date: date
+    training_end_date: date
+    calculated_allocation: torch.Tensor
+    support: _Support
+    bootstrap_seed: int | None
+
+
+@dataclass(frozen=True)
+class _FoldAllocation:
+    """Calculated and applied allocations ready for simulation."""
+
+    window: _WalkForwardWindow
+    training_start_date: date
+    training_end_date: date
+    calculated_allocation: torch.Tensor
+    applied_allocation: torch.Tensor
 
 
 def walk_forward_capital_allocation_from_csv(
@@ -65,21 +94,26 @@ def walk_forward_capital_allocation_from_csv(
     advances by ``simulation_weeks`` until the final, optionally partial,
     simulation reaches the end of the dataset.
 
-    Every fold independently calls
-    :func:`ifera.allocation.find_optimal_capital_allocation`, so
-    bootstrap samples and all other optimizer state are fresh. Aggregate
-    statistics use only the concatenated out-of-sample returns. Historical ADD
-    is reported; bootstrap ADD is intentionally omitted. Strategy returns and
-    optimizer inputs use ``returns_dtype``, which defaults to ``polars.Float32``.
+    Every fold gets fresh optimizer state and bootstrap row samples. Discovery
+    and counterfactual regime searches within the same fold deliberately replay
+    those row samples for a fair comparison. Aggregate statistics use only the
+    concatenated out-of-sample returns. Historical ADD is reported; bootstrap
+    ADD is intentionally omitted. Strategy returns and optimizer inputs use
+    ``returns_dtype``, which defaults to ``polars.Float32``.
 
-    After the first fold, ``allocation_alpha`` applies a recursive EMA between
-    the newly calculated optimum and the preceding applied allocation. This is
-    a post-processing rule: changing overlap constraints or a nonlinear
-    ``ADD_limit`` can mean the smoothed allocation does not satisfy the latest
+    Without strategy-selection limits, ``allocation_alpha`` applies one
+    recursive EMA to consecutive fold optima. With any selection limit, a
+    first pass discovers every support regime that is ever selected. A second
+    pass independently optimizes and advances every discovered regime on every
+    fold, including before its first selection and while it is inactive. The
+    simulated allocation switches to the already-smoothed state of the support
+    selected in the first pass. Only supports that win are replayed, and every
+    counterfactual target uses that fold's own training data; discovering a
+    future-winning support does not introduce future returns into earlier targets.
+
+    EMA is post-processing: changing overlap constraints or a nonlinear
+    ``ADD_limit`` can mean a smoothed allocation does not satisfy the latest
     training fold's constraints, and it is not silently projected or clamped.
-    Strategy-selection limits are evaluated from each training window. When
-    any is requested, weights outside that fold's newly calculated support are
-    removed after smoothing, preserving its cardinality and pair constraints.
     """
     training_count = _validate_week_count(training_weeks, "training_weeks", True)
     embargo_count = _validate_week_count(embargo_weeks, "embargo_weeks", False)
@@ -117,63 +151,68 @@ def walk_forward_capital_allocation_from_csv(
     if not windows:
         raise ValueError("Dataset has no walk-forward simulation period")
 
+    optimizer = partial(
+        capital_allocation.find_optimal_capital_allocation,
+        alpha=alpha,
+        grid_increment=grid_increment,
+        device=device,
+        dtype=dtype,
+        bootstrap_on=bootstrap_on,
+        bootstrap_runs=bootstrap_runs,
+        bootstrap_length=bootstrap_length,
+        percentile=percentile,
+        max_total_allocation=max_total_allocation,
+        refinement_runs=refinement_runs,
+        refinement_divisor=refinement_divisor,
+        ADD_limit=ADD_limit,
+    )
+    if selection_requested:
+        fold_allocations = _selection_regime_allocations(
+            synchronized_returns,
+            strategy_names,
+            windows,
+            optimizer,
+            allocation_alpha_value,
+            bootstrap_on,
+            maximum,
+            minimum_correlation,
+            maximum_correlation,
+        )
+    else:
+        fold_allocations = _ordinary_fold_allocations(
+            synchronized_returns,
+            strategy_names,
+            windows,
+            optimizer,
+            allocation_alpha_value,
+        )
+
     folds: list[portfolio.WalkForwardFold] = []
     simulation_frames: list[pl.DataFrame] = []
     weighted_allocations: list[tuple[torch.Tensor, int]] = []
-    previous_applied_allocation: torch.Tensor | None = None
-    for window in portfolio.tqdm(
-        windows, total=len(windows), desc="Walk-forward portfolio", unit="fold"
-    ):
-        training = _date_slice(
-            synchronized_returns, window.training_start, window.training_stop
-        )
+    for fold_allocation in fold_allocations:
         simulation = _date_slice(
-            synchronized_returns, window.simulation_start, window.simulation_stop
+            synchronized_returns,
+            fold_allocation.window.simulation_start,
+            fold_allocation.window.simulation_stop,
         )
-        allocation = capital_allocation.find_optimal_capital_allocation(
-            training.select(strategy_names).to_torch(),
-            alpha=alpha,
-            grid_increment=grid_increment,
-            device=device,
-            dtype=dtype,
-            bootstrap_on=bootstrap_on,
-            bootstrap_runs=bootstrap_runs,
-            bootstrap_length=bootstrap_length,
-            percentile=percentile,
-            max_total_allocation=max_total_allocation,
-            refinement_runs=refinement_runs,
-            refinement_divisor=refinement_divisor,
-            ADD_limit=ADD_limit,
-            max_strategies=maximum,
-            min_correlation=minimum_correlation,
-            max_correlation=maximum_correlation,
-        )
-        calculated_allocation = allocation.detach().clone()
-        applied_allocation = _applied_allocation(
-            calculated_allocation,
-            previous_applied_allocation,
-            allocation_alpha_value,
-        )
-        if selection_requested:
-            applied_allocation = torch.where(
-                calculated_allocation > 0.0,
-                applied_allocation,
-                torch.zeros_like(applied_allocation),
-            )
-        previous_applied_allocation = applied_allocation
-        weights = applied_allocation.to(device="cpu", dtype=torch.float64).tolist()
+        weights = fold_allocation.applied_allocation.to(
+            device="cpu", dtype=torch.float64
+        ).tolist()
         simulation_frames.append(
             portfolio._apply_allocation(simulation, strategy_names, weights)
         )
-        weighted_allocations.append((applied_allocation, simulation.height))
+        weighted_allocations.append(
+            (fold_allocation.applied_allocation, simulation.height)
+        )
         folds.append(
             portfolio.WalkForwardFold(
-                training_start_date=training["date"].item(0),
-                training_end_date=training["date"].item(-1),
+                training_start_date=fold_allocation.training_start_date,
+                training_end_date=fold_allocation.training_end_date,
                 simulation_start_date=simulation["date"].item(0),
                 simulation_end_date=simulation["date"].item(-1),
-                calculated_allocation=calculated_allocation,
-                applied_allocation=applied_allocation,
+                calculated_allocation=fold_allocation.calculated_allocation,
+                applied_allocation=fold_allocation.applied_allocation,
             )
         )
 
@@ -205,6 +244,202 @@ def walk_forward_capital_allocation_from_csv(
         )
         _plot_allocations(portfolio_name, result)
     return result
+
+
+def _ordinary_fold_allocations(
+    synchronized_returns: pl.DataFrame,
+    strategy_names: tuple[str, ...],
+    windows: tuple[_WalkForwardWindow, ...],
+    optimizer: _AllocationOptimizer,
+    allocation_alpha: float,
+) -> tuple[_FoldAllocation, ...]:
+    """Calculate the original one-pass global EMA when selection is disabled."""
+    fold_allocations: list[_FoldAllocation] = []
+    previous_applied: torch.Tensor | None = None
+    for window in portfolio.tqdm(
+        windows, total=len(windows), desc="Walk-forward portfolio", unit="fold"
+    ):
+        training = _date_slice(
+            synchronized_returns, window.training_start, window.training_stop
+        )
+        calculated = optimizer(training.select(strategy_names).to_torch())
+        calculated = calculated.detach().clone()
+        applied = _applied_allocation(calculated, previous_applied, allocation_alpha)
+        previous_applied = applied
+        fold_allocations.append(
+            _FoldAllocation(
+                window=window,
+                training_start_date=training["date"].item(0),
+                training_end_date=training["date"].item(-1),
+                calculated_allocation=calculated,
+                applied_allocation=applied,
+            )
+        )
+    return tuple(fold_allocations)
+
+
+def _selection_regime_allocations(
+    synchronized_returns: pl.DataFrame,
+    strategy_names: tuple[str, ...],
+    windows: tuple[_WalkForwardWindow, ...],
+    optimizer: _AllocationOptimizer,
+    allocation_alpha: float,
+    bootstrap_on: bool,
+    max_strategies: int | None,
+    min_correlation: float | None,
+    max_correlation: float | None,
+) -> tuple[_FoldAllocation, ...]:
+    """Discover selected supports, then advance each support on every fold."""
+    discovered_folds, supports = _discover_support_regimes(
+        synchronized_returns,
+        strategy_names,
+        windows,
+        optimizer,
+        bootstrap_on,
+        max_strategies,
+        min_correlation,
+        max_correlation,
+    )
+    if allocation_alpha == 1.0:
+        return tuple(
+            _FoldAllocation(
+                window=discovered.window,
+                training_start_date=discovered.training_start_date,
+                training_end_date=discovered.training_end_date,
+                calculated_allocation=discovered.calculated_allocation,
+                applied_allocation=discovered.calculated_allocation.clone(),
+            )
+            for discovered in discovered_folds
+        )
+    applied_by_support: dict[_Support, torch.Tensor] = {}
+    fold_allocations: list[_FoldAllocation] = []
+    progress = portfolio.tqdm(
+        enumerate(discovered_folds),
+        total=len(discovered_folds),
+        desc=f"Smoothing {len(supports)} allocation regimes",
+        unit="fold",
+    )
+    for fold_index, discovered in progress:
+        training = (
+            _date_slice(
+                synchronized_returns,
+                discovered.window.training_start,
+                discovered.window.training_stop,
+            )
+            .select(strategy_names)
+            .to_torch()
+        )
+        supports_to_update = (
+            supports if allocation_alpha > 0.0 or fold_index == 0 else ()
+        )
+        for support in supports_to_update:
+            target = _regime_target(support, discovered, training, optimizer)
+            applied_by_support[support] = _applied_allocation(
+                target,
+                applied_by_support.get(support),
+                allocation_alpha,
+            )
+        fold_allocations.append(
+            _FoldAllocation(
+                window=discovered.window,
+                training_start_date=discovered.training_start_date,
+                training_end_date=discovered.training_end_date,
+                calculated_allocation=discovered.calculated_allocation,
+                applied_allocation=applied_by_support[discovered.support].clone(),
+            )
+        )
+    return tuple(fold_allocations)
+
+
+def _discover_support_regimes(
+    synchronized_returns: pl.DataFrame,
+    strategy_names: tuple[str, ...],
+    windows: tuple[_WalkForwardWindow, ...],
+    optimizer: _AllocationOptimizer,
+    bootstrap_on: bool,
+    max_strategies: int | None,
+    min_correlation: float | None,
+    max_correlation: float | None,
+) -> tuple[tuple[_DiscoveredFold, ...], tuple[_Support, ...]]:
+    """Run constrained optimization and collect supports in first-seen order."""
+    seeds = _fold_bootstrap_seeds(len(windows), bootstrap_on)
+    discovered_folds: list[_DiscoveredFold] = []
+    supports: list[_Support] = []
+    seen_supports: set[_Support] = set()
+    progress = portfolio.tqdm(
+        windows,
+        total=len(windows),
+        desc="Detecting allocation regimes",
+        unit="fold",
+    )
+    for window, bootstrap_seed in zip(progress, seeds, strict=True):
+        training = _date_slice(
+            synchronized_returns, window.training_start, window.training_stop
+        )
+        calculated = optimizer(
+            training.select(strategy_names).to_torch(),
+            bootstrap_seed=bootstrap_seed,
+            max_strategies=max_strategies,
+            min_correlation=min_correlation,
+            max_correlation=max_correlation,
+        )
+        calculated = calculated.detach().clone()
+        support = _allocation_support(calculated)
+        if support not in seen_supports:
+            seen_supports.add(support)
+            supports.append(support)
+        discovered_folds.append(
+            _DiscoveredFold(
+                window=window,
+                training_start_date=training["date"].item(0),
+                training_end_date=training["date"].item(-1),
+                calculated_allocation=calculated,
+                support=support,
+                bootstrap_seed=bootstrap_seed,
+            )
+        )
+    return tuple(discovered_folds), tuple(supports)
+
+
+def _regime_target(
+    support: _Support,
+    discovered: _DiscoveredFold,
+    training_returns: torch.Tensor,
+    optimizer: _AllocationOptimizer,
+) -> torch.Tensor:
+    """Return one support's full-width target for a training fold."""
+    if support == discovered.support:
+        return discovered.calculated_allocation
+    if not support:
+        return torch.zeros_like(discovered.calculated_allocation)
+    subset_allocation = optimizer(
+        training_returns[:, list(support)],
+        bootstrap_seed=discovered.bootstrap_seed,
+    )
+    full_allocation = torch.zeros_like(discovered.calculated_allocation)
+    full_allocation[list(support)] = subset_allocation.to(
+        device=full_allocation.device, dtype=full_allocation.dtype
+    )
+    return full_allocation
+
+
+def _allocation_support(allocation: torch.Tensor) -> _Support:
+    """Return the exact positive strategy indices defining an allocation regime."""
+    indices = torch.nonzero(allocation > 0.0, as_tuple=False).flatten()
+    return tuple(int(index) for index in indices.to(device="cpu").tolist())
+
+
+def _fold_bootstrap_seeds(
+    fold_count: int, bootstrap_on: bool
+) -> tuple[int | None, ...]:
+    """Draw compact per-fold seeds for reproducible counterfactual paths."""
+    if not bootstrap_on:
+        return (None,) * fold_count
+    first_seed = int(torch.empty((), dtype=torch.int64).random_().item())
+    seed_modulus = torch.iinfo(torch.int64).max + 1
+    return tuple(
+        (first_seed + fold_index) % seed_modulus for fold_index in range(fold_count)
+    )
 
 
 def _validate_week_count(value: int, name: str, strictly_positive: bool) -> int:
@@ -327,9 +562,15 @@ def _print_report(
     print(f"Period: {result.statistics.start_date} to {result.statistics.end_date}")
     print("Simulation-day-weighted average applied allocations:")
     weights = result.average_allocation.tolist()
+    unused_strategy_names = []
     for strategy_name, weight in zip(result.strategy_names, weights):
+        if weight <= 0.0:
+            unused_strategy_names.append(strategy_name)
+            continue
         print(f"  {strategy_name}: {portfolio._format_percentage(weight)}")
     print(f"  Total: {portfolio._format_percentage(sum(weights))}")
+    if unused_strategy_names:
+        print("Strategies not used:\n  " + "\n  ".join(unused_strategy_names))
     portfolio._print_combined_statistics(result.statistics)
     portfolio._print_diversification(result.diversification)
 
@@ -358,6 +599,11 @@ def _plot_allocations(
             for fold in result.folds
         ]
     )
+    used_strategy_indices = (
+        torch.nonzero(torch.any(applied_allocations > 0.0, dim=0), as_tuple=False)
+        .flatten()
+        .tolist()
+    )
     applied_allocations = torch.cat(
         (applied_allocations, applied_allocations[-1:].clone()), dim=0
     )
@@ -366,9 +612,10 @@ def _plot_allocations(
     )
 
     _, axis = plt.subplots(figsize=(11, 6))
-    color_map = plt.get_cmap("turbo", len(result.strategy_names))
-    for strategy_index, strategy_name in enumerate(result.strategy_names):
-        color = tuple(color_map(strategy_index))
+    color_map = plt.get_cmap("turbo", max(1, len(used_strategy_indices)))
+    for color_index, strategy_index in enumerate(used_strategy_indices):
+        strategy_name = result.strategy_names[strategy_index]
+        color = tuple(color_map(color_index))
         axis.step(
             fold_dates,  # pyright: ignore[reportArgumentType]
             calculated_allocations[:, strategy_index].tolist(),
@@ -393,10 +640,11 @@ def _plot_allocations(
     axis.set_ylim(bottom=0.0)
     axis.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     axis.grid(visible=True, alpha=0.3)
-    axis.legend(
-        loc="upper left",
-        bbox_to_anchor=(1.01, 1.0),
-        title="Applied allocations\n(calculated: dashed)",
-    )
+    if used_strategy_indices:
+        axis.legend(
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            title="Applied allocations\n(calculated: dashed)",
+        )
     plt.tight_layout()
     plt.show()

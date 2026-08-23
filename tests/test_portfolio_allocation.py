@@ -234,6 +234,7 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         "MaxDD duration",
         "Sharpe",
         "Sortino",
+        "Portfolio score",
     ):
         assert text.casefold() in output.casefold()
     output_lines = [line.strip() for line in output.splitlines()]
@@ -245,6 +246,12 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         index for index, line in enumerate(output_lines) if line.startswith("ADD:")
     )
     assert output_lines[add_line + 1].startswith("ADD (bootstrap):")
+    calmar_line = next(
+        index
+        for index, line in enumerate(output_lines)
+        if line.startswith("Calmar ratio:")
+    )
+    assert output_lines[calmar_line + 1].startswith("Portfolio score:")
 
 
 def test_wrapper_defaults_csv_returns_to_float32(
@@ -277,6 +284,49 @@ def test_wrapper_defaults_csv_returns_to_float32(
     assert captured["returns"].dtype is torch.float32
     assert result.daily_results.schema["strategy"] == pl.Float32
     assert result.allocation.dtype is torch.float32
+
+
+def test_csv_report_separates_strategies_with_zero_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Only positively allocated strategies appear in the allocation section."""
+    directory = _portfolio_directory(tmp_path, "unused_strategy_report")
+    for strategy_name in ("alpha", "beta", "gamma"):
+        _write_strategy(
+            directory / f"{strategy_name}.csv",
+            ["Jan 13, 2025 10:00am"],
+            [10.0],
+        )
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _fixed_optimizer([0.0, 0.5, 0.0]),
+    )
+
+    portfolio_allocation.find_optimal_capital_allocation_from_csv(
+        "unused_strategy_report",
+        alpha=0.0,
+        grid_increment=0.5,
+        device="cpu",
+        show_plot=False,
+    )
+
+    output = capsys.readouterr().out
+    allocation_section = output.split("Allocations:\n", maxsplit=1)[1].split(
+        "Strategies not used:\n", maxsplit=1
+    )[0]
+    unused_section = output.split("Strategies not used:\n", maxsplit=1)[1].split(
+        "Combined portfolio statistics:\n", maxsplit=1
+    )[0]
+    assert "beta:" in allocation_section
+    assert "alpha:" not in allocation_section
+    assert "gamma:" not in allocation_section
+    assert "alpha" in unused_section
+    assert "gamma" in unused_section
+    assert "beta" not in unused_section
 
 
 def test_wrapper_rejects_nonfloating_returns_dtype(
@@ -606,6 +656,9 @@ def test_result_contains_expected_combined_statistics(
     assert statistics.sharpe_ratio > 0.0
     assert statistics.sortino_ratio > 0.0
     assert statistics.calmar_ratio > 0.0
+    assert statistics.portfolio_score == pytest.approx(
+        statistics.cmgr / abs(expected_add)
+    )
     assert statistics.profit_factor == pytest.approx(2.4)
     assert statistics.best_day == pytest.approx(0.10)
     assert statistics.worst_day == pytest.approx(-0.05)
@@ -811,6 +864,7 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
         "MaxDD",
         "Sharpe ratio",
         "Sortino ratio",
+        "Portfolio score",
         "Portfolio robustness / diversification",
     ):
         assert statistic_name in output
@@ -1067,9 +1121,11 @@ def test_walk_forward_bootstrap_draws_fresh_indices_for_every_training_fold(
 
 
 def test_walk_forward_displays_equity_and_stepwise_allocation_plots(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
-    """The report plots equity, then every strategy's allocation by simulation."""
+    """The report and plot omit strategies unused throughout the simulation."""
     directory = _portfolio_directory(tmp_path, "walk_forward_plot")
     _write_complete_market_strategy(
         directory / "alpha.csv",
@@ -1082,12 +1138,18 @@ def test_walk_forward_displays_equity_and_stepwise_allocation_plots(
         datetime.date(2025, 2, 19),
         multiplier=2.0,
     )
+    _write_complete_market_strategy(
+        directory / "gamma.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 19),
+        multiplier=3.0,
+    )
     optimizer_calls: list[dict[str, object]] = []
     monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
     monkeypatch.setattr(
         capital_allocation,
         "find_optimal_capital_allocation",
-        _sequential_optimizer([[0.25, 0.75], [0.8, 0.2]], optimizer_calls),
+        _sequential_optimizer([[0.25, 0.75, 0.0], [0.8, 0.2, 0.0]], optimizer_calls),
     )
     displayed_axes: list[matplotlib.axes.Axes] = []
 
@@ -1162,6 +1224,19 @@ def test_walk_forward_displays_equity_and_stepwise_allocation_plots(
     assert legend is not None
     assert [text.get_text() for text in legend.get_texts()] == ["alpha", "beta"]
     assert "%" in allocation_axis.yaxis.get_major_formatter()(0.25)
+    output = capsys.readouterr().out
+    average_section = output.split(
+        "Simulation-day-weighted average applied allocations:\n", maxsplit=1
+    )[1].split("Strategies not used:\n", maxsplit=1)[0]
+    unused_section = output.split("Strategies not used:\n", maxsplit=1)[1].split(
+        "Combined portfolio statistics:\n", maxsplit=1
+    )[0]
+    assert "alpha:" in average_section
+    assert "beta:" in average_section
+    assert "gamma:" not in average_section
+    assert "gamma" in unused_section
+    assert "alpha" not in unused_section
+    assert "beta" not in unused_section
     plt.close("all")
 
 

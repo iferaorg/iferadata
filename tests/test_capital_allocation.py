@@ -1264,6 +1264,76 @@ def test_bootstrap_defaults_use_fixed_length(monkeypatch):
     assert calls == [(3, (1024, 256), torch.device("cpu"), torch.int64)]
 
 
+def test_bootstrap_seed_reproduces_the_generated_index_tensor(monkeypatch):
+    """Equal seeds reproduce a sample, while a different seed changes it."""
+    observed_indices: list[torch.Tensor] = []
+    original_score = capital_allocation._allocation_scores
+
+    def recording_score(allocations, *args, **kwargs):
+        observed_indices.append(kwargs["bootstrap_indices"].detach().cpu().clone())
+        return original_score(allocations, *args, **kwargs)
+
+    monkeypatch.setattr(capital_allocation, "_allocation_scores", recording_score)
+    monkeypatch.setattr(capital_allocation, "_candidate_batch_size", lambda *args: 100)
+    returns = torch.tensor([[0.2], [-0.1], [0.1]], dtype=torch.float32)
+    common = {
+        "returns": returns,
+        "alpha": 0.1,
+        "grid_increment": 1.0,
+        "device": "cpu",
+        "bootstrap_on": True,
+        "bootstrap_runs": 8,
+        "bootstrap_length": 16,
+    }
+
+    find_optimal_capital_allocation(**common, bootstrap_seed=12345)
+    find_optimal_capital_allocation(**common, bootstrap_seed=12345)
+    find_optimal_capital_allocation(**common, bootstrap_seed=54321)
+
+    assert len(observed_indices) == 3
+    assert torch.equal(observed_indices[0], observed_indices[1])
+    assert not torch.equal(observed_indices[0], observed_indices[2])
+
+
+@pytest.mark.parametrize("bootstrap_seed", [None, 0, torch.iinfo(torch.int64).max])
+def test_accepts_supported_bootstrap_seed_boundaries(bootstrap_seed):
+    """None and the full nonnegative int64 seed range are supported."""
+    result = find_optimal_capital_allocation(
+        torch.tensor([[0.1], [-0.1]]),
+        alpha=0.1,
+        grid_increment=1.0,
+        device="cpu",
+        bootstrap_on=True,
+        bootstrap_runs=1,
+        bootstrap_length=2,
+        bootstrap_seed=bootstrap_seed,
+    )
+
+    assert result.shape == (1,)
+
+
+@pytest.mark.parametrize(
+    ("bootstrap_seed", "exception"),
+    [
+        (True, TypeError),
+        (1.5, TypeError),
+        ("1", TypeError),
+        (-1, ValueError),
+        (torch.iinfo(torch.int64).max + 1, ValueError),
+    ],
+)
+def test_rejects_invalid_bootstrap_seed(bootstrap_seed, exception):
+    """Bootstrap seeds must be non-boolean integers in the int64 range."""
+    with pytest.raises(exception, match="bootstrap_seed"):
+        find_optimal_capital_allocation(
+            torch.tensor([[0.1], [-0.1]]),
+            alpha=0.0,
+            grid_increment=1.0,
+            device="cpu",
+            bootstrap_seed=bootstrap_seed,
+        )
+
+
 def test_bootstrap_indices_are_shared_across_all_refinements(monkeypatch):
     generated_indices = torch.tensor(
         [[0, 1, 2, 1], [2, 0, 1, 0], [1, 2, 0, 2]], dtype=torch.int64

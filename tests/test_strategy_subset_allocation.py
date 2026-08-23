@@ -58,6 +58,157 @@ def _write_correlation_case(directory: Path) -> None:
     )
 
 
+def _run_regime_walk_forward(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    portfolio_name: str,
+    winning_allocations: list[list[float]],
+    regime_targets: dict[tuple[int, ...], list[list[float]]],
+    allocation_alpha: float | None,
+    **selection_constraints: object,
+) -> portfolio_allocation.WalkForwardPortfolioAllocationResult:
+    """Mock both WFA passes and verify fixed-support counterfactual calls."""
+    directory = _portfolio_directory(tmp_path, portfolio_name)
+    start_date = datetime.date(2025, 1, 6)
+    end_date = start_date + datetime.timedelta(
+        weeks=len(winning_allocations) + 1, days=-3
+    )
+    dates = _market_dates(start_date, end_date)
+    strategy_count = len(winning_allocations[0])
+    strategy_names = ("alpha", "beta", "gamma")[:strategy_count]
+    for strategy_index, strategy_name in enumerate(strategy_names, start=1):
+        strategy_returns = [
+            strategy_index * (0.002 if index % 2 == 0 else -0.001)
+            for index in range(len(dates))
+        ]
+        _write_fractional_returns(
+            directory / f"{strategy_name}.csv", dates, strategy_returns
+        )
+
+    winning_supports = [
+        tuple(index for index, value in enumerate(target) if value > 0.0)
+        for target in winning_allocations
+    ]
+    discovered_supports = set(winning_supports)
+    assert discovered_supports == set(regime_targets)
+    assert all(
+        len(targets) == len(winning_allocations) for targets in regime_targets.values()
+    )
+    optimizer_calls: list[dict[str, object]] = []
+    training_returns: list[torch.Tensor] = []
+    fold_seeds: list[object] = []
+
+    def sequential_optimizer(
+        returns: torch.Tensor,
+        alpha: float,
+        grid_increment: float,
+        **kwargs: object,
+    ) -> torch.Tensor:
+        del alpha, grid_increment
+        is_selection_call = any(
+            kwargs.get(name) is not None
+            for name in ("max_strategies", "min_correlation", "max_correlation")
+        )
+        target_device = kwargs.get("device") or returns.device
+        target_dtype = kwargs.get("dtype") or returns.dtype
+        seed = kwargs.get("bootstrap_seed")
+        if is_selection_call:
+            fold_index = len(training_returns)
+            training_returns.append(returns.detach().clone())
+            fold_seeds.append(seed)
+            allocation = winning_allocations[fold_index]
+            support = winning_supports[fold_index]
+        else:
+            assert seed in fold_seeds
+            fold_index = fold_seeds.index(seed)
+            support = next(
+                candidate_support
+                for candidate_support in discovered_supports
+                if candidate_support
+                and returns.shape[1] == len(candidate_support)
+                and torch.equal(
+                    returns,
+                    training_returns[fold_index][:, list(candidate_support)],
+                )
+            )
+            assert support != winning_supports[fold_index]
+            assert all(
+                name not in kwargs
+                for name in ("max_strategies", "min_correlation", "max_correlation")
+            )
+            full_target = regime_targets[support][fold_index]
+            allocation = [full_target[index] for index in support]
+        optimizer_calls.append(
+            {
+                "fold_index": fold_index,
+                "support": support,
+                "selection": is_selection_call,
+                "bootstrap_seed": seed,
+            }
+        )
+        return torch.tensor(allocation, device=target_device, dtype=target_dtype)
+
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        sequential_optimizer,
+    )
+    monkeypatch.setattr(
+        portfolio_allocation, "tqdm", lambda iterable, **_kwargs: iterable
+    )
+    kwargs: dict[str, object] = {
+        "portfolio_name": portfolio_name,
+        "alpha": 0.0,
+        "grid_increment": 0.1,
+        "training_weeks": 1,
+        "embargo_weeks": 0,
+        "simulation_weeks": 1,
+        "device": "cpu",
+        "bootstrap_on": True,
+        "bootstrap_runs": 2,
+        "bootstrap_length": 3,
+        "show_plot": False,
+        **selection_constraints,
+    }
+    if allocation_alpha is not None:
+        kwargs["allocation_alpha"] = allocation_alpha
+
+    result = allocation.walk_forward_capital_allocation_from_csv(**kwargs)
+
+    fold_count = len(winning_allocations)
+    assert len(training_returns) == fold_count
+    assert len(fold_seeds) == fold_count
+    assert all(seed is not None for seed in fold_seeds)
+    assert len(set(fold_seeds)) == fold_count
+    assert all(call["selection"] for call in optimizer_calls[:fold_count])
+    coefficient = 1.0 if allocation_alpha is None else allocation_alpha
+    if coefficient == 1.0:
+        expected_counterfactuals: set[tuple[int, tuple[int, ...]]] = set()
+    elif coefficient == 0.0:
+        expected_counterfactuals = {
+            (0, support)
+            for support in discovered_supports
+            if support and support != winning_supports[0]
+        }
+    else:
+        expected_counterfactuals = {
+            (fold_index, support)
+            for fold_index, winning_support in enumerate(winning_supports)
+            for support in discovered_supports
+            if support and support != winning_support
+        }
+    actual_counterfactuals = {
+        (call["fold_index"], call["support"]) for call in optimizer_calls[fold_count:]
+    }
+    assert actual_counterfactuals == expected_counterfactuals
+    assert len(optimizer_calls) == fold_count + len(expected_counterfactuals)
+    for call in optimizer_calls[fold_count:]:
+        fold_index = call["fold_index"]
+        assert call["bootstrap_seed"] == fold_seeds[fold_index]
+    return result
+
+
 def test_csv_subset_limits_are_independent_and_defaults_preserve_behavior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -333,10 +484,10 @@ def test_cuda_subset_refinement_matches_cpu():
     assert actual.device == torch.device("cuda:0")
 
 
-def test_walk_forward_reselects_fold_local_subsets_and_masks_ema_allocations(
+def test_walk_forward_reselects_fold_local_subsets_and_prewarms_each_ema_regime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Training-only correlations select each fold and excluded EMA weights stay zero."""
+    """A support selected later already contains its counterfactual EMA history."""
     directory = _portfolio_directory(tmp_path, "fold_local_subsets")
     dates = _market_dates(datetime.date(2025, 1, 13), datetime.date(2025, 1, 31))
     first_pattern = [0.40, -0.20, 0.40, -0.20, 0.10]
@@ -384,12 +535,143 @@ def test_walk_forward_reselects_fold_local_subsets_and_masks_ema_allocations(
         result.folds[1].calculated_allocation, torch.tensor([0.5, 0.0, 0.5])
     )
     torch.testing.assert_close(
-        result.folds[1].applied_allocation, torch.tensor([0.5, 0.0, 0.25])
+        result.folds[1].applied_allocation, torch.tensor([0.75, 0.0, 0.25])
     )
     assert all(
         torch.count_nonzero(fold.applied_allocation).item() <= 2
         for fold in result.folds
     )
+
+
+def test_walk_forward_selection_ema_uses_current_counterfactual_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Both active and inactive supports consume a new optimum on every fold."""
+    winning = [[1.0, 0.0], [0.0, 0.6], [0.4, 0.0]]
+    regime_targets = {
+        (0,): [[1.0, 0.0], [0.2, 0.0], [0.4, 0.0]],
+        (1,): [[0.0, 1.0], [0.0, 0.6], [0.0, 0.2]],
+    }
+
+    result = _run_regime_walk_forward(
+        tmp_path,
+        monkeypatch,
+        "reappearing_supports",
+        winning,
+        regime_targets,
+        allocation_alpha=0.5,
+        max_strategies=1,
+    )
+
+    expected_applied = ([1.0, 0.0], [0.0, 0.8], [0.5, 0.0])
+    assert len(result.folds) == len(winning)
+    for fold, expected_calculated, expected in zip(
+        result.folds, winning, expected_applied, strict=True
+    ):
+        torch.testing.assert_close(
+            fold.calculated_allocation, torch.tensor(expected_calculated)
+        )
+        torch.testing.assert_close(fold.applied_allocation, torch.tensor(expected))
+
+
+def test_walk_forward_selection_ema_treats_empty_support_as_a_separate_regime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An all-zero optimum neither erases nor contaminates another support's EMA."""
+    winning = [[1.0, 0.0], [0.0, 0.0], [0.4, 0.0]]
+    regime_targets = {
+        (): [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0]],
+        (0,): [[1.0, 0.0], [0.2, 0.0], [0.4, 0.0]],
+    }
+
+    result = _run_regime_walk_forward(
+        tmp_path,
+        monkeypatch,
+        "empty_support_regime",
+        winning,
+        regime_targets,
+        allocation_alpha=0.5,
+        max_strategies=1,
+    )
+
+    expected_applied = (
+        [1.0, 0.0],
+        [0.0, 0.0],
+        [0.5, 0.0],
+    )
+    for fold, expected in zip(result.folds, expected_applied, strict=True):
+        torch.testing.assert_close(fold.applied_allocation, torch.tensor(expected))
+
+
+@pytest.mark.parametrize(
+    "selection_constraints",
+    [
+        {"max_strategies": 1},
+        {"min_correlation": -1.0},
+        {"max_correlation": 1.0},
+        {"min_correlation": -0.5, "max_correlation": 0.5},
+    ],
+)
+def test_walk_forward_each_selection_constraint_enables_support_specific_ema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selection_constraints: dict[str, object],
+):
+    """Every independently optional selection limit activates regime tracking."""
+    winning = [[1.0, 0.0], [0.0, 0.6], [0.4, 0.0]]
+    regime_targets = {
+        (0,): [[1.0, 0.0], [0.2, 0.0], [0.4, 0.0]],
+        (1,): [[0.0, 1.0], [0.0, 0.6], [0.0, 0.2]],
+    }
+
+    result = _run_regime_walk_forward(
+        tmp_path,
+        monkeypatch,
+        "independent_regime_limit",
+        winning,
+        regime_targets,
+        allocation_alpha=0.5,
+        **selection_constraints,
+    )
+
+    expected_applied = ([1.0, 0.0], [0.0, 0.8], [0.5, 0.0])
+    for fold, expected in zip(result.folds, expected_applied, strict=True):
+        torch.testing.assert_close(fold.applied_allocation, torch.tensor(expected))
+
+
+@pytest.mark.parametrize(
+    ("allocation_alpha", "expected_applied"),
+    [
+        (0.0, ([1.0, 0.0], [0.0, 1.0], [1.0, 0.0])),
+        (1.0, ([1.0, 0.0], [0.0, 0.6], [0.4, 0.0])),
+        (None, ([1.0, 0.0], [0.0, 0.6], [0.4, 0.0])),
+    ],
+)
+def test_walk_forward_selection_regime_ema_alpha_endpoints_and_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    allocation_alpha: float | None,
+    expected_applied: tuple[list[float], ...],
+):
+    """Endpoints freeze after fold one or skip all counterfactual optimization."""
+    winning = [[1.0, 0.0], [0.0, 0.6], [0.4, 0.0]]
+    regime_targets = {
+        (0,): [[1.0, 0.0], [0.2, 0.0], [0.4, 0.0]],
+        (1,): [[0.0, 1.0], [0.0, 0.6], [0.0, 0.2]],
+    }
+
+    result = _run_regime_walk_forward(
+        tmp_path,
+        monkeypatch,
+        "regime_alpha_endpoint",
+        winning,
+        regime_targets,
+        allocation_alpha=allocation_alpha,
+        max_strategies=1,
+    )
+
+    for fold, expected in zip(result.folds, expected_applied, strict=True):
+        torch.testing.assert_close(fold.applied_allocation, torch.tensor(expected))
 
 
 @pytest.mark.parametrize(
