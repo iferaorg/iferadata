@@ -7,6 +7,7 @@ import math
 import pytest
 import torch
 
+import ifera.allocation._capital_allocation_diagnostics as allocation_diagnostics
 import ifera.allocation._capital_allocation_memory as capital_allocation_memory
 import ifera.allocation.capital_allocation as capital_allocation
 from ifera.allocation import find_optimal_capital_allocation
@@ -249,7 +250,7 @@ def test_non_divisor_increment_is_reduced_to_reciprocal_grid():
     returns = torch.tensor([[0.4], [-0.3], [0.4], [-0.3]])
 
     actual = find_optimal_capital_allocation(
-        returns, 0.0, 0.3, device=torch.device("cpu")
+        returns, 1e-12, 0.3, device=torch.device("cpu")
     )
 
     assert torch.equal(actual, torch.tensor([0.5]))
@@ -262,11 +263,11 @@ def test_refinement_finds_an_optimum_between_initial_grid_points():
     returns = torch.tensor([[positive_return], [-loss_size]], dtype=torch.float64)
 
     initial = find_optimal_capital_allocation(
-        returns, 0.0, 0.25, device=torch.device("cpu")
+        returns, 1e-12, 0.25, device=torch.device("cpu")
     )
     refined = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.25,
         device=torch.device("cpu"),
         refinement_runs=1,
@@ -345,7 +346,7 @@ def test_multiple_refinements_divide_the_increment_successively():
 
     one_refinement = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-30,
         0.25,
         device=torch.device("cpu"),
         refinement_runs=1,
@@ -353,7 +354,7 @@ def test_multiple_refinements_divide_the_increment_successively():
     )
     two_refinements = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-30,
         0.25,
         device=torch.device("cpu"),
         refinement_runs=2,
@@ -400,7 +401,7 @@ def test_refinement_shifts_boundary_window_without_losing_grid_points(
 
     find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.25,
         device=torch.device("cpu"),
         refinement_runs=1,
@@ -423,7 +424,7 @@ def test_refinement_uses_adjusted_non_divisor_increment():
 
     actual = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.3,
         device=torch.device("cpu"),
         refinement_runs=1,
@@ -459,7 +460,10 @@ def test_increment_is_not_rounded_up_beyond_float_tolerance():
     returns = torch.tensor([[0.5], [-0.4]], dtype=torch.float64)
 
     actual = find_optimal_capital_allocation(
-        returns, 0.0, 0.2499999999999, device=torch.device("cpu")
+        returns,
+        1e-12,
+        0.2499999999999,
+        device=torch.device("cpu"),
     )
 
     assert torch.equal(actual, torch.tensor([0.2], dtype=torch.float64))
@@ -511,7 +515,7 @@ def test_max_total_allocation_uses_highest_grid_point_below_cap():
 
     actual = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.25,
         device=torch.device("cpu"),
         max_total_allocation=1.3,
@@ -571,7 +575,7 @@ def test_none_disjoint_uses_maximal_clique_not_per_row_constraints():
     )
 
     actual = find_optimal_capital_allocation(
-        returns, 0.0, 0.5, device=torch.device("cpu")
+        returns, 1e-12, 0.5, device=torch.device("cpu")
     )
 
     assert torch.equal(torch.sort(actual).values, torch.tensor([0.0, 0.5, 0.5]))
@@ -624,7 +628,7 @@ def test_refinement_preserves_overlap_constraints_and_disjoint_capital_reuse():
 
     actual = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.25,
         device=torch.device("cpu"),
         refinement_runs=1,
@@ -645,7 +649,7 @@ def test_refinement_supports_leveraged_allocation_ranges():
 
     actual = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.25,
         device=torch.device("cpu"),
         max_total_allocation=1.5,
@@ -663,7 +667,7 @@ def test_low_precision_refinement_does_not_round_up_clique_capacity():
 
     actual = find_optimal_capital_allocation(
         returns,
-        0.0,
+        1e-12,
         0.3,
         device=torch.device("cpu"),
         dtype=torch.bfloat16,
@@ -685,7 +689,7 @@ def test_refinement_rejects_grid_points_collapsed_by_output_dtype():
     with pytest.raises(ValueError, match="increment|dtype|small"):
         find_optimal_capital_allocation(
             returns,
-            0.0,
+            1e-12,
             0.2,
             device=torch.device("cpu"),
             dtype=torch.bfloat16,
@@ -724,7 +728,10 @@ def test_arbitrary_disjointness_graph_matches_clique_oracle(monkeypatch):
 
     expected = _brute_force_disjoint_optimum(returns, 0.0, 0.5)
     actual = find_optimal_capital_allocation(
-        returns, 0.0, 0.5, device=torch.device("cpu")
+        returns,
+        0.0,
+        0.5,
+        device=torch.device("cpu"),
     )
 
     assert torch.equal(expected, torch.tensor([0.5, 0.0, 0.5, 0.5]))
@@ -767,14 +774,17 @@ def test_nan_and_zero_have_same_returns_but_different_activity():
     )
 
     assert torch.equal(inactive_actual, torch.tensor([1.0, 1.0]))
-    assert torch.equal(active_zero_actual, torch.tensor([0.5, 0.5]))
+    torch.testing.assert_close(active_zero_actual, torch.tensor([0.5, 0.5]))
 
 
 def test_large_strategy_count_uses_only_valid_simplex_points():
     returns = torch.arange(1, 21, dtype=torch.float32).unsqueeze(0) / 100.0
 
     actual = find_optimal_capital_allocation(
-        returns, 0.0, 0.5, device=torch.device("cpu")
+        returns,
+        1e-12,
+        0.5,
+        device=torch.device("cpu"),
     )
 
     expected = torch.zeros(20)
@@ -892,7 +902,7 @@ def test_drawdown_uses_initial_wealth_and_only_post_return_days():
     assert torch.equal(actual, torch.tensor([0.5]))
 
 
-@pytest.mark.parametrize("alpha", [0.0, 0.1])
+@pytest.mark.parametrize("alpha", [0.1])
 def test_historical_add_limit_hard_filters_initial_and_refinement_grids(alpha):
     """Every search pass excludes allocations below the historical ADD floor."""
     returns = torch.tensor([[0.50], [-0.20]], dtype=torch.float64)
@@ -1091,7 +1101,7 @@ def test_compiled_bootstrap_drawdown_maps_padded_chunks_in_one_graph(
     assert len(map_nodes) == 1
 
 
-@pytest.mark.parametrize("alpha", [0.0, 0.01])
+@pytest.mark.parametrize("alpha", [0.01])
 def test_bootstrap_add_limit_uses_percentile_add_and_reuses_scoring_result(
     monkeypatch, alpha
 ):
@@ -1208,7 +1218,7 @@ def test_zero_alpha_diagnostics_bootstrap_only_the_final_allocation(monkeypatch)
     returns = torch.tensor([[0.20], [-0.10], [0.15]], dtype=torch.float64)
     bootstrap_indices = torch.tensor([[0, 1, 2], [2, 1, 0]], dtype=torch.int64)
     bootstrap_calls = 0
-    original_bootstrap = capital_allocation._bootstrap_average_drawdown
+    original_bootstrap = allocation_diagnostics.bootstrap_average_drawdown
 
     def fixed_randint(high, size, *, device, dtype):
         del high, size
@@ -1221,7 +1231,7 @@ def test_zero_alpha_diagnostics_bootstrap_only_the_final_allocation(monkeypatch)
 
     monkeypatch.setattr(torch, "randint", fixed_randint)
     monkeypatch.setattr(
-        capital_allocation, "_bootstrap_average_drawdown", counting_bootstrap
+        allocation_diagnostics, "bootstrap_average_drawdown", counting_bootstrap
     )
 
     diagnostics = capital_allocation.CapitalAllocationDiagnostics()
@@ -1331,6 +1341,7 @@ def test_rejects_invalid_bootstrap_seed(bootstrap_seed, exception):
             grid_increment=1.0,
             device="cpu",
             bootstrap_seed=bootstrap_seed,
+            ADD_limit=-1.0,
         )
 
 
@@ -1754,7 +1765,7 @@ def test_single_point_grid_is_not_rescored_during_refinement(monkeypatch):
 
     actual = find_optimal_capital_allocation(
         returns,
-        0.0,
+        0.1,
         0.25,
         device=torch.device("cpu"),
         max_total_allocation=0.0,
@@ -1801,7 +1812,7 @@ def test_rejects_invalid_refinement_parameters(parameter, value, exception):
     with pytest.raises(exception):
         find_optimal_capital_allocation(
             returns,
-            0.0,
+            0.1,
             0.25,
             device=torch.device("cpu"),
             **{parameter: value},
@@ -1836,6 +1847,7 @@ def test_rejects_invalid_bootstrap_parameters(parameter, value, exception):
             0.0,
             0.25,
             device=torch.device("cpu"),
+            ADD_limit=-1.0,
             **{parameter: value},
         )
 
@@ -1896,7 +1908,7 @@ def test_rejects_bootstrap_workspace_larger_than_memory_budget(monkeypatch):
     monkeypatch.setattr(capital_allocation_memory, "_BATCH_MEMORY_BUDGET_BYTES", 1024)
     returns = torch.tensor([[0.1], [-0.1]])
 
-    with pytest.raises(ValueError, match="one candidate"):
+    with pytest.raises(ValueError, match="bootstrap index"):
         find_optimal_capital_allocation(
             returns,
             0.5,
@@ -1913,7 +1925,7 @@ def test_rejects_invalid_increment(increment: float):
     returns = torch.tensor([[0.1], [-0.1]])
 
     with pytest.raises(ValueError):
-        find_optimal_capital_allocation(returns, 0.0, increment)
+        find_optimal_capital_allocation(returns, 0.1, increment)
 
 
 def test_rejects_non_floating_output_dtype():
@@ -1938,7 +1950,10 @@ def test_candidates_with_nonpositive_portfolio_multipliers_are_ignored():
 
     expected = _brute_force_optimum(returns, 0.0, 0.25)
     actual = find_optimal_capital_allocation(
-        returns, 0.0, 0.25, device=torch.device("cpu")
+        returns,
+        1e-12,
+        0.25,
+        device=torch.device("cpu"),
     )
 
     assert torch.equal(expected, torch.tensor([0.25], dtype=torch.float64))

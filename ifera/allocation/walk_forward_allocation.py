@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import operator
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -62,10 +63,10 @@ class _FoldAllocation:
 def walk_forward_capital_allocation_from_csv(
     portfolio_name: str,
     alpha: float,
-    grid_increment: float,
-    training_weeks: int,
-    embargo_weeks: int,
-    simulation_weeks: int,
+    grid_increment: float | None = None,
+    training_weeks: int | None = None,
+    embargo_weeks: int | None = None,
+    simulation_weeks: int | None = None,
     device: torch.device | str | None = None,
     dtype: torch.dtype | None = None,
     bootstrap_on: bool = False,
@@ -84,6 +85,8 @@ def walk_forward_capital_allocation_from_csv(
     max_strategies: int | None = None,
     min_correlation: float | None = None,
     max_correlation: float | None = None,
+    approximate_add_search: bool = False,
+    allocation_tolerance: float | None = None,
 ) -> portfolio.WalkForwardPortfolioAllocationResult:
     """Optimize rolling training windows and simulate allocations out of sample.
 
@@ -151,7 +154,7 @@ def walk_forward_capital_allocation_from_csv(
     if not windows:
         raise ValueError("Dataset has no walk-forward simulation period")
 
-    optimizer = partial(
+    base_optimizer = partial(
         capital_allocation.find_optimal_capital_allocation,
         alpha=alpha,
         grid_increment=grid_increment,
@@ -165,7 +168,11 @@ def walk_forward_capital_allocation_from_csv(
         refinement_runs=refinement_runs,
         refinement_divisor=refinement_divisor,
         ADD_limit=ADD_limit,
+        approximate_add_search=approximate_add_search,
+        allocation_tolerance=allocation_tolerance,
     )
+    algorithm_counts: Counter[str] = Counter()
+    optimizer = _algorithm_tracking_optimizer(base_optimizer, algorithm_counts)
     if selection_requested:
         fold_allocations = _selection_regime_allocations(
             synchronized_returns,
@@ -234,6 +241,7 @@ def walk_forward_capital_allocation_from_csv(
         daily_results=daily_results,
         statistics=statistics,
         diversification=diversification,
+        optimization_algorithm_counts=tuple(algorithm_counts.items()),
     )
     _print_report(portfolio_name, result)
     if show_plot:
@@ -244,6 +252,23 @@ def walk_forward_capital_allocation_from_csv(
         )
         _plot_allocations(portfolio_name, result)
     return result
+
+
+def _algorithm_tracking_optimizer(
+    optimizer: _AllocationOptimizer,
+    algorithm_counts: Counter[str],
+) -> _AllocationOptimizer:
+    """Wrap an optimizer and count its selected algorithms without ADD reporting."""
+
+    def tracked_optimizer(returns: torch.Tensor, **kwargs: object) -> torch.Tensor:
+        diagnostics = capital_allocation.CapitalAllocationDiagnostics(
+            request_bootstrap_average_drawdown=False
+        )
+        allocation = optimizer(returns, diagnostics=diagnostics, **kwargs)
+        algorithm_counts[diagnostics.algorithm or "Custom/unknown optimizer"] += 1
+        return allocation
+
+    return tracked_optimizer
 
 
 def _ordinary_fold_allocations(
@@ -442,9 +467,9 @@ def _fold_bootstrap_seeds(
     )
 
 
-def _validate_week_count(value: int, name: str, strictly_positive: bool) -> int:
+def _validate_week_count(value: int | None, name: str, strictly_positive: bool) -> int:
     """Validate a whole-calendar-week duration."""
-    if isinstance(value, bool):
+    if value is None or isinstance(value, bool):
         raise TypeError(f"{name} must be an integer")
     try:
         count = operator.index(value)
@@ -558,6 +583,7 @@ def _print_report(
 ) -> None:
     """Print fold context, aggregate allocations, and out-of-sample statistics."""
     print(f"\nWalk-forward portfolio simulation: {portfolio_name}")
+    portfolio._print_optimization_algorithms(result.optimization_algorithm_counts)
     print(f"Folds: {len(result.folds)}")
     print(f"Period: {result.statistics.start_date} to {result.statistics.end_date}")
     print("Simulation-day-weighted average applied allocations:")

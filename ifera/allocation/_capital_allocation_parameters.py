@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import numbers
 import operator
 
 import torch
@@ -53,6 +54,28 @@ def validate_add_limit(add_limit: float | None) -> float | None:
     if not math.isfinite(add_limit_value) or not -1.0 <= add_limit_value <= 0.0:
         raise ValueError("ADD_limit must be finite and in [-1, 0]")
     return add_limit_value
+
+
+def validate_allocation_tolerance(value: float | None) -> float | None:
+    """Return an optional positive allocation-space stopping threshold."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError("allocation_tolerance must be a real number or None")
+    tolerance = float(value)
+    if not math.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("allocation_tolerance must be finite and positive")
+    return tolerance
+
+
+def resolve_allocation_tolerance(
+    value: float | None, calculation_dtype: torch.dtype
+) -> float:
+    """Resolve the allocation threshold while preserving prior dtype defaults."""
+    validated = validate_allocation_tolerance(value)
+    if validated is not None:
+        return validated
+    return 1e-9 if calculation_dtype == torch.float64 else 1e-6
 
 
 def validate_bootstrap_seed(bootstrap_seed: int | None) -> int | None:

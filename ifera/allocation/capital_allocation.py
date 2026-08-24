@@ -1,24 +1,41 @@
-"""Find capital allocations with a drawdown-penalized Kelly grid search."""
+"""Find capital allocations with continuous Kelly and modified-Kelly searches."""
 
-# Public CSV facades intentionally mirror the reporting functions' signatures.
-# pylint: disable=duplicate-code
+# Public imports below are API re-exports rather than local dependencies.
+# pylint: disable=duplicate-code,unused-import
 
 from __future__ import annotations
 
 import math
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
-
 import torch
 
+from ._add_constrained_kelly import (
+    validate_approximate_add_search as _validate_approximate_add_search,
+)
+from ._add_branch_and_bound import (
+    PILOT_GRID_FALLBACK_ALGORITHM as _PILOT_GRID_FALLBACK_ALGORITHM,
+    try_add_branch_and_bound as _try_add_branch_and_bound,
+)
+from ._capital_allocation_facades import (
+    find_optimal_capital_allocation_from_csv,  # pylint: disable=unused-import
+    walk_forward_capital_allocation_from_csv,  # pylint: disable=unused-import
+)
+from ._capital_allocation_fast_paths import (
+    initialize_grid_incumbent as _initialize_grid_incumbent,
+    try_add_branch_path as _try_add_branch_path,
+    try_add_fast_path as _try_add_fast_path,
+)
 from ._capital_allocation_candidates import (
     constrained_allocation_unit_batches as _constrained_allocation_unit_batches,
 )
 from ._capital_allocation_diagnostics import (
     CapitalAllocationDiagnostics,
     finalize_allocation_diagnostics as _finalize_allocation_diagnostics,
+    finalize_continuous_diagnostics as _finalize_continuous_diagnostics,
     prepare_diagnostics as _prepare_diagnostics,
-    validate_bootstrap_parameters as _validate_bootstrap_parameters,
+    record_algorithm as _record_algorithm,
+    resolve_grid_bootstrap_parameters as _resolve_grid_bootstrap_parameters,
+    sample_bootstrap_indices as _sample_bootstrap_indices,
 )
 from ._capital_allocation_drawdown import (
     bootstrap_average_drawdown as _bootstrap_average_drawdown,
@@ -26,16 +43,17 @@ from ._capital_allocation_drawdown import (
 )
 from ._capital_allocation_memory import (
     candidate_batch_size as _candidate_batch_size,
+    search_candidate_batch_size as _search_candidate_batch_size,
 )
 from ._capital_allocation_parameters import (
     SUPPORTED_DTYPES as _SUPPORTED_DTYPES,
     resolve_allocation_unit_limit as _resolve_allocation_unit_limit,
+    resolve_allocation_tolerance as _resolve_allocation_tolerance,
     resolve_calculation_dtype as _resolve_calculation_dtype,
     resolve_device as _resolve_device,
     resolve_grid_steps as _resolve_grid_steps,
     validate_add_limit as _validate_add_limit,
     validate_alpha as _validate_alpha,
-    validate_bootstrap_seed as _validate_bootstrap_seed,
     validate_max_total_allocation as _validate_max_total_allocation,
     validate_returns as _validate_returns,
 )
@@ -46,27 +64,29 @@ from ._capital_allocation_refinement import (
     validate_parameters as _validate_refinement_parameters,
     validate_final_increment as _validate_final_refinement_increment,
 )
+from ._kelly_selection import (
+    maximize_kelly_with_selection as _maximize_kelly_with_selection,
+)
 from ._strategy_selection import (
     StrategySelectionConstraints,
     resolve_strategy_selection_constraints as _resolve_strategy_selection_constraints,
 )
 
-if TYPE_CHECKING:
-    from .portfolio_allocation import (
-        PortfolioAllocationResult,
-        WalkForwardPortfolioAllocationResult,
-    )
-
 _MAX_CANDIDATES_PER_BATCH = 1_000_000
+_CONTINUOUS_KELLY_ALGORITHM = "Continuous raw Kelly (away-step Frank-Wolfe)"
+_RAW_KELLY_GRID_ALGORITHM = "Raw-Kelly allocation grid fallback"
+_ADD_GRID_ALGORITHM = "ADD-constrained allocation grid search"
+_MODIFIED_GRID_ALGORITHM = "Drawdown-penalized allocation grid search"
+_MODIFIED_ADD_GRID_ALGORITHM = "Drawdown-penalized ADD-constrained grid search"
 # Torch's public stubs omit the compiler configuration context decorator.
 _COMPILER_CONFIG_PATCH = getattr(torch.compiler.config, "patch")
 
 
 @torch.no_grad()
-def find_optimal_capital_allocation(
+def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-many-statements
     returns: torch.Tensor,
     alpha: float,
-    grid_increment: float,
+    grid_increment: float | None = None,
     device: torch.device | str | None = None,
     dtype: torch.dtype | None = None,
     bootstrap_on: bool = False,
@@ -82,8 +102,10 @@ def find_optimal_capital_allocation(
     min_correlation: float | None = None,
     max_correlation: float | None = None,
     bootstrap_seed: int | None = None,
+    approximate_add_search: bool = False,
+    allocation_tolerance: float | None = None,
 ) -> torch.Tensor:
-    """Return the best long-only allocation on an overlap-constrained grid.
+    """Return the best long-only allocation under overlap capital constraints.
 
     ``returns`` must have shape ``(time, strategies)`` and contain simple daily
     returns on risk. NaN marks a day on which a strategy is inactive and is
@@ -123,7 +145,28 @@ def find_optimal_capital_allocation(
     with allocation-vector refinement generally, local refinements follow only
     the current winner; they do not independently refine every possible support.
 
-    The requested grid increment is reduced, when necessary, to the largest
+    When ``alpha`` is zero and ``ADD_limit`` is unset, the objective is concave.
+    That raw Kelly case is solved continuously with an away-step Frank--Wolfe
+    method, including exact branch-and-bound for active-support constraints.
+    It supports a simplex, fully disjoint strategies, and disjoint unions of
+    complete-overlap components. Intersecting maximal cliques retain the grid fallback.
+    Grid and refinement settings are ignored when the continuous route succeeds.
+    Bootstrap affects only a requested diagnostic for the final allocation.
+    With a hard ADD limit, the continuous winner is first tested for feasibility;
+    when it passes, it remains the exact global winner. Problems whose feasible
+    support has at most one strategy are solved exactly by comparing vectorized
+    scalar Kelly and ADD bisections. ``approximate_add_search=True`` can instead
+    scale a multidimensional full-Kelly winner along its fixed allocation ray.
+    Otherwise, a binding multidimensional ADD constraint starts with a bounded
+    spatial branch-and-bound pilot. Concavity tangents bound growth and interval
+    paths bound historical or shared-bootstrap ADD over each allocation box. A
+    cheap grid-size estimate plus observed pilot pruning selects continuation
+    only when it is likely to beat the vectorized grid; large bootstrap workloads
+    bypass the serial pilot. A completed spatial search may therefore make the
+    grid optional, while an unpromising pilot reuses its feasible incumbent in
+    the full grid. Drawdown-penalized objectives retain the grid search.
+
+    For grid searches, the requested increment is reduced, when necessary, to the largest
     reciprocal of an integer that does not exceed it. For example, ``0.3``
     becomes ``0.25``. Valid integer allocation points are generated directly
     under the overlap-clique budgets and evaluated in vectorized batches,
@@ -150,7 +193,9 @@ def find_optimal_capital_allocation(
         returns: Two-dimensional float16, bfloat16, float32, or float64 tensor
             shaped ``(time, strategies)``.
         alpha: Finite, nonnegative weight of the drawdown penalty.
-        grid_increment: Requested allocation increment in ``(0, 1]``.
+        grid_increment: Requested allocation increment in ``(0, 1]`` for a
+            grid search. It is optional when a continuous raw-Kelly or spatial
+            ADD search completes without the grid.
         device: Evaluation and output device. Defaults to ``cuda:0`` when CUDA
             is available and to CPU otherwise.
         dtype: Float16, bfloat16, float32, or float64 dtype of the returned
@@ -184,6 +229,16 @@ def find_optimal_capital_allocation(
             ``[-1, 1]`` for strategies with nonzero allocations.
         bootstrap_seed: Optional nonnegative int64 seed. Reusing it regenerates
             the same bootstrap row indices without retaining the index tensor.
+        approximate_add_search: Whether an otherwise grid-bound ADD constraint
+            may use the approximate full-Kelly fixed-ray bisection. Defaults to
+            ``False``.
+        allocation_tolerance: Optional positive allocation-space stopping
+            resolution shared by continuous Kelly and spatial ADD searches.
+            Frank--Wolfe uses it as a maximum final-update coordinate movement;
+            branch-and-bound uses it as a maximum unresolved box width. These
+            are practical stopping rules, not optimizer-distance certificates
+            for flat or nonconvex feasible regions. Its dtype-specific default
+            preserves the previous solver precision.
 
     Returns:
         A one-dimensional tensor containing the optimal strategy allocations.
@@ -197,27 +252,10 @@ def find_optimal_capital_allocation(
     alpha_value, add_limit_value = _validate_alpha(alpha), _validate_add_limit(
         ADD_limit
     )
-    (
-        bootstrap_on_value,
-        bootstrap_runs_value,
-        bootstrap_length_value,
-        percentile_value,
-    ) = _validate_bootstrap_parameters(
-        bootstrap_on, bootstrap_runs, bootstrap_length, percentile
+    approximate_add_search_value = _validate_approximate_add_search(
+        approximate_add_search
     )
-    bootstrap_seed_value = _validate_bootstrap_seed(bootstrap_seed)
     max_total_allocation_value = _validate_max_total_allocation(max_total_allocation)
-    refinement_runs_value, refinement_divisor_value = _validate_refinement_parameters(
-        refinement_runs, refinement_divisor
-    )
-    grid_steps = _resolve_grid_steps(grid_increment)
-    initial_increment = 1.0 / grid_steps
-    _validate_final_refinement_increment(
-        initial_increment, refinement_runs_value, refinement_divisor_value
-    )
-    allocation_unit_limit = _resolve_allocation_unit_limit(
-        max_total_allocation_value, grid_steps
-    )
     target_dtype = returns.dtype if dtype is None else dtype
     if (
         not isinstance(target_dtype, torch.dtype)
@@ -234,21 +272,160 @@ def find_optimal_capital_allocation(
         target_device,
     )
     calculation_dtype = _resolve_calculation_dtype(returns.dtype, target_dtype)
+    allocation_tolerance_value = _resolve_allocation_tolerance(
+        allocation_tolerance, calculation_dtype
+    )
     strategy_count = returns.shape[1]
     calculation_returns = returns.to(device=target_device, dtype=calculation_dtype)
     maximal_cliques = _find_maximal_overlap_cliques(~torch.isnan(calculation_returns))
     calculation_returns = torch.nan_to_num(calculation_returns, nan=0.0)
     transposed_returns = calculation_returns.transpose(0, 1).contiguous()
     del calculation_returns
-    (
-        bootstrap_diagnostics_enabled,
-        bootstrap_needed,
-        track_bootstrap_drawdown,
-    ) = _prepare_diagnostics(
-        diagnostics,
-        bootstrap_on_value,
-        alpha_value > 0.0 or add_limit_value is not None,
+
+    # Diagnostics themselves remain relevant in every mode, even when no
+    # drawdown calculation is requested. Grid, bootstrap, and refinement
+    # controls are intentionally not validated unless that work is needed.
+    _prepare_diagnostics(diagnostics, False, False)
+    continuous_allocation = (
+        _maximize_kelly_with_selection(
+            transposed_returns,
+            max_total_allocation_value,
+            maximal_cliques,
+            selection_constraints,
+            allocation_tolerance_value,
+        )
+        if alpha_value == 0.0
+        else None
     )
+    if add_limit_value is None and continuous_allocation is not None:
+        _record_algorithm(diagnostics, _CONTINUOUS_KELLY_ALGORITHM)
+        return _finalize_continuous_diagnostics(
+            continuous_allocation.to(dtype=target_dtype),
+            diagnostics,
+            bootstrap_on,
+            bootstrap_runs,
+            bootstrap_length,
+            percentile,
+            bootstrap_seed,
+            transposed_returns,
+            len(maximal_cliques),
+        )
+
+    add_fast_outcome = None
+    add_branch_outcome = None
+    add_branch_pilot_ran = False
+    if alpha_value == 0.0 and add_limit_value is not None:
+        add_fast_outcome = _try_add_fast_path(
+            transposed_returns,
+            continuous_allocation,
+            max_total_allocation_value,
+            add_limit_value,
+            selection_constraints,
+            target_dtype,
+            bootstrap_on,
+            bootstrap_runs,
+            bootstrap_length,
+            percentile,
+            bootstrap_seed,
+            approximate_add_search_value,
+            allocation_tolerance_value,
+            diagnostics,
+            len(maximal_cliques),
+            _sample_bootstrap_indices,
+            _bootstrap_average_drawdown,
+        )
+        if add_fast_outcome.allocation is not None:
+            return add_fast_outcome.allocation
+
+        branch_path = _try_add_branch_path(
+            transposed_returns,
+            continuous_allocation,
+            max_total_allocation_value,
+            add_limit_value,
+            maximal_cliques,
+            selection_constraints,
+            grid_increment,
+            target_dtype,
+            allocation_tolerance_value,
+            diagnostics,
+            add_fast_outcome,
+            _try_add_branch_and_bound,
+            _resolve_grid_steps,
+            _bootstrap_average_drawdown,
+        )
+        if branch_path.allocation is not None:
+            return branch_path.allocation
+        add_branch_outcome = branch_path.search_outcome
+        add_branch_pilot_ran = branch_path.pilot_ran
+
+    if grid_increment is None:
+        raise ValueError(
+            "grid_increment is required when the continuous allocation solvers "
+            "cannot handle the requested objective or overlap geometry"
+        )
+    drawdown_required = alpha_value > 0.0 or add_limit_value is not None
+    bootstrap_on_value = False
+    bootstrap_runs_value = 1
+    bootstrap_length_value = 1
+    percentile_value = 10.0
+    bootstrap_seed_value = None
+    if add_fast_outcome is None:
+        (
+            bootstrap_on_value,
+            bootstrap_runs_value,
+            bootstrap_length_value,
+            percentile_value,
+            bootstrap_seed_value,
+        ) = _resolve_grid_bootstrap_parameters(
+            bootstrap_on,
+            bootstrap_runs,
+            bootstrap_length,
+            percentile,
+            bootstrap_seed,
+            diagnostics is not None and diagnostics.request_bootstrap_average_drawdown,
+            drawdown_required,
+        )
+    refinement_runs_value, refinement_divisor_value = _validate_refinement_parameters(
+        refinement_runs, refinement_divisor
+    )
+    grid_steps = _resolve_grid_steps(grid_increment)
+    initial_increment = 1.0 / grid_steps
+    _validate_final_refinement_increment(
+        initial_increment, refinement_runs_value, refinement_divisor_value
+    )
+    allocation_unit_limit = _resolve_allocation_unit_limit(
+        max_total_allocation_value, grid_steps
+    )
+    if add_fast_outcome is None:
+        (
+            bootstrap_diagnostics_enabled,
+            bootstrap_needed,
+            track_bootstrap_drawdown,
+        ) = _prepare_diagnostics(
+            diagnostics,
+            bootstrap_on_value,
+            drawdown_required,
+        )
+        bootstrap_indices = None
+    else:
+        bootstrap_runs_value = add_fast_outcome.bootstrap_runs
+        bootstrap_length_value = add_fast_outcome.bootstrap_length
+        percentile_value = add_fast_outcome.percentile
+        bootstrap_diagnostics_enabled = add_fast_outcome.bootstrap_diagnostics_enabled
+        bootstrap_needed = add_fast_outcome.bootstrap_needed
+        track_bootstrap_drawdown = add_fast_outcome.track_bootstrap_drawdown
+        bootstrap_indices = add_fast_outcome.bootstrap_indices
+    if alpha_value == 0.0 and add_limit_value is None:
+        grid_algorithm = _RAW_KELLY_GRID_ALGORITHM
+    elif alpha_value == 0.0:
+        grid_algorithm = _ADD_GRID_ALGORITHM
+    elif add_limit_value is None:
+        grid_algorithm = _MODIFIED_GRID_ALGORITHM
+    else:
+        grid_algorithm = _MODIFIED_ADD_GRID_ALGORITHM
+    if add_branch_pilot_ran:
+        grid_algorithm = _PILOT_GRID_FALLBACK_ALGORITHM
+    _record_algorithm(diagnostics, grid_algorithm)
     ordinary_simplex = strategy_count == 1 or (
         len(maximal_cliques) == 1 and len(maximal_cliques[0]) == strategy_count
     )
@@ -261,30 +438,28 @@ def find_optimal_capital_allocation(
         or (not ordinary_simplex and not fully_disjoint)
         or (refinement_runs_value > 0 and bool(maximal_cliques))
     )
-    batch_size = min(
+    batch_size = _search_candidate_batch_size(
+        returns.shape[0],
+        strategy_count,
+        len(maximal_cliques),
+        calculation_dtype,
+        target_device,
+        uses_prefix_expansion,
+        bootstrap_needed,
+        drawdown_required,
+        bootstrap_runs_value,
+        bootstrap_length_value,
         _MAX_CANDIDATES_PER_BATCH,
-        _candidate_batch_size(
-            returns.shape[0],
-            strategy_count,
-            len(maximal_cliques),
-            calculation_dtype,
-            target_device,
-            uses_prefix_expansion,
-            bootstrap_runs_value if bootstrap_needed else 0,
-            bootstrap_length_value if bootstrap_needed else 0,
-        ),
+        _candidate_batch_size,
     )
-    bootstrap_indices = (
-        _sample_bootstrap_indices(
+    if add_fast_outcome is None and bootstrap_needed:
+        bootstrap_indices = _sample_bootstrap_indices(
             returns.shape[0],
             bootstrap_runs_value,
             bootstrap_length_value,
             target_device,
             bootstrap_seed_value,
         )
-        if bootstrap_needed
-        else None
-    )
 
     allocation_unit_batches = _initial_allocation_unit_batches(
         allocation_unit_limit,
@@ -298,16 +473,19 @@ def find_optimal_capital_allocation(
         selection_constraints,
     )
 
-    best_score = torch.full(
-        (), -torch.inf, device=target_device, dtype=calculation_dtype
-    )
-    best_allocation = torch.zeros(
-        strategy_count, device=target_device, dtype=target_dtype
-    )
-    best_bootstrap_drawdown = (
-        torch.full((), math.nan, device=target_device, dtype=calculation_dtype)
-        if track_bootstrap_drawdown
-        else None
+    best_score, best_allocation, best_bootstrap_drawdown = _initialize_grid_incumbent(
+        strategy_count,
+        target_device,
+        target_dtype,
+        calculation_dtype,
+        track_bootstrap_drawdown,
+        add_branch_outcome,
+        transposed_returns,
+        add_limit_value,
+        bootstrap_indices,
+        percentile_value,
+        allocation_tolerance_value,
+        _bootstrap_average_drawdown,
     )
 
     allocation_batches = (
@@ -395,27 +573,6 @@ def find_optimal_capital_allocation(
     )
 
 
-def _sample_bootstrap_indices(
-    time_count: int,
-    bootstrap_runs: int,
-    bootstrap_length: int,
-    device: torch.device,
-    bootstrap_seed: int | None,
-) -> torch.Tensor:
-    """Sample bootstrap rows, optionally from a reproducible local generator."""
-    size = (bootstrap_runs, bootstrap_length)
-    if bootstrap_seed is None:
-        return torch.randint(time_count, size, device=device, dtype=torch.int64)
-    generator = torch.Generator(device=device).manual_seed(bootstrap_seed)
-    return torch.randint(
-        time_count,
-        size,
-        device=device,
-        dtype=torch.int64,
-        generator=generator,
-    )
-
-
 def _refined_allocation_unit_batches(
     refinement_center: torch.Tensor,
     allocation_unit_limit: int,
@@ -473,132 +630,6 @@ def _refined_allocation_unit_batches(
         clique_unit_limits=clique_unit_limits,
         selection_constraints=selection_constraints,
         positive_unit_starts=positive_unit_starts,
-    )
-
-
-def find_optimal_capital_allocation_from_csv(
-    portfolio_name: str,
-    alpha: float,
-    grid_increment: float,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype | None = None,
-    bootstrap_on: bool = False,
-    bootstrap_runs: int = 1024,
-    bootstrap_length: int = 256,
-    percentile: float = 10.0,
-    max_total_allocation: float = 1.0,
-    annualization_periods: int = 252,
-    risk_free_rate: float = 0.0,
-    show_plot: bool = True,
-    refinement_runs: int = 0,
-    refinement_divisor: float = 2.0,
-    ADD_limit: float | None = None,  # pylint: disable=invalid-name
-    returns_dtype: type | None = None,
-    max_strategies: int | None = None,
-    min_correlation: float | None = None,
-    max_correlation: float | None = None,
-) -> PortfolioAllocationResult:
-    """Load a named CSV portfolio, optimize it, and report the result.
-
-    The reporting implementation is imported lazily so the tensor-only search
-    does not require Polars, the NYSE calendar, or Matplotlib at import time.
-    See :func:`ifera.allocation.find_optimal_capital_allocation_from_csv`
-    for the complete behavior and return-value documentation.
-    """
-    from .portfolio_allocation import (  # pylint: disable=import-outside-toplevel
-        find_optimal_capital_allocation_from_csv as find_from_csv,
-    )
-
-    if returns_dtype is None:
-        from polars import Float32  # pylint: disable=import-outside-toplevel
-
-        returns_dtype = Float32
-
-    return find_from_csv(
-        portfolio_name,
-        alpha,
-        grid_increment,
-        device,
-        dtype,
-        bootstrap_on,
-        bootstrap_runs,
-        bootstrap_length,
-        percentile,
-        max_total_allocation,
-        annualization_periods,
-        risk_free_rate,
-        show_plot,
-        refinement_runs,
-        refinement_divisor,
-        ADD_limit=ADD_limit,
-        returns_dtype=returns_dtype,
-        max_strategies=max_strategies,
-        min_correlation=min_correlation,
-        max_correlation=max_correlation,
-    )
-
-
-def walk_forward_capital_allocation_from_csv(
-    portfolio_name: str,
-    alpha: float,
-    grid_increment: float,
-    training_weeks: int,
-    embargo_weeks: int,
-    simulation_weeks: int,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype | None = None,
-    bootstrap_on: bool = False,
-    bootstrap_runs: int = 1024,
-    bootstrap_length: int = 256,
-    percentile: float = 10.0,
-    max_total_allocation: float = 1.0,
-    annualization_periods: int = 252,
-    risk_free_rate: float = 0.0,
-    show_plot: bool = True,
-    refinement_runs: int = 0,
-    refinement_divisor: float = 2.0,
-    ADD_limit: float | None = None,  # pylint: disable=invalid-name
-    allocation_alpha: float = 1.0,
-    returns_dtype: type | None = None,
-    max_strategies: int | None = None,
-    min_correlation: float | None = None,
-    max_correlation: float | None = None,
-) -> WalkForwardPortfolioAllocationResult:
-    """Lazily run walk-forward portfolio optimization from CSV backtests."""
-    from .portfolio_allocation import (  # pylint: disable=import-outside-toplevel
-        walk_forward_capital_allocation_from_csv as run_walk_forward,
-    )
-
-    if returns_dtype is None:
-        from polars import Float32  # pylint: disable=import-outside-toplevel
-
-        returns_dtype = Float32
-
-    return run_walk_forward(
-        portfolio_name=portfolio_name,
-        alpha=alpha,
-        grid_increment=grid_increment,
-        training_weeks=training_weeks,
-        embargo_weeks=embargo_weeks,
-        simulation_weeks=simulation_weeks,
-        device=device,
-        dtype=dtype,
-        bootstrap_on=bootstrap_on,
-        bootstrap_runs=bootstrap_runs,
-        bootstrap_length=bootstrap_length,
-        percentile=percentile,
-        max_total_allocation=max_total_allocation,
-        annualization_periods=annualization_periods,
-        risk_free_rate=risk_free_rate,
-        show_plot=show_plot,
-        refinement_runs=refinement_runs,
-        refinement_divisor=refinement_divisor,
-        ADD_limit=ADD_limit,
-        allocation_alpha=allocation_alpha,
-        returns_dtype=returns_dtype,
-        max_strategies=max_strategies,
-        min_correlation=min_correlation,
-        max_correlation=max_correlation,
     )
 
 

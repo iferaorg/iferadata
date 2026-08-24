@@ -101,7 +101,7 @@ def _run_regime_walk_forward(
     def sequential_optimizer(
         returns: torch.Tensor,
         alpha: float,
-        grid_increment: float,
+        grid_increment: float | None,
         **kwargs: object,
     ) -> torch.Tensor:
         del alpha, grid_increment
@@ -218,7 +218,7 @@ def test_csv_subset_limits_are_independent_and_defaults_preserve_behavior(
     monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
     common = {
         "portfolio_name": "independent_limits",
-        "alpha": 0.0,
+        "alpha": 1e-30,
         "grid_increment": 0.5,
         "device": "cpu",
         "show_plot": False,
@@ -349,11 +349,15 @@ def test_undefined_correlation_pair_is_ineligible_when_a_bound_is_active(
     monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
 
     unrestricted = allocation.find_optimal_capital_allocation_from_csv(
-        "undefined_correlation", 0.0, 0.5, device="cpu", show_plot=False
+        "undefined_correlation",
+        1e-30,
+        0.5,
+        device="cpu",
+        show_plot=False,
     )
     constrained = allocation.find_optimal_capital_allocation_from_csv(
         "undefined_correlation",
-        0.0,
+        1e-30,
         0.5,
         device="cpu",
         show_plot=False,
@@ -438,7 +442,7 @@ def test_subset_prefix_search_coalesces_valid_candidates_into_scoring_batches(
 
     capital_allocation.find_optimal_capital_allocation(
         returns,
-        alpha=0.0,
+        alpha=1e-30,
         grid_increment=0.5,
         device="cpu",
         max_strategies=2,
@@ -521,6 +525,7 @@ def test_walk_forward_reselects_fold_local_subsets_and_prewarms_each_ema_regime(
         show_plot=False,
         max_strategies=2,
         max_correlation=-0.9,
+        ADD_limit=-1.0,
     )
 
     assert result.strategy_names == ("alpha", "beta", "gamma")

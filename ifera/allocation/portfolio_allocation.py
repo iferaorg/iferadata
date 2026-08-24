@@ -22,6 +22,7 @@ from ._strategy_selection import (
     strategy_correlation_matrix as _strategy_correlation_matrix,
     validate_strategy_selection_parameters as _validate_strategy_selection_parameters,
 )
+from ._walk_forward_facade import walk_forward_capital_allocation_from_csv
 
 __all__ = [
     "PortfolioAllocationResult",
@@ -98,13 +99,14 @@ class PortfolioDiversification:
 
 @dataclass(frozen=True)
 class PortfolioAllocationResult:
-    """Allocation, synchronized daily series, and statistics returned by the wrapper."""
+    """Allocation, algorithm usage, synchronized series, and wrapper statistics."""
 
     strategy_names: tuple[str, ...]
     allocation: torch.Tensor
     daily_results: pl.DataFrame
     statistics: PortfolioStatistics
     diversification: PortfolioDiversification
+    optimization_algorithm_counts: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,7 +128,7 @@ class WalkForwardFold:
 
 @dataclass(frozen=True)
 class WalkForwardPortfolioAllocationResult:
-    """Fold details and aggregate out-of-sample portfolio results."""
+    """Fold details, algorithm usage, and aggregate out-of-sample results."""
 
     strategy_names: tuple[str, ...]
     folds: tuple[WalkForwardFold, ...]
@@ -134,12 +136,13 @@ class WalkForwardPortfolioAllocationResult:
     daily_results: pl.DataFrame
     statistics: PortfolioStatistics
     diversification: PortfolioDiversification
+    optimization_algorithm_counts: tuple[tuple[str, int], ...] = ()
 
 
 def find_optimal_capital_allocation_from_csv(
     portfolio_name: str,
     alpha: float,
-    grid_increment: float,
+    grid_increment: float | None = None,
     device: torch.device | str | None = None,
     dtype: torch.dtype | None = None,
     bootstrap_on: bool = False,
@@ -157,6 +160,8 @@ def find_optimal_capital_allocation_from_csv(
     max_strategies: int | None = None,
     min_correlation: float | None = None,
     max_correlation: float | None = None,
+    approximate_add_search: bool = False,
+    allocation_tolerance: float | None = None,
 ) -> PortfolioAllocationResult:
     """Optimize and report allocations for the CSV strategies in a portfolio.
 
@@ -187,7 +192,7 @@ def find_optimal_capital_allocation_from_csv(
     Args:
         portfolio_name: Name of the directory below ``results/portfolios``.
         alpha: Drawdown-penalty weight passed to the allocation optimizer.
-        grid_increment: Requested allocation grid increment.
+        grid_increment: Optional allocation increment; required only for grid searches.
         device: Optimizer device. Uses the optimizer's CUDA/CPU default when omitted.
         dtype: Output allocation dtype. Defaults to the input-series dtype.
         bootstrap_on: Whether ADD is calculated from bootstrapped paths.
@@ -211,6 +216,12 @@ def find_optimal_capital_allocation_from_csv(
             strategies with nonzero allocations.
         max_correlation: Optional inclusive maximum correlation between any two
             strategies with nonzero allocations.
+        approximate_add_search: Whether ADD-constrained raw Kelly may use the
+            approximate full-Kelly fixed-ray bisection.
+        allocation_tolerance: Optional allocation-space stopping resolution
+            shared by continuous Kelly and spatial branch-and-bound searches;
+            it is a practical iterate/box resolution, not a global
+            optimizer-distance certificate.
 
     Returns:
         Strategy names, optimal allocation, combined daily results, financial
@@ -235,9 +246,7 @@ def find_optimal_capital_allocation_from_csv(
         portfolio_name, returns_dtype
     )
 
-    optimizer_diagnostics = (
-        capital_allocation.CapitalAllocationDiagnostics() if bootstrap_on else None
-    )
+    optimizer_diagnostics = capital_allocation.CapitalAllocationDiagnostics()
     allocation = capital_allocation.find_optimal_capital_allocation(
         returns_tensor,
         alpha=alpha,
@@ -256,6 +265,8 @@ def find_optimal_capital_allocation_from_csv(
         max_strategies=maximum,
         min_correlation=minimum_correlation,
         max_correlation=maximum_correlation,
+        approximate_add_search=approximate_add_search,
+        allocation_tolerance=allocation_tolerance,
     )
     weights = allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
     daily_results = _combined_daily_results(
@@ -280,94 +291,14 @@ def find_optimal_capital_allocation_from_csv(
         daily_results=daily_results,
         statistics=statistics,
         diversification=diversification,
+        optimization_algorithm_counts=(
+            (optimizer_diagnostics.algorithm or "Custom/unknown optimizer", 1),
+        ),
     )
     _print_report(portfolio_name, result)
     if show_plot:
         _plot_equity_curve(portfolio_name, daily_results)
     return result
-
-
-def walk_forward_capital_allocation_from_csv(
-    portfolio_name: str,
-    alpha: float,
-    grid_increment: float,
-    training_weeks: int,
-    embargo_weeks: int,
-    simulation_weeks: int,
-    device: torch.device | str | None = None,
-    dtype: torch.dtype | None = None,
-    bootstrap_on: bool = False,
-    bootstrap_runs: int = 1024,
-    bootstrap_length: int = 256,
-    percentile: float = 10.0,
-    max_total_allocation: float = 1.0,
-    annualization_periods: int = _ANNUALIZATION_PERIODS,
-    risk_free_rate: float = 0.0,
-    show_plot: bool = True,
-    refinement_runs: int = 0,
-    refinement_divisor: float = 2.0,
-    ADD_limit: float | None = None,  # pylint: disable=invalid-name
-    allocation_alpha: float = 1.0,
-    returns_dtype: type[pl.DataType] = pl.Float32,
-    max_strategies: int | None = None,
-    min_correlation: float | None = None,
-    max_correlation: float | None = None,
-) -> WalkForwardPortfolioAllocationResult:
-    """Run rolling portfolio optimization and report out-of-sample results.
-
-    Weeks are Monday-anchored; an incomplete first week is discarded. Each fold trains over
-    ``training_weeks``, skips ``embargo_weeks``, and applies its allocation for
-    ``simulation_weeks``. The structure advances by ``simulation_weeks`` until
-    the data ends; the final simulation may be partial.
-
-    Every fold gets fresh optimizer state and bootstrap samples. Regime searches
-    within one fold replay the same row samples for a fair comparison. Reported
-    statistics use only concatenated out-of-sample periods and historical ADD;
-    bootstrap ADD is not reported. ``returns_dtype`` controls synchronized
-    return storage and optimizer inputs, and defaults to ``polars.Float32``.
-
-    ``allocation_alpha`` optionally smooths fold optima with a recursive EMA.
-    With strategy-selection limits, a discovery pass finds the supports that
-    ever win, then each support's independent EMA is prewarmed from the first
-    fold and advanced in the background on every fold. The simulation switches
-    to the state of the currently selected support without smoothing across
-    regime boundaries. Counterfactual targets use only that support's columns
-    and the fold's own training data, so cataloging future-winning supports does
-    not introduce future returns into earlier targets.
-
-    EMA is post-processing and is not projected back into a later fold's
-    potentially changed overlap, maximum-allocation, or ``ADD_limit`` constraints.
-    """
-    from .walk_forward_allocation import (  # pylint: disable=import-outside-toplevel
-        walk_forward_capital_allocation_from_csv as run_walk_forward,
-    )
-
-    return run_walk_forward(
-        portfolio_name=portfolio_name,
-        alpha=alpha,
-        grid_increment=grid_increment,
-        training_weeks=training_weeks,
-        embargo_weeks=embargo_weeks,
-        simulation_weeks=simulation_weeks,
-        device=device,
-        dtype=dtype,
-        bootstrap_on=bootstrap_on,
-        bootstrap_runs=bootstrap_runs,
-        bootstrap_length=bootstrap_length,
-        percentile=percentile,
-        max_total_allocation=max_total_allocation,
-        annualization_periods=annualization_periods,
-        risk_free_rate=risk_free_rate,
-        show_plot=show_plot,
-        refinement_runs=refinement_runs,
-        refinement_divisor=refinement_divisor,
-        ADD_limit=ADD_limit,
-        allocation_alpha=allocation_alpha,
-        returns_dtype=returns_dtype,
-        max_strategies=max_strategies,
-        min_correlation=min_correlation,
-        max_correlation=max_correlation,
-    )
 
 
 def _validate_annualization_periods(value: int) -> int:
@@ -884,6 +815,7 @@ def _print_report(portfolio_name: str, result: PortfolioAllocationResult) -> Non
     """Print allocations and combined financial statistics."""
     statistics = result.statistics
     print(f"\nOptimal capital allocation: {portfolio_name}")
+    _print_optimization_algorithms(result.optimization_algorithm_counts)
     print(f"Period: {statistics.start_date} to {statistics.end_date}")
     print("Allocations:")
     weights = result.allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
@@ -898,6 +830,18 @@ def _print_report(portfolio_name: str, result: PortfolioAllocationResult) -> Non
         print("Strategies not used:\n  " + "\n  ".join(unused_strategy_names))
     _print_combined_statistics(statistics)
     _print_diversification(result.diversification)
+
+
+def _print_optimization_algorithms(
+    algorithm_counts: tuple[tuple[str, int], ...],
+) -> None:
+    """Print the optimization algorithms exercised by a reported run."""
+    if len(algorithm_counts) == 1 and algorithm_counts[0][1] == 1:
+        print(f"Optimization algorithm: {algorithm_counts[0][0]}")
+        return
+    print("Optimization algorithms used:")
+    for algorithm, count in algorithm_counts:
+        print(f"  {algorithm}: {count} optimizer calls")
 
 
 def _print_combined_statistics(statistics: PortfolioStatistics) -> None:

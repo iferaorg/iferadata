@@ -1,5 +1,9 @@
 """Diagnostic output populated by the capital-allocation search."""
 
+# The fast-path orchestrator deliberately mirrors the one-winner bootstrap
+# memory validation performed here.
+# pylint: disable=duplicate-code
+
 from __future__ import annotations
 
 import math
@@ -9,12 +13,18 @@ from dataclasses import dataclass
 
 import torch
 
+from ._capital_allocation_drawdown import bootstrap_average_drawdown
+from ._capital_allocation_memory import validate_bootstrap_diagnostic_memory
+from ._capital_allocation_parameters import validate_bootstrap_seed
+
 
 @dataclass
 class CapitalAllocationDiagnostics:
     """Optional details retained while selecting the optimal allocation."""
 
     bootstrap_average_drawdown: float | None = None
+    algorithm: str | None = None
+    request_bootstrap_average_drawdown: bool = True
 
 
 def prepare_diagnostics(
@@ -29,8 +39,13 @@ def prepare_diagnostics(
         raise TypeError("diagnostics must be a CapitalAllocationDiagnostics instance")
     if diagnostics is not None:
         diagnostics.bootstrap_average_drawdown = None
+        diagnostics.algorithm = None
     scoring_enabled = bootstrap_on and drawdown_required
-    diagnostics_enabled = bootstrap_on and diagnostics is not None
+    diagnostics_enabled = (
+        bootstrap_on
+        and diagnostics is not None
+        and diagnostics.request_bootstrap_average_drawdown
+    )
     return (
         diagnostics_enabled,
         scoring_enabled or diagnostics_enabled,
@@ -63,6 +78,123 @@ def finalize_allocation_diagnostics(
         None if bootstrap_drawdown is None else float(bootstrap_drawdown.item())
     )
     return best_allocation
+
+
+def finalize_continuous_diagnostics(
+    best_allocation: torch.Tensor,
+    diagnostics: CapitalAllocationDiagnostics | None,
+    bootstrap_on: bool,
+    bootstrap_runs: int,
+    bootstrap_length: int,
+    percentile: float,
+    bootstrap_seed: int | None,
+    transposed_returns: torch.Tensor,
+    clique_count: int,
+) -> torch.Tensor:
+    """Optionally bootstrap the one continuous winner for report diagnostics."""
+    if diagnostics is None or not diagnostics.request_bootstrap_average_drawdown:
+        return best_allocation
+    if not isinstance(bootstrap_on, bool):
+        raise TypeError("bootstrap_on must be a bool")
+    if not bootstrap_on:
+        return best_allocation
+
+    (
+        _,
+        bootstrap_runs_value,
+        bootstrap_length_value,
+        percentile_value,
+    ) = validate_bootstrap_parameters(
+        bootstrap_on, bootstrap_runs, bootstrap_length, percentile
+    )
+    bootstrap_seed_value = validate_bootstrap_seed(bootstrap_seed)
+    strategy_count, time_count = transposed_returns.shape
+    validate_bootstrap_diagnostic_memory(
+        time_count,
+        strategy_count,
+        clique_count,
+        transposed_returns.dtype,
+        transposed_returns.device,
+        bootstrap_runs_value,
+        bootstrap_length_value,
+    )
+    bootstrap_indices = sample_bootstrap_indices(
+        time_count,
+        bootstrap_runs_value,
+        bootstrap_length_value,
+        transposed_returns.device,
+        bootstrap_seed_value,
+    )
+    return finalize_allocation_diagnostics(
+        best_allocation,
+        diagnostics,
+        bootstrap_indices,
+        transposed_returns,
+        percentile_value,
+        None,
+        bootstrap_average_drawdown,
+    )
+
+
+def record_algorithm(
+    diagnostics: CapitalAllocationDiagnostics | None, algorithm: str
+) -> None:
+    """Retain the algorithm selected by one optimizer invocation."""
+    if diagnostics is not None:
+        diagnostics.algorithm = algorithm
+
+
+def sample_bootstrap_indices(
+    time_count: int,
+    bootstrap_runs: int,
+    bootstrap_length: int,
+    device: torch.device,
+    bootstrap_seed: int | None,
+) -> torch.Tensor:
+    """Sample bootstrap rows, optionally from a reproducible local generator."""
+    size = (bootstrap_runs, bootstrap_length)
+    if bootstrap_seed is None:
+        return torch.randint(time_count, size, device=device, dtype=torch.int64)
+    generator = torch.Generator(device=device).manual_seed(bootstrap_seed)
+    return torch.randint(
+        time_count,
+        size,
+        device=device,
+        dtype=torch.int64,
+        generator=generator,
+    )
+
+
+def resolve_grid_bootstrap_parameters(
+    bootstrap_on: bool,
+    bootstrap_runs: int,
+    bootstrap_length: int,
+    percentile: float,
+    bootstrap_seed: int | None,
+    diagnostics_requested: bool,
+    drawdown_required: bool,
+) -> tuple[bool, int, int, float, int | None]:
+    """Resolve only bootstrap controls that can affect scoring or output."""
+    if not drawdown_required and not diagnostics_requested:
+        return False, 1, 1, 10.0, None
+    if not drawdown_required and not isinstance(bootstrap_on, bool):
+        raise TypeError("bootstrap_on must be a bool")
+    if not drawdown_required and not bootstrap_on:
+        return False, 1, 1, 10.0, None
+
+    enabled, runs, length, resolved_percentile = validate_bootstrap_parameters(
+        bootstrap_on,
+        bootstrap_runs,
+        bootstrap_length,
+        percentile,
+    )
+    return (
+        enabled,
+        runs,
+        length,
+        resolved_percentile,
+        validate_bootstrap_seed(bootstrap_seed),
+    )
 
 
 def validate_bootstrap_parameters(

@@ -41,7 +41,7 @@ def _fixed_optimizer(
     def optimizer(
         returns: torch.Tensor,
         alpha: float,
-        grid_increment: float,
+        grid_increment: float | None,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
         bootstrap_on: bool = False,
@@ -56,6 +56,8 @@ def _fixed_optimizer(
         min_correlation: float | None = None,
         max_correlation: float | None = None,
         diagnostics: capital_allocation.CapitalAllocationDiagnostics | None = None,
+        approximate_add_search: bool = False,
+        allocation_tolerance: float | None = None,
     ) -> torch.Tensor:
         if captured is not None:
             captured.update(
@@ -77,6 +79,8 @@ def _fixed_optimizer(
                     "min_correlation": min_correlation,
                     "max_correlation": max_correlation,
                     "diagnostics": diagnostics,
+                    "approximate_add_search": approximate_add_search,
+                    "allocation_tolerance": allocation_tolerance,
                 }
             )
         allocation_tensor = torch.tensor(
@@ -86,6 +90,7 @@ def _fixed_optimizer(
         )
         if diagnostics is not None:
             diagnostics.bootstrap_average_drawdown = -0.123 if bootstrap_on else None
+            diagnostics.algorithm = "Test optimizer"
         return allocation_tensor
 
     return optimizer
@@ -99,7 +104,7 @@ def _sequential_optimizer(
     def optimizer(
         returns: torch.Tensor,
         alpha: float,
-        grid_increment: float,
+        grid_increment: float | None,
         **kwargs: object,
     ) -> torch.Tensor:
         call_index = len(captured)
@@ -111,6 +116,9 @@ def _sequential_optimizer(
                 **kwargs,
             }
         )
+        diagnostics = kwargs.get("diagnostics")
+        if isinstance(diagnostics, capital_allocation.CapitalAllocationDiagnostics):
+            diagnostics.algorithm = "Sequential test optimizer"
         dtype = kwargs.get("dtype") or returns.dtype
         device = kwargs.get("device") or returns.device
         return torch.tensor(allocations[call_index], dtype=dtype, device=device)
@@ -178,6 +186,7 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         max_total_allocation=1.5,
         refinement_runs=3,
         refinement_divisor=4.0,
+        approximate_add_search=True,
         show_plot=False,
     )
 
@@ -202,6 +211,7 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
     assert captured["max_total_allocation"] == 1.5
     assert captured["refinement_runs"] == 3
     assert captured["refinement_divisor"] == 4.0
+    assert captured["approximate_add_search"] is True
     assert isinstance(
         captured["diagnostics"], capital_allocation.CapitalAllocationDiagnostics
     )
@@ -235,8 +245,11 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         "Sharpe",
         "Sortino",
         "Portfolio score",
+        "Optimization algorithm",
+        "Test optimizer",
     ):
         assert text.casefold() in output.casefold()
+    assert result.optimization_algorithm_counts == (("Test optimizer", 1),)
     output_lines = [line.strip() for line in output.splitlines()]
     cagr_line = next(
         index for index, line in enumerate(output_lines) if line.startswith("CAGR:")
@@ -252,6 +265,44 @@ def test_wrapper_aligns_nyse_sessions_and_forwards_optimizer_arguments(
         if line.startswith("Calmar ratio:")
     )
     assert output_lines[calmar_line + 1].startswith("Portfolio score:")
+
+
+def test_csv_wrapper_allows_omitting_grid_for_raw_kelly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The high-level raw-Kelly entry point forwards an omitted grid as None."""
+    directory = _portfolio_directory(tmp_path, "continuous_wrapper")
+    _write_strategy(directory / "strategy.csv", ["Jan 6, 2025 10:00am"], [1.0])
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _fixed_optimizer([0.5], captured),
+    )
+
+    portfolio_allocation.find_optimal_capital_allocation_from_csv(
+        "continuous_wrapper",
+        alpha=0.0,
+        device="cpu",
+        show_plot=False,
+    )
+
+    assert captured["grid_increment"] is None
+
+
+def test_algorithm_report_lists_every_algorithm_and_call_count(
+    capsys: pytest.CaptureFixture[str],
+):
+    """A mixed WFA/search run is reported as a clear plural algorithm list."""
+    portfolio_allocation._print_optimization_algorithms(
+        (("Continuous raw Kelly", 5), ("ADD-constrained grid search", 2))
+    )
+
+    output = capsys.readouterr().out
+    assert "Optimization algorithms used:" in output
+    assert "Continuous raw Kelly: 5 optimizer calls" in output
+    assert "ADD-constrained grid search: 2 optimizer calls" in output
 
 
 def test_wrapper_defaults_csv_returns_to_float32(
@@ -751,6 +802,7 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
         max_total_allocation=1.5,
         refinement_runs=2,
         refinement_divisor=3.0,
+        approximate_add_search=True,
         show_plot=False,
     )
 
@@ -785,6 +837,7 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
         assert call["max_total_allocation"] == 1.5
         assert call["refinement_runs"] == 2
         assert call["refinement_divisor"] == 3.0
+        assert call["approximate_add_search"] is True
 
     assert len(result.folds) == 2
     first_fold, second_fold = result.folds
@@ -846,6 +899,7 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
     assert result.statistics.end_date == datetime.date(2025, 2, 19)
     assert result.statistics.market_days == len(expected_simulation_dates)
     assert result.statistics.bootstrap_average_drawdown is None
+    assert result.optimization_algorithm_counts == (("Sequential test optimizer", 2),)
     assert result.diversification.highest_correlation == pytest.approx(1.0)
     expected_concentration = (10.0 / 17.0) ** 2 + (7.0 / 17.0) ** 2
     assert result.diversification.allocation_concentration == pytest.approx(
@@ -866,6 +920,7 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
         "Sortino ratio",
         "Portfolio score",
         "Portfolio robustness / diversification",
+        "Optimization algorithm",
     ):
         assert statistic_name in output
     assert "ADD (bootstrap)" not in output
@@ -1373,7 +1428,6 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
 
     sentinel = object()
     internal_calls: list[dict[str, object]] = []
-    facade_calls: list[dict[str, object]] = []
 
     def fake_internal(**kwargs: object):
         internal_calls.append(kwargs)
@@ -1393,21 +1447,14 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
         simulation_weeks=1,
         returns_dtype=pl.Float64,
         allocation_alpha=0.375,
+        approximate_add_search=True,
         show_plot=False,
     )
     assert result is sentinel
     assert internal_calls[0]["allocation_alpha"] == 0.375
+    assert internal_calls[0]["approximate_add_search"] is True
     assert internal_calls[0]["returns_dtype"] == pl.Float64
 
-    def fake_facade(**kwargs: object):
-        facade_calls.append(kwargs)
-        return sentinel
-
-    monkeypatch.setattr(
-        portfolio_allocation,
-        "walk_forward_capital_allocation_from_csv",
-        fake_facade,
-    )
     result = capital_allocation.walk_forward_capital_allocation_from_csv(
         "forward_alpha",
         alpha=0.0,
@@ -1417,11 +1464,13 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
         simulation_weeks=1,
         returns_dtype=pl.Float64,
         allocation_alpha=0.625,
+        approximate_add_search=True,
         show_plot=False,
     )
     assert result is sentinel
-    assert facade_calls[0]["allocation_alpha"] == 0.625
-    assert facade_calls[0]["returns_dtype"] == pl.Float64
+    assert internal_calls[1]["allocation_alpha"] == 0.625
+    assert internal_calls[1]["approximate_add_search"] is True
+    assert internal_calls[1]["returns_dtype"] == pl.Float64
 
 
 def test_walk_forward_rejects_dataset_without_a_simulation_period(
