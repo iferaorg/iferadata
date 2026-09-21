@@ -24,6 +24,7 @@ def candidate_batch_size(
     bootstrap_runs: int,
     bootstrap_length: int,
     bootstrap_paths: bool = True,
+    block_group_count: int = 0,
 ) -> int:
     """Choose a conservative candidate batch size for path calculations."""
     element_size = torch.empty((), dtype=dtype).element_size()
@@ -56,15 +57,27 @@ def candidate_batch_size(
             + 8 * strategy_count * clique_count
             + 24 * strategy_count
         )
+    block_tensor_bytes = block_group_count * (strategy_count * element_size + 2 * 8)
+    block_workspace_bytes = (
+        strategy_count + block_group_count * (3 * element_size + 1)
+        if block_group_count
+        else 0
+    )
     candidate_bytes = max(
-        path_bytes + (strategy_count + clique_count) * 32 + prefix_stack_bytes,
+        path_bytes
+        + (strategy_count + clique_count) * 32
+        + prefix_stack_bytes
+        + block_workspace_bytes,
         1,
     )
 
     memory_budget = _available_memory_budget(device)
+    fixed_input_bytes = bootstrap_index_bytes + block_tensor_bytes
     if bootstrap_index_bytes >= memory_budget:
         raise ValueError("bootstrap index tensor exceeds the search memory budget")
-    memory_budget -= bootstrap_index_bytes
+    if block_tensor_bytes >= memory_budget - bootstrap_index_bytes:
+        raise ValueError("trade-block tensor exceeds the search memory budget")
+    memory_budget -= fixed_input_bytes
     if candidate_bytes > memory_budget:
         raise ValueError("one candidate exceeds the search memory budget")
     return max(1, min(_MAX_CANDIDATES_PER_BATCH, memory_budget // candidate_bytes))
@@ -120,6 +133,7 @@ def search_candidate_batch_size(
     bootstrap_length: int,
     maximum_candidates: int,
     planner: Callable[..., int] = candidate_batch_size,
+    block_group_count: int = 0,
 ) -> int:
     """Plan grid scoring separately from final-winner bootstrap diagnostics."""
     bootstrap_scoring_needed = bootstrap_needed and drawdown_required
@@ -133,7 +147,7 @@ def search_candidate_batch_size(
             bootstrap_runs,
             bootstrap_length,
         )
-    planned_size = planner(
+    planner_arguments = (
         time_count,
         strategy_count,
         clique_count,
@@ -144,4 +158,8 @@ def search_candidate_batch_size(
         bootstrap_length if bootstrap_needed else 0,
         bootstrap_scoring_needed,
     )
+    if block_group_count:
+        planned_size = planner(*planner_arguments, block_group_count=block_group_count)
+    else:
+        planned_size = planner(*planner_arguments)
     return min(maximum_candidates, planned_size)

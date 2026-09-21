@@ -1,11 +1,12 @@
 """Load strategy backtests, optimize their allocation, and report the result."""
 
 # Public CSV facades intentionally mirror the tensor optimizer's parameters.
-# pylint: disable=duplicate-code
+# pylint: disable=duplicate-code,too-many-lines
 
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -18,6 +19,8 @@ from tqdm.auto import tqdm  # pylint: disable=unused-import
 from ifera.settings import settings
 
 from . import capital_allocation
+from ._capital_allocation_blocks import Block
+from ._portfolio_blocking import build_block_list, parse_strategy_trade_legs
 from ._strategy_selection import (
     strategy_correlation_matrix as _strategy_correlation_matrix,
     validate_strategy_selection_parameters as _validate_strategy_selection_parameters,
@@ -76,6 +79,28 @@ class PortfolioStatistics:
     exposure: float
     best_day: float
     worst_day: float
+    best_week: float
+    worst_week: float
+    best_month: float
+    worst_month: float
+    best_three_months: float | None
+    worst_three_months: float | None
+    best_twelve_months: float | None
+    worst_twelve_months: float | None
+
+
+@dataclass(frozen=True)
+class _CalendarReturnExtremes:
+    """Compounded best and worst returns over calendar periods."""
+
+    best_week: float
+    worst_week: float
+    best_month: float
+    worst_month: float
+    best_three_months: float | None
+    worst_three_months: float | None
+    best_twelve_months: float | None
+    worst_twelve_months: float | None
 
 
 @dataclass(frozen=True)
@@ -165,11 +190,13 @@ def find_optimal_capital_allocation_from_csv(
 ) -> PortfolioAllocationResult:
     """Optimize and report allocations for the CSV strategies in a portfolio.
 
-    CSV files are read from
-    ``DATA_FOLDER/results/portfolios/{portfolio_name}``. Each file is one
-    strategy and must have case-insensitive ``Opened`` and ``ROR`` columns.
+    CSV files are read from ``DATA_FOLDER/results/portfolios/{portfolio_name}``.
+    Each file is one strategy with case-insensitive ``Opened`` and ``ROR`` columns.
     ``Opened`` is reduced to a date, and ``ROR / 100`` is used as the daily
-    return on risk. The files must contain no more than one row per date.
+    return on risk. Complete ``Closed``, ``Symbol``, ``Exp``, and ``Legs`` metadata
+    identifies overlapping trades with conflicting option legs, which are
+    converted to allocation-dependent block relationships. Multiple same-day
+    trades are aggregated with a warning and use simplified day-level blocking.
 
     The returned daily frame spans every NYSE session from the first observed
     date through the last. A null strategy value means that strategy was
@@ -242,9 +269,12 @@ def find_optimal_capital_allocation_from_csv(
     if not isinstance(show_plot, bool):
         raise TypeError("show_plot must be a bool")
 
-    strategy_names, synchronized_returns, returns_tensor = _load_portfolio_returns(
-        portfolio_name, returns_dtype
-    )
+    (
+        strategy_names,
+        synchronized_returns,
+        returns_tensor,
+        block_list,
+    ) = _load_portfolio_returns(portfolio_name, returns_dtype)
 
     optimizer_diagnostics = capital_allocation.CapitalAllocationDiagnostics()
     allocation = capital_allocation.find_optimal_capital_allocation(
@@ -267,10 +297,11 @@ def find_optimal_capital_allocation_from_csv(
         max_correlation=maximum_correlation,
         approximate_add_search=approximate_add_search,
         allocation_tolerance=allocation_tolerance,
+        block_list=list(block_list),
     )
     weights = allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
     daily_results = _combined_daily_results(
-        synchronized_returns, strategy_names, weights
+        synchronized_returns, strategy_names, weights, block_list
     )
     statistics = _portfolio_statistics(
         daily_results,
@@ -411,6 +442,16 @@ def _load_strategy_csv(
     path: Path, returns_dtype: type[pl.DataType] = pl.Float32
 ) -> pl.DataFrame:
     """Load and validate one strategy's dated fractional daily returns."""
+    strategy_frame, _ = _load_strategy_csv_data(path, returns_dtype, 0)
+    return strategy_frame
+
+
+def _load_strategy_csv_data(
+    path: Path,
+    returns_dtype: type[pl.DataType],
+    strategy_index: int,
+) -> tuple[pl.DataFrame, pl.DataFrame | None]:
+    """Load daily returns and normalized option-leg metadata from one CSV."""
     returns_dtype_value = _validate_returns_dtype(returns_dtype)
     try:
         raw_frame = pl.read_csv(path)
@@ -421,6 +462,9 @@ def _load_strategy_csv(
 
     opened_column = _required_column(raw_frame.columns, "Opened", path)
     return_column = _required_column(raw_frame.columns, "ROR", path)
+    trade_legs = parse_strategy_trade_legs(
+        raw_frame, path, strategy_index, opened_column
+    )
     try:
         strategy_frame = raw_frame.select(
             _opened_date_expression(opened_column),
@@ -445,8 +489,17 @@ def _load_strategy_csv(
     )
     if not duplicate_dates.is_empty():
         dates = ", ".join(str(value) for value in duplicate_dates.sort().to_list())
-        raise ValueError(f"{path.name} contains duplicate Opened dates: {dates}")
-    return strategy_frame.sort("date")
+        warnings.warn(
+            f"{path.name} trades more than once on these dates: {dates}. "
+            "Daily ROR values are summed; if any constituent trade is blocked, "
+            "the aggregated strategy-day is suppressed.",
+            UserWarning,
+            stacklevel=2,
+        )
+        strategy_frame = strategy_frame.group_by("date").agg(
+            pl.col("return").sum().cast(returns_dtype_value)
+        )
+    return strategy_frame.sort("date"), trade_legs
 
 
 def _nyse_market_dates(start_date: date, end_date: date) -> pl.DataFrame:
@@ -501,30 +554,35 @@ def _synchronize_strategy_returns(
 def _load_portfolio_returns(
     portfolio_name: str,
     returns_dtype: type[pl.DataType] = pl.Float32,
-) -> tuple[tuple[str, ...], pl.DataFrame, torch.Tensor]:
+) -> tuple[tuple[str, ...], pl.DataFrame, torch.Tensor, tuple[Block, ...]]:
     """Load, validate, and synchronize every strategy in a named portfolio."""
     portfolio_path = _portfolio_path(portfolio_name)
     csv_paths = _portfolio_csv_paths(portfolio_path)
     strategy_names = tuple(path.stem for path in csv_paths)
     _validate_strategy_names(strategy_names)
-    strategy_frames = tuple(
-        _load_strategy_csv(path, returns_dtype) for path in csv_paths
+    loaded_strategies = tuple(
+        _load_strategy_csv_data(path, returns_dtype, strategy_index)
+        for strategy_index, path in enumerate(csv_paths)
     )
+    strategy_frames = tuple(strategy[0] for strategy in loaded_strategies)
+    strategy_trade_legs = tuple(strategy[1] for strategy in loaded_strategies)
     synchronized_returns = _synchronize_strategy_returns(
         strategy_names, strategy_frames
     )
     returns_tensor = synchronized_returns.select(strategy_names).to_torch()
-    return strategy_names, synchronized_returns, returns_tensor
+    block_list = build_block_list(strategy_trade_legs, synchronized_returns["date"])
+    return strategy_names, synchronized_returns, returns_tensor, block_list
 
 
 def _combined_daily_results(
     synchronized_returns: pl.DataFrame,
     strategy_names: tuple[str, ...],
     weights: list[float],
+    block_list: tuple[Block, ...] = (),
 ) -> pl.DataFrame:
     """Apply an allocation and add its combined return, equity, and drawdown."""
     return _add_equity_curve(
-        _apply_allocation(synchronized_returns, strategy_names, weights)
+        _apply_allocation(synchronized_returns, strategy_names, weights, block_list)
     )
 
 
@@ -532,24 +590,44 @@ def _apply_allocation(
     synchronized_returns: pl.DataFrame,
     strategy_names: tuple[str, ...],
     weights: list[float],
+    block_list: tuple[Block, ...] = (),
 ) -> pl.DataFrame:
     """Apply an allocation without resetting or calculating an equity curve."""
+    blocked_days: dict[int, set[int]] = {}
+    for day_index, blocked, blocked_by in block_list:
+        if weights[blocked_by] != 0.0:
+            blocked_days.setdefault(blocked, set()).add(day_index)
+    indexed_returns = synchronized_returns.with_row_index("__allocation_day_idx")
+
+    effective_strategy_returns = []
+    effective_strategy_activity = []
+    for strategy_index, strategy_name in enumerate(strategy_names):
+        strategy_blocked_days = sorted(blocked_days.get(strategy_index, ()))
+        is_blocked = pl.col("__allocation_day_idx").is_in(strategy_blocked_days)
+        effective_strategy_returns.append(
+            pl.when(is_blocked)
+            .then(0.0)
+            .otherwise(pl.col(strategy_name).fill_null(0.0))
+        )
+        effective_strategy_activity.append(
+            pl.col(strategy_name).is_not_null() & ~is_blocked
+        )
     weighted_returns = [
-        pl.col(strategy_name).fill_null(0.0) * weight
-        for strategy_name, weight in zip(strategy_names, weights)
+        strategy_return * weight
+        for strategy_return, weight in zip(effective_strategy_returns, weights)
     ]
     allocated_activity = [
-        pl.col(strategy_name).is_not_null()
-        for strategy_name, weight in zip(strategy_names, weights)
+        strategy_active
+        for strategy_active, weight in zip(effective_strategy_activity, weights)
         if weight != 0.0
     ]
     active = (
         pl.any_horizontal(allocated_activity) if allocated_activity else pl.lit(False)
     )
-    combined = synchronized_returns.with_columns(
+    combined = indexed_returns.with_columns(
         active.alias("active"),
         pl.sum_horizontal(weighted_returns).alias("combined_return"),
-    )
+    ).drop("__allocation_day_idx")
     invalid = combined.filter(
         ~pl.col("combined_return").is_finite() | (pl.col("combined_return") <= -1.0)
     )
@@ -617,6 +695,80 @@ def _date_aware_compound_growth_rate(
         return math.inf
 
 
+def _series_extremes(values: pl.Series) -> tuple[float, float]:
+    """Return the maximum and minimum of a nonempty numeric series."""
+    maximum = values.max()
+    minimum = values.min()
+    if not isinstance(maximum, (float, int)) or not isinstance(minimum, (float, int)):
+        raise RuntimeError("Could not calculate calendar-period returns")
+    return float(maximum), float(minimum)
+
+
+def _rolling_month_extremes(
+    monthly_log_returns: pl.DataFrame, window_months: int
+) -> tuple[float | None, float | None]:
+    """Return extremes over every consecutive rolling calendar-month window."""
+    month_indices = monthly_log_returns["month_index"].to_list()
+    log_returns = monthly_log_returns["log_return"].to_list()
+    rolling_returns: list[float] = []
+    for start_index in range(len(month_indices) - window_months + 1):
+        end_index = start_index + window_months - 1
+        if month_indices[end_index] - month_indices[start_index] != window_months - 1:
+            continue
+        window_log_return = sum(log_returns[start_index : end_index + 1])
+        try:
+            rolling_returns.append(math.expm1(window_log_return))
+        except OverflowError:
+            rolling_returns.append(math.inf)
+    if not rolling_returns:
+        return None, None
+    return max(rolling_returns), min(rolling_returns)
+
+
+def _calendar_return_extremes(
+    daily_results: pl.DataFrame,
+) -> _CalendarReturnExtremes:
+    """Calculate compounded calendar-week, month, and rolling-month extremes."""
+    log_return = pl.col("combined_return").log1p()
+    weekly_returns = (
+        daily_results.with_columns(pl.col("date").dt.truncate("1w").alias("week_start"))
+        .group_by("week_start")
+        .agg(log_return.sum().exp().sub(1.0).alias("period_return"))
+    )["period_return"]
+    best_week, worst_week = _series_extremes(weekly_returns)
+
+    monthly_log_returns = (
+        daily_results.with_columns(
+            (
+                pl.col("date").dt.year() * 12
+                + pl.col("date").dt.month().cast(pl.Int32)
+                - 1
+            ).alias("month_index")
+        )
+        .group_by("month_index")
+        .agg(log_return.sum().alias("log_return"))
+        .sort("month_index")
+    )
+    monthly_returns = monthly_log_returns["log_return"].exp() - 1.0
+    best_month, worst_month = _series_extremes(monthly_returns)
+    best_three_months, worst_three_months = _rolling_month_extremes(
+        monthly_log_returns, 3
+    )
+    best_twelve_months, worst_twelve_months = _rolling_month_extremes(
+        monthly_log_returns, 12
+    )
+    return _CalendarReturnExtremes(
+        best_week=best_week,
+        worst_week=worst_week,
+        best_month=best_month,
+        worst_month=worst_month,
+        best_three_months=best_three_months,
+        worst_three_months=worst_three_months,
+        best_twelve_months=best_twelve_months,
+        worst_twelve_months=worst_twelve_months,
+    )
+
+
 def _portfolio_statistics(
     daily_results: pl.DataFrame,
     annualization_periods: int,
@@ -668,6 +820,7 @@ def _portfolio_statistics(
     max_drawdown = float(summary["max_drawdown"])
     gross_profit = float(summary["gross_profit"] or 0.0)
     gross_loss = float(summary["gross_loss"] or 0.0)
+    period_extremes = _calendar_return_extremes(daily_results)
     return PortfolioStatistics(
         start_date=start_date,
         end_date=end_date,
@@ -696,6 +849,14 @@ def _portfolio_statistics(
         exposure=active_days / market_days,
         best_day=float(summary["best_day"] or 0.0),
         worst_day=float(summary["worst_day"] or 0.0),
+        best_week=period_extremes.best_week,
+        worst_week=period_extremes.worst_week,
+        best_month=period_extremes.best_month,
+        worst_month=period_extremes.worst_month,
+        best_three_months=period_extremes.best_three_months,
+        worst_three_months=period_extremes.worst_three_months,
+        best_twelve_months=period_extremes.best_twelve_months,
+        worst_twelve_months=period_extremes.worst_twelve_months,
     )
 
 
@@ -790,6 +951,11 @@ def _format_percentage(value: float) -> str:
     return f"{value:.2%}"
 
 
+def _format_optional_percentage(value: float | None) -> str:
+    """Format an optional fraction as a percentage or N/A."""
+    return "N/A" if value is None else _format_percentage(value)
+
+
 def _format_ratio(value: float) -> str:
     """Format a finite or infinite financial ratio."""
     if math.isinf(value):
@@ -876,8 +1042,28 @@ def _print_combined_statistics(statistics: PortfolioStatistics) -> None:
     )
     print(f"  Exposure: {_format_percentage(statistics.exposure)}")
     print(f"  Active days: {statistics.active_days}/{statistics.market_days}")
-    print(f"  Best day: {_format_percentage(statistics.best_day)}")
-    print(f"  Worst day: {_format_percentage(statistics.worst_day)}")
+    print("  Period                 Best       Worst")
+    period_rows = (
+        ("Day", statistics.best_day, statistics.worst_day),
+        ("Week", statistics.best_week, statistics.worst_week),
+        ("Month", statistics.best_month, statistics.worst_month),
+        (
+            "3 months",
+            statistics.best_three_months,
+            statistics.worst_three_months,
+        ),
+        (
+            "12 months",
+            statistics.best_twelve_months,
+            statistics.worst_twelve_months,
+        ),
+    )
+    for period_name, best_return, worst_return in period_rows:
+        print(
+            f"  {period_name:<20}"
+            f"{_format_optional_percentage(best_return):>8}"
+            f"{_format_optional_percentage(worst_return):>12}"
+        )
 
 
 def _print_diversification(diversification: PortfolioDiversification) -> None:

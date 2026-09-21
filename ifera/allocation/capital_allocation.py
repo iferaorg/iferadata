@@ -1,7 +1,7 @@
 """Find capital allocations with continuous Kelly and modified-Kelly searches."""
 
 # Public imports below are API re-exports rather than local dependencies.
-# pylint: disable=duplicate-code,unused-import
+# pylint: disable=duplicate-code,too-many-lines,unused-import
 
 from __future__ import annotations
 
@@ -27,6 +27,16 @@ from ._capital_allocation_fast_paths import (
 )
 from ._capital_allocation_candidates import (
     constrained_allocation_unit_batches as _constrained_allocation_unit_batches,
+)
+from ._capital_allocation_blocks import (
+    AllocationBlocks as _AllocationBlocks,
+    BlockList,
+    build_allocation_blocks as _build_allocation_blocks,
+    effective_portfolio_returns as _effective_portfolio_returns,
+    normalize_block_list as _normalize_block_list,
+)
+from ._blocked_support_fast_paths import (
+    try_blocked_fast_path as _try_blocked_fast_path,
 )
 from ._capital_allocation_diagnostics import (
     CapitalAllocationDiagnostics,
@@ -67,6 +77,10 @@ from ._capital_allocation_refinement import (
 from ._kelly_selection import (
     maximize_kelly_with_selection as _maximize_kelly_with_selection,
 )
+from ._overlap_constraints import (
+    clique_indices_by_strategy as _clique_indices_by_strategy,
+    find_maximal_overlap_cliques as _find_maximal_overlap_cliques,
+)
 from ._strategy_selection import (
     StrategySelectionConstraints,
     resolve_strategy_selection_constraints as _resolve_strategy_selection_constraints,
@@ -104,6 +118,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     bootstrap_seed: int | None = None,
     approximate_add_search: bool = False,
     allocation_tolerance: float | None = None,
+    block_list: BlockList | None = None,
 ) -> torch.Tensor:
     """Return the best long-only allocation under overlap capital constraints.
 
@@ -144,6 +159,14 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     are pruned before scoring, so each valid allocation is evaluated once. As
     with allocation-vector refinement generally, local refinements follow only
     the current winner; they do not independently refine every possible support.
+
+    ``block_list`` contains ``(day_idx, blocked, blocked_by)`` triples. When a
+    candidate gives ``blocked_by`` any exactly nonzero allocation, ``blocked``
+    contributes zero return on that day. Multiple blockers for the same
+    strategy-day are combined with OR semantics. Because activation changes
+    discontinuously at exactly zero, a nonempty block list uses the grid-search
+    route; continuous Kelly, fixed-ray, and spatial ADD solvers are not valid
+    across those support boundaries.
 
     When ``alpha`` is zero and ``ADD_limit`` is unset, the objective is concave.
     That raw Kelly case is solved continuously with an away-step Frank--Wolfe
@@ -239,6 +262,10 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             are practical stopping rules, not optimizer-distance certificates
             for flat or nonconvex feasible regions. Its dtype-specific default
             preserves the previous solver precision.
+        block_list: Optional sequence of ``(day_idx, blocked, blocked_by)``
+            integer triples. Indices refer to the corresponding dimensions of
+            ``returns``. A nonzero allocation to ``blocked_by`` suppresses the
+            blocked strategy's return on that day.
 
     Returns:
         A one-dimensional tensor containing the optimal strategy allocations.
@@ -249,6 +276,9 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             be safely indexed or evaluated within the search memory budget.
     """
     _validate_returns(returns)
+    normalized_blocks = _normalize_block_list(
+        block_list, returns.shape[0], returns.shape[1]
+    )
     alpha_value, add_limit_value = _validate_alpha(alpha), _validate_add_limit(
         ADD_limit
     )
@@ -281,6 +311,12 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     calculation_returns = torch.nan_to_num(calculation_returns, nan=0.0)
     transposed_returns = calculation_returns.transpose(0, 1).contiguous()
     del calculation_returns
+    allocation_blocks = _build_allocation_blocks(
+        normalized_blocks,
+        strategy_count,
+        target_device,
+        calculation_dtype,
+    )
 
     # Diagnostics themselves remain relevant in every mode, even when no
     # drawdown calculation is requested. Grid, bootstrap, and refinement
@@ -294,7 +330,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             selection_constraints,
             allocation_tolerance_value,
         )
-        if alpha_value == 0.0
+        if alpha_value == 0.0 and allocation_blocks is None
         else None
     )
     if add_limit_value is None and continuous_allocation is not None:
@@ -311,10 +347,36 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             len(maximal_cliques),
         )
 
+    blocked_fast_outcome = None
+    if alpha_value == 0.0 and allocation_blocks is not None:
+        blocked_fast_outcome = _try_blocked_fast_path(
+            transposed_returns,
+            max_total_allocation_value,
+            maximal_cliques,
+            selection_constraints,
+            allocation_blocks,
+            add_limit_value,
+            target_dtype,
+            bootstrap_on,
+            bootstrap_runs,
+            bootstrap_length,
+            percentile,
+            bootstrap_seed,
+            approximate_add_search_value,
+            allocation_tolerance_value,
+            grid_increment,
+            diagnostics,
+            _sample_bootstrap_indices,
+            _resolve_grid_steps,
+            _bootstrap_average_drawdown,
+        )
+        if blocked_fast_outcome.allocation is not None:
+            return blocked_fast_outcome.allocation
+
     add_fast_outcome = None
     add_branch_outcome = None
     add_branch_pilot_ran = False
-    if alpha_value == 0.0 and add_limit_value is not None:
+    if alpha_value == 0.0 and add_limit_value is not None and allocation_blocks is None:
         add_fast_outcome = _try_add_fast_path(
             transposed_returns,
             continuous_allocation,
@@ -359,9 +421,14 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         add_branch_pilot_ran = branch_path.pilot_ran
 
     if grid_increment is None:
+        unsupported_context = (
+            "the requested objective, overlap geometry, or trade blocking"
+            if allocation_blocks is not None
+            else "the requested objective or overlap geometry"
+        )
         raise ValueError(
             "grid_increment is required when the continuous allocation solvers "
-            "cannot handle the requested objective or overlap geometry"
+            f"cannot handle {unsupported_context}"
         )
     drawdown_required = alpha_value > 0.0 or add_limit_value is not None
     bootstrap_on_value = False
@@ -369,7 +436,10 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     bootstrap_length_value = 1
     percentile_value = 10.0
     bootstrap_seed_value = None
-    if add_fast_outcome is None:
+    blocked_bootstrap_prepared = (
+        blocked_fast_outcome is not None and blocked_fast_outcome.bootstrap_prepared
+    )
+    if add_fast_outcome is None and not blocked_bootstrap_prepared:
         (
             bootstrap_on_value,
             bootstrap_runs_value,
@@ -396,7 +466,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     allocation_unit_limit = _resolve_allocation_unit_limit(
         max_total_allocation_value, grid_steps
     )
-    if add_fast_outcome is None:
+    if add_fast_outcome is None and not blocked_bootstrap_prepared:
         (
             bootstrap_diagnostics_enabled,
             bootstrap_needed,
@@ -407,7 +477,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             drawdown_required,
         )
         bootstrap_indices = None
-    else:
+    elif add_fast_outcome is not None:
         bootstrap_runs_value = add_fast_outcome.bootstrap_runs
         bootstrap_length_value = add_fast_outcome.bootstrap_length
         percentile_value = add_fast_outcome.percentile
@@ -415,6 +485,18 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         bootstrap_needed = add_fast_outcome.bootstrap_needed
         track_bootstrap_drawdown = add_fast_outcome.track_bootstrap_drawdown
         bootstrap_indices = add_fast_outcome.bootstrap_indices
+    else:
+        if blocked_fast_outcome is None:
+            raise RuntimeError("blocked bootstrap state was unexpectedly discarded")
+        bootstrap_runs_value = blocked_fast_outcome.bootstrap_runs
+        bootstrap_length_value = blocked_fast_outcome.bootstrap_length
+        percentile_value = blocked_fast_outcome.percentile
+        bootstrap_diagnostics_enabled = (
+            blocked_fast_outcome.bootstrap_diagnostics_enabled
+        )
+        bootstrap_needed = blocked_fast_outcome.bootstrap_needed
+        track_bootstrap_drawdown = blocked_fast_outcome.track_bootstrap_drawdown
+        bootstrap_indices = blocked_fast_outcome.bootstrap_indices
     if alpha_value == 0.0 and add_limit_value is None:
         grid_algorithm = _RAW_KELLY_GRID_ALGORITHM
     elif alpha_value == 0.0:
@@ -423,8 +505,12 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         grid_algorithm = _MODIFIED_GRID_ALGORITHM
     else:
         grid_algorithm = _MODIFIED_ADD_GRID_ALGORITHM
-    if add_branch_pilot_ran:
+    if add_branch_pilot_ran or (
+        blocked_fast_outcome is not None and blocked_fast_outcome.pilot_ran
+    ):
         grid_algorithm = _PILOT_GRID_FALLBACK_ALGORITHM
+    if allocation_blocks is not None:
+        grid_algorithm = f"Blocking-aware {grid_algorithm}"
     _record_algorithm(diagnostics, grid_algorithm)
     ordinary_simplex = strategy_count == 1 or (
         len(maximal_cliques) == 1 and len(maximal_cliques[0]) == strategy_count
@@ -451,8 +537,11 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         bootstrap_length_value,
         _MAX_CANDIDATES_PER_BATCH,
         _candidate_batch_size,
+        block_group_count=(
+            0 if allocation_blocks is None else allocation_blocks.group_count
+        ),
     )
-    if add_fast_outcome is None and bootstrap_needed:
+    if add_fast_outcome is None and not blocked_bootstrap_prepared and bootstrap_needed:
         bootstrap_indices = _sample_bootstrap_indices(
             returns.shape[0],
             bootstrap_runs_value,
@@ -503,6 +592,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         best_bootstrap_drawdown,
         track_bootstrap_drawdown,
         add_limit_value,
+        allocation_blocks,
     )
     if allocation_unit_limit == 0:
         return _finalize_allocation_diagnostics(
@@ -513,6 +603,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             percentile_value,
             best_bootstrap_drawdown,
             _bootstrap_average_drawdown,
+            allocation_blocks,
         )
 
     refinement_increment = initial_increment
@@ -557,6 +648,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
                     best_bootstrap_drawdown,
                     track_bootstrap_drawdown,
                     add_limit_value,
+                    allocation_blocks,
                 )
             )
             if torch.equal(best_allocation, refinement_center):
@@ -570,6 +662,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         percentile_value,
         best_bootstrap_drawdown,
         _bootstrap_average_drawdown,
+        allocation_blocks,
     )
 
 
@@ -631,114 +724,6 @@ def _refined_allocation_unit_batches(
         selection_constraints=selection_constraints,
         positive_unit_starts=positive_unit_starts,
     )
-
-
-def _find_maximal_overlap_cliques(active: torch.Tensor) -> list[tuple[int, ...]]:
-    """Return nontrivial maximal cliques of pairwise-overlapping strategies."""
-    strategy_count = active.shape[1]
-    if strategy_count < 2:
-        return []
-    if bool(torch.all(active).item()):
-        return [tuple(range(strategy_count))]
-
-    activity = active.to(dtype=torch.float32)
-    overlap = (activity.transpose(0, 1) @ activity) > 0.0
-    overlap.fill_diagonal_(False)
-    adjacency = overlap.to(device="cpu")
-    neighbor_masks = [
-        sum(1 << neighbor for neighbor, connected in enumerate(row) if connected)
-        for row in adjacency.tolist()
-    ]
-    all_strategies = (1 << strategy_count) - 1
-    if all(
-        neighbors == all_strategies ^ (1 << strategy)
-        for strategy, neighbors in enumerate(neighbor_masks)
-    ):
-        return [tuple(range(strategy_count))]
-
-    maximal_cliques: list[tuple[int, ...]] = []
-    _collect_maximal_cliques(
-        0,
-        all_strategies,
-        0,
-        neighbor_masks,
-        maximal_cliques,
-    )
-    return maximal_cliques
-
-
-def _collect_maximal_cliques(
-    clique: int,
-    candidates: int,
-    excluded: int,
-    neighbor_masks: list[int],
-    maximal_cliques: list[tuple[int, ...]],
-) -> None:
-    """Collect maximal cliques with an iterative Bron-Kerbosch search."""
-    search_stack = [(clique, candidates, excluded)]
-    while search_stack:
-        current_clique, current_candidates, current_excluded = search_stack.pop()
-        if current_candidates == 0 and current_excluded == 0:
-            if current_clique.bit_count() > 1:
-                maximal_cliques.append(
-                    tuple(
-                        strategy
-                        for strategy in range(len(neighbor_masks))
-                        if current_clique & (1 << strategy)
-                    )
-                )
-            continue
-
-        pivot_options = current_candidates | current_excluded
-        if pivot_options:
-            pivot = max(
-                _iter_set_bits(pivot_options),
-                key=lambda strategy: (
-                    current_candidates & neighbor_masks[strategy]
-                ).bit_count(),
-            )
-            extensions = current_candidates & ~neighbor_masks[pivot]
-        else:
-            extensions = current_candidates
-
-        child_states = []
-        for strategy in _iter_set_bits(extensions):
-            strategy_bit = 1 << strategy
-            neighbors = neighbor_masks[strategy]
-            child_states.append(
-                (
-                    current_clique | strategy_bit,
-                    current_candidates & neighbors,
-                    current_excluded & neighbors,
-                )
-            )
-            current_candidates &= ~strategy_bit
-            current_excluded |= strategy_bit
-        search_stack.extend(reversed(child_states))
-
-
-def _iter_set_bits(mask: int) -> Iterator[int]:
-    """Yield the indices of set bits in ascending order."""
-    while mask:
-        bit = mask & -mask
-        yield bit.bit_length() - 1
-        mask ^= bit
-
-
-def _clique_indices_by_strategy(
-    maximal_cliques: list[tuple[int, ...]],
-    strategy_count: int,
-    device: torch.device,
-) -> list[torch.Tensor]:
-    """Return constraint indices containing each strategy."""
-    constraint_indices: list[list[int]] = [[] for _ in range(strategy_count)]
-    for clique_index, clique in enumerate(maximal_cliques):
-        for strategy in clique:
-            constraint_indices[strategy].append(clique_index)
-    return [
-        torch.tensor(indices, device=device, dtype=torch.int64)
-        for indices in constraint_indices
-    ]
 
 
 def _initial_allocation_unit_batches(
@@ -901,6 +886,7 @@ def _update_best_allocation(
     best_bootstrap_drawdown: torch.Tensor | None,
     track_bootstrap_drawdown: bool,
     add_limit: float | None,
+    allocation_blocks: _AllocationBlocks | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Score allocation batches and retain only strict improvements."""
     for allocations in allocation_batches:
@@ -915,6 +901,7 @@ def _update_best_allocation(
                 percentile=percentile,
                 bootstrap_drawdown_output=bootstrap_drawdown_output,
                 add_limit=add_limit,
+                **_allocation_block_score_arguments(allocation_blocks),
             )
             if len(bootstrap_drawdown_output) != 1:
                 raise RuntimeError("Scoring did not return bootstrap diagnostics")
@@ -927,6 +914,7 @@ def _update_best_allocation(
                 bootstrap_indices=bootstrap_indices,
                 percentile=percentile,
                 add_limit=add_limit,
+                **_allocation_block_score_arguments(allocation_blocks),
             )
             batch_bootstrap_drawdowns = None
         batch_score, batch_index = torch.max(scores, dim=0)
@@ -958,9 +946,18 @@ def _allocation_scores(
     percentile: float = 10.0,
     bootstrap_drawdown_output: list[torch.Tensor | None] | None = None,
     add_limit: float | None = None,
+    block_day_indices: torch.Tensor | None = None,
+    blocked_strategy_indices: torch.Tensor | None = None,
+    blocker_incidence: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Evaluate the modified Kelly objective for a batch of allocations."""
-    portfolio_returns = allocations @ transposed_returns
+    portfolio_returns = _effective_portfolio_returns(
+        allocations,
+        transposed_returns,
+        block_day_indices,
+        blocked_strategy_indices,
+        blocker_incidence,
+    )
     finite = torch.isfinite(portfolio_returns).all(dim=1)
     valid = finite & (torch.amin(portfolio_returns, dim=1) > -1.0)
     portfolio_returns[~valid] = 0.0
@@ -994,3 +991,16 @@ def _allocation_scores(
         )
         bootstrap_drawdown_output.append(bootstrap_drawdowns)
     return scores
+
+
+def _allocation_block_score_arguments(
+    allocation_blocks: _AllocationBlocks | None,
+) -> dict[str, torch.Tensor | None]:
+    """Return keyword tensors consumed by compiled candidate scoring."""
+    if allocation_blocks is None:
+        return {}
+    return {
+        "block_day_indices": allocation_blocks.day_indices,
+        "blocked_strategy_indices": allocation_blocks.blocked_indices,
+        "blocker_incidence": allocation_blocks.blocker_incidence,
+    }

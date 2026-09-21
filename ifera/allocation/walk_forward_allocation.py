@@ -20,6 +20,11 @@ import torch
 
 from . import capital_allocation
 from . import portfolio_allocation as portfolio
+from ._capital_allocation_blocks import (
+    Block,
+    remap_block_list,
+    slice_block_list,
+)
 from ._strategy_selection import validate_strategy_selection_parameters
 
 
@@ -47,6 +52,7 @@ class _DiscoveredFold:
     calculated_allocation: torch.Tensor
     support: _Support
     bootstrap_seed: int | None
+    block_list: tuple[Block, ...]
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,7 @@ def walk_forward_capital_allocation_from_csv(
     alpha: float,
     grid_increment: float | None = None,
     training_weeks: int | None = None,
+    first_training_weeks: int | None = None,
     embargo_weeks: int | None = None,
     simulation_weeks: int | None = None,
     device: torch.device | str | None = None,
@@ -92,10 +99,12 @@ def walk_forward_capital_allocation_from_csv(
 
     Weeks are Monday-anchored calendar weeks. A dataset's partial opening week
     is excluded, but a holiday-shortened week is complete when the first data
-    date is its first NYSE session. Each fixed-length training window is
-    followed by the embargo and simulation windows. The complete structure
-    advances by ``simulation_weeks`` until the final, optionally partial,
-    simulation reaches the end of the dataset.
+    date is its first NYSE session. ``first_training_weeks`` can extend the
+    initial training window; later folds use ``training_weeks`` and are
+    positioned so out-of-sample simulation periods remain continuous. Each
+    training window is followed by the embargo and simulation windows. The
+    simulation advances by ``simulation_weeks`` until the final, optionally
+    partial, period reaches the end of the dataset.
 
     Every fold gets fresh optimizer state and bootstrap row samples. Discovery
     and counterfactual regime searches within the same fold deliberately replay
@@ -119,6 +128,9 @@ def walk_forward_capital_allocation_from_csv(
     training fold's constraints, and it is not silently projected or clamped.
     """
     training_count = _validate_week_count(training_weeks, "training_weeks", True)
+    first_training_count = _validate_first_training_weeks(
+        first_training_weeks, training_count
+    )
     embargo_count = _validate_week_count(embargo_weeks, "embargo_weeks", False)
     simulation_count = _validate_week_count(simulation_weeks, "simulation_weeks", True)
     allocation_alpha_value = _validate_allocation_alpha(allocation_alpha)
@@ -138,9 +150,12 @@ def walk_forward_capital_allocation_from_csv(
     if not isinstance(show_plot, bool):
         raise TypeError("show_plot must be a bool")
 
-    strategy_names, synchronized_returns, _ = portfolio._load_portfolio_returns(
-        portfolio_name, returns_dtype
-    )
+    (
+        strategy_names,
+        synchronized_returns,
+        _,
+        portfolio_block_list,
+    ) = portfolio._load_portfolio_returns(portfolio_name, returns_dtype)
     first_date = synchronized_returns["date"].item(0)
     last_date = synchronized_returns["date"].item(-1)
     aligned_start = _first_complete_week_start(first_date)
@@ -148,6 +163,7 @@ def walk_forward_capital_allocation_from_csv(
         aligned_start,
         last_date,
         training_count,
+        first_training_count,
         embargo_count,
         simulation_count,
     )
@@ -184,6 +200,7 @@ def walk_forward_capital_allocation_from_csv(
             maximum,
             minimum_correlation,
             maximum_correlation,
+            portfolio_block_list,
         )
     else:
         fold_allocations = _ordinary_fold_allocations(
@@ -192,22 +209,26 @@ def walk_forward_capital_allocation_from_csv(
             windows,
             optimizer,
             allocation_alpha_value,
+            portfolio_block_list,
         )
 
     folds: list[portfolio.WalkForwardFold] = []
     simulation_frames: list[pl.DataFrame] = []
     weighted_allocations: list[tuple[torch.Tensor, int]] = []
     for fold_allocation in fold_allocations:
-        simulation = _date_slice(
+        simulation, simulation_blocks = _date_slice_with_blocks(
             synchronized_returns,
             fold_allocation.window.simulation_start,
             fold_allocation.window.simulation_stop,
+            portfolio_block_list,
         )
         weights = fold_allocation.applied_allocation.to(
             device="cpu", dtype=torch.float64
         ).tolist()
         simulation_frames.append(
-            portfolio._apply_allocation(simulation, strategy_names, weights)
+            portfolio._apply_allocation(
+                simulation, strategy_names, weights, simulation_blocks
+            )
         )
         weighted_allocations.append(
             (fold_allocation.applied_allocation, simulation.height)
@@ -277,6 +298,7 @@ def _ordinary_fold_allocations(
     windows: tuple[_WalkForwardWindow, ...],
     optimizer: _AllocationOptimizer,
     allocation_alpha: float,
+    block_list: tuple[Block, ...],
 ) -> tuple[_FoldAllocation, ...]:
     """Calculate the original one-pass global EMA when selection is disabled."""
     fold_allocations: list[_FoldAllocation] = []
@@ -284,10 +306,16 @@ def _ordinary_fold_allocations(
     for window in portfolio.tqdm(
         windows, total=len(windows), desc="Walk-forward portfolio", unit="fold"
     ):
-        training = _date_slice(
-            synchronized_returns, window.training_start, window.training_stop
+        training, training_blocks = _date_slice_with_blocks(
+            synchronized_returns,
+            window.training_start,
+            window.training_stop,
+            block_list,
         )
-        calculated = optimizer(training.select(strategy_names).to_torch())
+        calculated = optimizer(
+            training.select(strategy_names).to_torch(),
+            block_list=list(training_blocks),
+        )
         calculated = calculated.detach().clone()
         applied = _applied_allocation(calculated, previous_applied, allocation_alpha)
         previous_applied = applied
@@ -313,6 +341,7 @@ def _selection_regime_allocations(
     max_strategies: int | None,
     min_correlation: float | None,
     max_correlation: float | None,
+    block_list: tuple[Block, ...],
 ) -> tuple[_FoldAllocation, ...]:
     """Discover selected supports, then advance each support on every fold."""
     discovered_folds, supports = _discover_support_regimes(
@@ -324,6 +353,7 @@ def _selection_regime_allocations(
         max_strategies,
         min_correlation,
         max_correlation,
+        block_list,
     )
     if allocation_alpha == 1.0:
         return tuple(
@@ -358,7 +388,12 @@ def _selection_regime_allocations(
             supports if allocation_alpha > 0.0 or fold_index == 0 else ()
         )
         for support in supports_to_update:
-            target = _regime_target(support, discovered, training, optimizer)
+            target = _regime_target(
+                support,
+                discovered,
+                training,
+                optimizer,
+            )
             applied_by_support[support] = _applied_allocation(
                 target,
                 applied_by_support.get(support),
@@ -385,6 +420,7 @@ def _discover_support_regimes(
     max_strategies: int | None,
     min_correlation: float | None,
     max_correlation: float | None,
+    block_list: tuple[Block, ...],
 ) -> tuple[tuple[_DiscoveredFold, ...], tuple[_Support, ...]]:
     """Run constrained optimization and collect supports in first-seen order."""
     seeds = _fold_bootstrap_seeds(len(windows), bootstrap_on)
@@ -398,8 +434,11 @@ def _discover_support_regimes(
         unit="fold",
     )
     for window, bootstrap_seed in zip(progress, seeds, strict=True):
-        training = _date_slice(
-            synchronized_returns, window.training_start, window.training_stop
+        training, training_blocks = _date_slice_with_blocks(
+            synchronized_returns,
+            window.training_start,
+            window.training_stop,
+            block_list,
         )
         calculated = optimizer(
             training.select(strategy_names).to_torch(),
@@ -407,6 +446,7 @@ def _discover_support_regimes(
             max_strategies=max_strategies,
             min_correlation=min_correlation,
             max_correlation=max_correlation,
+            block_list=list(training_blocks),
         )
         calculated = calculated.detach().clone()
         support = _allocation_support(calculated)
@@ -421,6 +461,7 @@ def _discover_support_regimes(
                 calculated_allocation=calculated,
                 support=support,
                 bootstrap_seed=bootstrap_seed,
+                block_list=training_blocks,
             )
         )
     return tuple(discovered_folds), tuple(supports)
@@ -440,6 +481,7 @@ def _regime_target(
     subset_allocation = optimizer(
         training_returns[:, list(support)],
         bootstrap_seed=discovered.bootstrap_seed,
+        block_list=list(remap_block_list(discovered.block_list, support)),
     )
     full_allocation = torch.zeros_like(discovered.calculated_allocation)
     full_allocation[list(support)] = subset_allocation.to(
@@ -480,6 +522,20 @@ def _validate_week_count(value: int | None, name: str, strictly_positive: bool) 
         requirement = "positive" if strictly_positive else "nonnegative"
         raise ValueError(f"{name} must be {requirement}")
     return count
+
+
+def _validate_first_training_weeks(value: int | None, training_weeks: int) -> int:
+    """Validate and resolve the optional longer initial training duration."""
+    if value is None:
+        return training_weeks
+    first_training_weeks = _validate_week_count(
+        value, "first_training_weeks", strictly_positive=True
+    )
+    if first_training_weeks < training_weeks:
+        raise ValueError(
+            "first_training_weeks must be greater than or equal to training_weeks"
+        )
+    return first_training_weeks
 
 
 def _validate_allocation_alpha(value: float) -> float:
@@ -526,6 +582,7 @@ def _walk_forward_windows(
     aligned_start: date,
     last_date: date,
     training_weeks: int,
+    first_training_weeks: int,
     embargo_weeks: int,
     simulation_weeks: int,
 ) -> tuple[_WalkForwardWindow, ...]:
@@ -534,16 +591,24 @@ def _walk_forward_windows(
     try:
         shift = timedelta(weeks=simulation_weeks)
         training_duration = timedelta(weeks=training_weeks)
+        first_training_duration = timedelta(weeks=first_training_weeks)
         embargo_duration = timedelta(weeks=embargo_weeks)
         simulation_duration = timedelta(weeks=simulation_weeks)
+        first_training_stop = aligned_start + first_training_duration
+        simulation_start = first_training_stop + embargo_duration
     except OverflowError as exc:
         raise ValueError("Walk-forward week parameters are too large") from exc
-    training_start = aligned_start
+    first_fold = True
     while True:
-        training_stop = training_start + training_duration
-        simulation_start = training_stop + embargo_duration
         if simulation_start > last_date:
             break
+        if first_fold:
+            training_start = aligned_start
+            training_stop = first_training_stop
+            first_fold = False
+        else:
+            training_stop = simulation_start - embargo_duration
+            training_start = training_stop - training_duration
         windows.append(
             _WalkForwardWindow(
                 training_start=training_start,
@@ -552,7 +617,7 @@ def _walk_forward_windows(
                 simulation_stop=simulation_start + simulation_duration,
             )
         )
-        training_start += shift
+        simulation_start += shift
     return tuple(windows)
 
 
@@ -562,6 +627,25 @@ def _date_slice(frame: pl.DataFrame, start: date, stop: date) -> pl.DataFrame:
     if sliced.is_empty():
         raise ValueError("Walk-forward period contains no NYSE market sessions")
     return sliced
+
+
+def _date_slice_with_blocks(
+    frame: pl.DataFrame,
+    start: date,
+    stop: date,
+    block_list: tuple[Block, ...],
+) -> tuple[pl.DataFrame, tuple[Block, ...]]:
+    """Return one date slice and its zero-based block relationships."""
+    index_name = "__global_allocation_day_idx"
+    indexed = frame.with_row_index(index_name)
+    sliced = indexed.filter((pl.col("date") >= start) & (pl.col("date") < stop))
+    if sliced.is_empty():
+        raise ValueError("Walk-forward period contains no NYSE market sessions")
+    start_index = int(sliced[index_name].item(0))
+    stop_index = int(sliced[index_name].item(-1)) + 1
+    return sliced.drop(index_name), slice_block_list(
+        block_list, start_index, stop_index
+    )
 
 
 def _weighted_average_allocation(

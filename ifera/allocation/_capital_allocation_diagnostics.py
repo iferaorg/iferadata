@@ -13,6 +13,10 @@ from dataclasses import dataclass
 
 import torch
 
+from ._capital_allocation_blocks import (
+    AllocationBlocks,
+    effective_portfolio_returns,
+)
 from ._capital_allocation_drawdown import bootstrap_average_drawdown
 from ._capital_allocation_memory import validate_bootstrap_diagnostic_memory
 from ._capital_allocation_parameters import validate_bootstrap_seed
@@ -61,6 +65,7 @@ def finalize_allocation_diagnostics(
     percentile: float,
     best_bootstrap_drawdown: torch.Tensor | None,
     bootstrap_calculator: Callable[[torch.Tensor, torch.Tensor, float], torch.Tensor],
+    allocation_blocks: AllocationBlocks | None = None,
 ) -> torch.Tensor:
     """Populate requested diagnostics without repeating candidate bootstraps."""
     if diagnostics is None:
@@ -70,7 +75,13 @@ def finalize_allocation_diagnostics(
         calculation_allocation = best_allocation.to(
             dtype=transposed_returns.dtype
         ).unsqueeze(0)
-        portfolio_returns = calculation_allocation @ transposed_returns
+        portfolio_returns = effective_portfolio_returns(
+            calculation_allocation,
+            transposed_returns,
+            None if allocation_blocks is None else allocation_blocks.day_indices,
+            None if allocation_blocks is None else allocation_blocks.blocked_indices,
+            None if allocation_blocks is None else allocation_blocks.blocker_incidence,
+        )
         bootstrap_drawdown = bootstrap_calculator(
             portfolio_returns, bootstrap_indices, percentile
         )[0]
@@ -90,6 +101,7 @@ def finalize_continuous_diagnostics(
     bootstrap_seed: int | None,
     transposed_returns: torch.Tensor,
     clique_count: int,
+    allocation_blocks: AllocationBlocks | None = None,
 ) -> torch.Tensor:
     """Optionally bootstrap the one continuous winner for report diagnostics."""
     if diagnostics is None or not diagnostics.request_bootstrap_average_drawdown:
@@ -133,6 +145,7 @@ def finalize_continuous_diagnostics(
         percentile_value,
         None,
         bootstrap_average_drawdown,
+        allocation_blocks,
     )
 
 

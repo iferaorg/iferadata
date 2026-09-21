@@ -6,6 +6,10 @@ boxes quickly enough to beat the existing vectorized grid.  Every bootstrap
 comparison uses the caller's single shared index tensor.
 """
 
+# The two entry points deliberately return early on conclusive pilot outcomes,
+# and this numerical module keeps its tightly coupled bounding helpers together.
+# pylint: disable=too-many-lines,too-many-return-statements
+
 from __future__ import annotations
 
 import heapq
@@ -29,6 +33,12 @@ from ._strategy_selection import StrategySelectionConstraints
 
 BRANCH_AND_BOUND_ALGORITHM = "Adaptive spatial ADD branch-and-bound"
 PILOT_GRID_FALLBACK_ALGORITHM = "ADD branch-and-bound pilot + allocation grid fallback"
+EXACT_SUPPORT_BRANCH_AND_BOUND_ALGORITHM = (
+    "Exact-support adaptive spatial ADD branch-and-bound"
+)
+EXACT_SUPPORT_PILOT_FALLBACK_ALGORITHM = (
+    "Exact-support ADD branch-and-bound pilot + allocation grid fallback"
+)
 
 _MAX_PILOT_SUPPORTS = 32
 _PILOT_NODE_BUDGET = 64
@@ -58,6 +68,24 @@ class AddBranchAndBoundOutcome:
 
 
 @dataclass(frozen=True)
+class ExactSupportAddBranchAndBoundOutcome:
+    """A completed or abandoned search within one caller-supplied root box.
+
+    Unlike :class:`AddBranchAndBoundOutcome`, cash is not implicitly feasible.
+    The allocation and incumbent can therefore both be ``None`` when the exact
+    support contains no ADD-feasible point at the requested resolution.
+    """
+
+    allocation: torch.Tensor | None
+    incumbent_allocation: torch.Tensor | None
+    incumbent_mean_log_growth: float
+    bootstrap_average_drawdown: torch.Tensor | None
+    algorithm: str
+    completed: bool
+    pilot_nodes: int
+
+
+@dataclass(frozen=True)
 class _BoxNode:
     """One support-specific allocation box in the best-bound queue."""
 
@@ -73,9 +101,9 @@ class _BoxNode:
 class _Incumbent:
     """Mutable best feasible allocation shared by pilot and continuation."""
 
-    allocation: torch.Tensor
+    allocation: torch.Tensor | None
     mean_log_growth: float
-    drawdown: torch.Tensor
+    drawdown: torch.Tensor | None
 
 
 class _NodeEvaluation(NamedTuple):
@@ -256,6 +284,167 @@ def try_add_branch_and_bound(  # pylint: disable=too-many-arguments,too-many-loc
     return _completed_outcome(incumbent, bootstrap_indices, evaluated_nodes)
 
 
+@torch.no_grad()
+def try_exact_support_add_branch_and_bound(  # pylint: disable=too-many-arguments,too-many-locals
+    transposed_returns: torch.Tensor,
+    root_lower: torch.Tensor,
+    root_upper: torch.Tensor,
+    max_total_allocation: float,
+    add_limit: float,
+    maximal_cliques: list[tuple[int, ...]],
+    bootstrap_indices: torch.Tensor | None,
+    percentile: float,
+    allocation_tolerance: float,
+    grid_steps: int | None,
+    *,
+    bootstrap_drawdown_calculator=bootstrap_average_drawdown,
+) -> ExactSupportAddBranchAndBoundOutcome:
+    """Search one fixed-support allocation box without treating cash as feasible.
+
+    ``root_lower`` and ``root_upper`` have one coordinate per strategy and
+    encode both the exact support and its positive allocation floor. Coordinates
+    outside the support should be fixed at zero, while supported coordinates
+    should have a strictly positive lower bound chosen by the caller. Blocking
+    must already have been applied to ``transposed_returns`` for that support.
+
+    The lower corner is tested explicitly. No cash-to-portfolio ray is used,
+    because such a ray would leave the caller's fixed support below its lower
+    bounds. A completed result with ``allocation is None`` means that no
+    ADD-feasible representative was found at the requested allocation
+    resolution. A non-completed result asks the caller to use its fallback and
+    may still contain a useful exact-support incumbent.
+    """
+    _validate_inputs(
+        transposed_returns,
+        max_total_allocation,
+        add_limit,
+        percentile,
+        allocation_tolerance,
+        grid_steps,
+    )
+    lower, upper = _validate_exact_support_root(
+        root_lower,
+        root_upper,
+        transposed_returns,
+        max_total_allocation,
+    )
+    tightened = tighten_allocation_box(
+        lower, upper, maximal_cliques, max_total_allocation
+    )
+    if tightened is None:
+        return _completed_exact_support_outcome(
+            _empty_incumbent(), bootstrap_indices, 0
+        )
+    lower, upper = tightened
+    incumbent = _exact_support_lower_incumbent(
+        lower,
+        transposed_returns,
+        add_limit,
+        bootstrap_indices,
+        percentile,
+        bootstrap_drawdown_calculator,
+    )
+
+    estimated_grid_candidates = _estimate_exact_support_grid_candidates(
+        upper,
+        max_total_allocation,
+        maximal_cliques,
+        grid_steps,
+    )
+    pilot_node_budget = _pilot_node_budget(estimated_grid_candidates, bootstrap_indices)
+    if pilot_node_budget <= 0:
+        return _fallback_exact_support_outcome(incumbent, bootstrap_indices, 0)
+
+    evaluation = _evaluate_box(
+        lower,
+        upper,
+        0,
+        transposed_returns,
+        max_total_allocation,
+        maximal_cliques,
+        add_limit,
+        bootstrap_indices,
+        percentile,
+        incumbent.mean_log_growth,
+        bootstrap_drawdown_calculator,
+    )
+    evaluated_nodes = 1
+    _accept_evaluation(evaluation, incumbent)
+    queue: list[tuple[float, int, _BoxNode]] = []
+    serial = itertools.count()
+    if evaluation.node is not None:
+        heapq.heappush(
+            queue,
+            (-evaluation.node.growth_upper_bound, next(serial), evaluation.node),
+        )
+    if not queue:
+        return _completed_exact_support_outcome(
+            incumbent, bootstrap_indices, evaluated_nodes
+        )
+
+    surviving_children = 0
+    split_nodes = 0
+    while queue and evaluated_nodes < pilot_node_budget:
+        survived, evaluated = _expand_best_node(
+            queue,
+            serial,
+            incumbent,
+            transposed_returns,
+            max_total_allocation,
+            maximal_cliques,
+            add_limit,
+            bootstrap_indices,
+            percentile,
+            allocation_tolerance,
+            bootstrap_drawdown_calculator,
+        )
+        if evaluated == 0:
+            continue
+        split_nodes += 1
+        surviving_children += survived
+        evaluated_nodes += evaluated
+
+    if not queue:
+        return _completed_exact_support_outcome(
+            incumbent, bootstrap_indices, evaluated_nodes
+        )
+    if not _pilot_is_promising(
+        queue,
+        split_nodes,
+        surviving_children,
+        evaluated_nodes,
+        estimated_grid_candidates,
+        allocation_tolerance,
+        bootstrap_indices is not None,
+    ):
+        return _fallback_exact_support_outcome(
+            incumbent, bootstrap_indices, evaluated_nodes
+        )
+
+    while queue and evaluated_nodes < _MAX_SEARCH_NODES:
+        _, evaluated = _expand_best_node(
+            queue,
+            serial,
+            incumbent,
+            transposed_returns,
+            max_total_allocation,
+            maximal_cliques,
+            add_limit,
+            bootstrap_indices,
+            percentile,
+            allocation_tolerance,
+            bootstrap_drawdown_calculator,
+        )
+        evaluated_nodes += evaluated
+    if queue:
+        return _fallback_exact_support_outcome(
+            incumbent, bootstrap_indices, evaluated_nodes
+        )
+    return _completed_exact_support_outcome(
+        incumbent, bootstrap_indices, evaluated_nodes
+    )
+
+
 def allocation_box_drawdown_bounds(
     lower: torch.Tensor,
     upper: torch.Tensor,
@@ -373,6 +562,68 @@ def _validate_inputs(
         raise ValueError("percentile must be in [0, 100]")
     if grid_steps is not None and grid_steps <= 0:
         raise ValueError("grid_steps must be positive or None")
+
+
+def _validate_exact_support_root(
+    root_lower: torch.Tensor,
+    root_upper: torch.Tensor,
+    transposed_returns: torch.Tensor,
+    maximum: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Validate and copy one caller-defined exact-support allocation box."""
+    expected_shape = (transposed_returns.shape[0],)
+    for bounds, name in ((root_lower, "root_lower"), (root_upper, "root_upper")):
+        if not isinstance(bounds, torch.Tensor):
+            raise TypeError(f"{name} must be a torch.Tensor")
+        if bounds.shape != expected_shape:
+            raise ValueError(f"{name} must have shape {expected_shape}")
+        if bounds.device != transposed_returns.device:
+            raise ValueError(f"{name} must be on the transposed_returns device")
+        if bounds.dtype != transposed_returns.dtype:
+            raise TypeError(f"{name} must have the transposed_returns dtype")
+        if not bool(torch.isfinite(bounds).all().item()):
+            raise ValueError(f"{name} must contain only finite values")
+
+    tolerance = _rounding_padding(transposed_returns.dtype) * max(1.0, maximum)
+    if bool(torch.any(root_lower < -tolerance).item()):
+        raise ValueError("root_lower must be nonnegative")
+    if bool(torch.any(root_upper > maximum + tolerance).item()):
+        raise ValueError("root_upper must not exceed max_total_allocation")
+    if bool(torch.any(root_lower > root_upper + tolerance).item()):
+        raise ValueError("root_lower must not exceed root_upper")
+    crosses_zero = (root_lower <= 0.0) & (root_upper > 0.0)
+    if bool(torch.any(crosses_zero).item()):
+        raise ValueError(
+            "root coordinates must be fixed at zero or have a positive lower bound"
+        )
+    lower = root_lower.clamp(min=0.0, max=maximum).clone()
+    upper = root_upper.clamp(min=0.0, max=maximum).clone()
+    upper = torch.maximum(upper, lower)
+    return lower, upper
+
+
+def _exact_support_lower_incumbent(
+    lower: torch.Tensor,
+    transposed_returns: torch.Tensor,
+    add_limit: float,
+    bootstrap_indices: torch.Tensor | None,
+    percentile: float,
+    bootstrap_drawdown_calculator,
+) -> _Incumbent:
+    """Return the lower corner when feasible, without crossing toward cash."""
+    growth = _mean_log_growth(lower, transposed_returns)
+    if not math.isfinite(growth):
+        return _empty_incumbent()
+    drawdown = _allocation_drawdown(
+        lower,
+        transposed_returns,
+        bootstrap_indices,
+        percentile,
+        bootstrap_drawdown_calculator,
+    )
+    if not bool((drawdown >= add_limit).item()):
+        return _empty_incumbent()
+    return _Incumbent(lower.clone(), growth, drawdown)
 
 
 def _evaluate_box(  # pylint: disable=too-many-arguments
@@ -791,6 +1042,11 @@ def _cash_incumbent(transposed_returns: torch.Tensor) -> _Incumbent:
     return _Incumbent(allocation, 0.0, drawdown)
 
 
+def _empty_incumbent() -> _Incumbent:
+    """Return a state with no feasible exact-support representative yet."""
+    return _Incumbent(None, -math.inf, None)
+
+
 def _pilot_is_promising(
     queue: list[tuple[float, int, _BoxNode]],
     split_nodes: int,
@@ -905,6 +1161,32 @@ def _estimate_grid_candidates(
     return estimate
 
 
+def _estimate_exact_support_grid_candidates(
+    root_upper: torch.Tensor,
+    maximum: float,
+    maximal_cliques: list[tuple[int, ...]],
+    grid_steps: int | None,
+) -> int | None:
+    """Estimate only the active coordinates of one exact-support grid."""
+    if grid_steps is None:
+        return None
+    active_indices = torch.nonzero(root_upper > 0.0, as_tuple=False).flatten()
+    active = tuple(active_indices.detach().to(device="cpu").tolist())
+    if not active:
+        return 1
+    remapping = {strategy: index for index, strategy in enumerate(active)}
+    local_cliques: list[tuple[int, ...]] = []
+    for clique in maximal_cliques:
+        local = tuple(
+            remapping[strategy] for strategy in clique if strategy in remapping
+        )
+        if len(local) > 1 and local not in local_cliques:
+            local_cliques.append(local)
+    return _estimate_grid_candidates(
+        len(active), maximum, local_cliques, None, grid_steps
+    )
+
+
 def _rounding_padding(dtype: torch.dtype, operation_count: int = 1) -> float:
     """Return an operation-scaled outward allowance for reduction roundoff."""
     return min(
@@ -919,6 +1201,8 @@ def _completed_outcome(
     pilot_nodes: int,
 ) -> AddBranchAndBoundOutcome:
     """Build a successful spatial-search outcome."""
+    if incumbent.allocation is None or incumbent.drawdown is None:
+        raise RuntimeError("the ordinary ADD search lost its cash incumbent")
     bootstrap_drawdown = incumbent.drawdown if bootstrap_indices is not None else None
     return AddBranchAndBoundOutcome(
         incumbent.allocation,
@@ -937,6 +1221,8 @@ def _fallback_outcome(
     pilot_nodes: int,
 ) -> AddBranchAndBoundOutcome:
     """Build an outcome that asks the caller to run its complete grid."""
+    if incumbent.allocation is None or incumbent.drawdown is None:
+        raise RuntimeError("the ordinary ADD search lost its cash incumbent")
     bootstrap_drawdown = incumbent.drawdown if bootstrap_indices is not None else None
     return AddBranchAndBoundOutcome(
         None,
@@ -944,6 +1230,50 @@ def _fallback_outcome(
         incumbent.mean_log_growth,
         bootstrap_drawdown,
         PILOT_GRID_FALLBACK_ALGORITHM,
+        False,
+        pilot_nodes,
+    )
+
+
+def _completed_exact_support_outcome(
+    incumbent: _Incumbent,
+    bootstrap_indices: torch.Tensor | None,
+    pilot_nodes: int,
+) -> ExactSupportAddBranchAndBoundOutcome:
+    """Build a completed result that may have no feasible support point."""
+    bootstrap_drawdown = (
+        incumbent.drawdown
+        if bootstrap_indices is not None and incumbent.allocation is not None
+        else None
+    )
+    return ExactSupportAddBranchAndBoundOutcome(
+        incumbent.allocation,
+        incumbent.allocation,
+        incumbent.mean_log_growth,
+        bootstrap_drawdown,
+        EXACT_SUPPORT_BRANCH_AND_BOUND_ALGORITHM,
+        True,
+        pilot_nodes,
+    )
+
+
+def _fallback_exact_support_outcome(
+    incumbent: _Incumbent,
+    bootstrap_indices: torch.Tensor | None,
+    pilot_nodes: int,
+) -> ExactSupportAddBranchAndBoundOutcome:
+    """Request fallback while retaining an optional support-feasible incumbent."""
+    bootstrap_drawdown = (
+        incumbent.drawdown
+        if bootstrap_indices is not None and incumbent.allocation is not None
+        else None
+    )
+    return ExactSupportAddBranchAndBoundOutcome(
+        None,
+        incumbent.allocation,
+        incumbent.mean_log_growth,
+        bootstrap_drawdown,
+        EXACT_SUPPORT_PILOT_FALLBACK_ALGORITHM,
         False,
         pilot_nodes,
     )

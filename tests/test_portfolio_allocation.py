@@ -58,6 +58,7 @@ def _fixed_optimizer(
         diagnostics: capital_allocation.CapitalAllocationDiagnostics | None = None,
         approximate_add_search: bool = False,
         allocation_tolerance: float | None = None,
+        block_list: list[tuple[int, int, int]] | None = None,
     ) -> torch.Tensor:
         if captured is not None:
             captured.update(
@@ -81,6 +82,7 @@ def _fixed_optimizer(
                     "diagnostics": diagnostics,
                     "approximate_add_search": approximate_add_search,
                     "allocation_tolerance": allocation_tolerance,
+                    "block_list": block_list,
                 }
             )
         allocation_tensor = torch.tensor(
@@ -718,6 +720,102 @@ def test_result_contains_expected_combined_statistics(
     assert "ADD (bootstrap)" not in capsys.readouterr().out
 
 
+def test_statistics_compound_calendar_week_and_month_returns():
+    """Best and worst calendar periods compound their constituent daily returns."""
+    combined_returns = pl.DataFrame(
+        {
+            "date": [
+                datetime.date(2025, 1, 6),
+                datetime.date(2025, 1, 7),
+                datetime.date(2025, 1, 13),
+                datetime.date(2025, 1, 14),
+                datetime.date(2025, 2, 3),
+                datetime.date(2025, 2, 4),
+            ],
+            "active": [True] * 6,
+            "combined_return": [0.10, 0.10, -0.10, -0.10, 0.05, 0.05],
+        }
+    )
+    daily_results = portfolio_allocation._add_equity_curve(combined_returns)
+
+    statistics = portfolio_allocation._portfolio_statistics(
+        daily_results,
+        annualization_periods=252,
+        risk_free_rate=0.0,
+        bootstrap_average_drawdown=None,
+    )
+
+    assert statistics.best_week == pytest.approx(1.10**2 - 1.0)
+    assert statistics.worst_week == pytest.approx(0.90**2 - 1.0)
+    assert statistics.best_month == pytest.approx(1.05**2 - 1.0)
+    assert statistics.worst_month == pytest.approx(1.10**2 * 0.90**2 - 1.0)
+
+
+def test_statistics_use_every_rolling_calendar_month_range():
+    """Multi-month extremes include cross-quarter and cross-year ranges."""
+    dates = [datetime.date(2024, month, 15) for month in range(1, 13)] + [
+        datetime.date(2025, 1, 15)
+    ]
+    monthly_returns = [-0.20, 0.10, 0.10, 0.10] + [0.0] * 8 + [0.20]
+    daily_results = portfolio_allocation._add_equity_curve(
+        pl.DataFrame(
+            {
+                "date": dates,
+                "active": [True] * len(dates),
+                "combined_return": monthly_returns,
+            }
+        )
+    )
+
+    statistics = portfolio_allocation._portfolio_statistics(
+        daily_results,
+        annualization_periods=252,
+        risk_free_rate=0.0,
+        bootstrap_average_drawdown=None,
+    )
+
+    # Feb-Apr is the best three-month range, so fixed calendar quarters would fail.
+    assert statistics.best_three_months == pytest.approx(1.10**3 - 1.0)
+    assert statistics.worst_three_months == pytest.approx(0.80 * 1.10**2 - 1.0)
+    assert statistics.best_twelve_months == pytest.approx(1.10**3 * 1.20 - 1.0)
+    assert statistics.worst_twelve_months == pytest.approx(0.80 * 1.10**3 - 1.0)
+
+
+def test_combined_statistics_print_period_extremes_as_a_compact_table(capsys):
+    """The report groups daily through rolling annual extremes in one table."""
+    daily_results = portfolio_allocation._add_equity_curve(
+        pl.DataFrame(
+            {
+                "date": [datetime.date(2025, 1, 6), datetime.date(2025, 1, 7)],
+                "active": [True, True],
+                "combined_return": [0.10, -0.05],
+            }
+        )
+    )
+    statistics = portfolio_allocation._portfolio_statistics(
+        daily_results,
+        annualization_periods=252,
+        risk_free_rate=0.0,
+        bootstrap_average_drawdown=None,
+    )
+
+    portfolio_allocation._print_combined_statistics(statistics)
+
+    output = capsys.readouterr().out
+    assert "  Period                 Best       Worst\n" in output
+    assert f"  {'Day':<20}{'10.00%':>8}{'-5.00%':>12}" in output
+    assert "  Week" in output
+    assert "  Month" in output
+    assert f"  {'3 months':<20}{'N/A':>8}{'N/A':>12}" in output
+    assert f"  {'12 months':<20}{'N/A':>8}{'N/A':>12}" in output
+    assert statistics.best_three_months is None
+    assert statistics.worst_three_months is None
+    assert statistics.best_twelve_months is None
+    assert statistics.worst_twelve_months is None
+    assert "  Best day:" not in output
+    assert "  Worst day:" not in output
+
+
 def test_wrapper_displays_equity_curve_on_log_scale(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -790,6 +888,7 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
         alpha=0.4,
         grid_increment=0.5,
         training_weeks=2,
+        first_training_weeks=2,
         embargo_weeks=1,
         simulation_weeks=2,
         returns_dtype=pl.Float64,
@@ -924,6 +1023,55 @@ def test_walk_forward_uses_rolling_week_windows_embargo_and_partial_final_week(
     ):
         assert statistic_name in output
     assert "ADD (bootstrap)" not in output
+
+
+def test_walk_forward_uses_longer_initial_training_without_simulation_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A longer first history is followed by regular rolling training windows."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_first_training")
+    all_dates, _ = _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 21),
+    )
+    optimizer_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+    monkeypatch.setattr(
+        capital_allocation,
+        "find_optimal_capital_allocation",
+        _sequential_optimizer([[1.0], [1.0]], optimizer_calls),
+    )
+
+    result = portfolio_allocation.walk_forward_capital_allocation_from_csv(
+        "walk_forward_first_training",
+        alpha=0.0,
+        grid_increment=1.0,
+        training_weeks=2,
+        first_training_weeks=4,
+        embargo_weeks=1,
+        simulation_weeks=1,
+        device="cpu",
+        show_plot=False,
+    )
+
+    assert len(optimizer_calls) == 2
+    first_fold, second_fold = result.folds
+    assert first_fold.training_start_date == datetime.date(2025, 1, 6)
+    assert first_fold.training_end_date == datetime.date(2025, 1, 31)
+    assert first_fold.simulation_start_date == datetime.date(2025, 2, 10)
+    assert first_fold.simulation_end_date == datetime.date(2025, 2, 14)
+    # The regular two-week window is positioned relative to the next continuous
+    # simulation, hence this intentionally jumps three weeks from the first start.
+    assert second_fold.training_start_date == datetime.date(2025, 1, 27)
+    assert second_fold.training_end_date == datetime.date(2025, 2, 7)
+    assert second_fold.simulation_start_date == datetime.date(2025, 2, 18)
+    assert second_fold.simulation_end_date == datetime.date(2025, 2, 21)
+    assert result.daily_results["date"].to_list() == [
+        market_date
+        for market_date in all_dates
+        if datetime.date(2025, 2, 10) <= market_date <= datetime.date(2025, 2, 21)
+    ]
 
 
 def test_walk_forward_allocation_alpha_recursively_smooths_applied_allocations(
@@ -1336,6 +1484,10 @@ def test_walk_forward_show_plot_false_displays_no_figures(
         ("training_weeks", 1.0, TypeError),
         ("training_weeks", 0, ValueError),
         ("training_weeks", -1, ValueError),
+        ("first_training_weeks", True, TypeError),
+        ("first_training_weeks", 1.0, TypeError),
+        ("first_training_weeks", 0, ValueError),
+        ("first_training_weeks", -1, ValueError),
         ("embargo_weeks", True, TypeError),
         ("embargo_weeks", 1.0, TypeError),
         ("embargo_weeks", -1, ValueError),
@@ -1362,6 +1514,7 @@ def test_walk_forward_rejects_invalid_week_parameters(
     monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
     parameters: dict[str, object] = {
         "training_weeks": 1,
+        "first_training_weeks": None,
         "embargo_weeks": 0,
         "simulation_weeks": 1,
     }
@@ -1375,6 +1528,32 @@ def test_walk_forward_rejects_invalid_week_parameters(
             device="cpu",
             show_plot=False,
             **parameters,
+        )
+
+
+def test_walk_forward_rejects_first_training_shorter_than_regular_training(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The first training period cannot contain less history than later folds."""
+    directory = _portfolio_directory(tmp_path, "walk_forward_short_first_training")
+    _write_complete_market_strategy(
+        directory / "strategy.csv",
+        datetime.date(2025, 1, 6),
+        datetime.date(2025, 2, 7),
+    )
+    monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
+
+    with pytest.raises(ValueError, match="first_training_weeks.*training_weeks"):
+        portfolio_allocation.walk_forward_capital_allocation_from_csv(
+            "walk_forward_short_first_training",
+            alpha=0.0,
+            grid_increment=1.0,
+            training_weeks=2,
+            first_training_weeks=1,
+            embargo_weeks=0,
+            simulation_weeks=1,
+            device="cpu",
+            show_plot=False,
         )
 
 
@@ -1420,10 +1599,10 @@ def test_walk_forward_rejects_invalid_allocation_alpha(
         )
 
 
-def test_walk_forward_wrappers_forward_allocation_alpha(
+def test_walk_forward_wrappers_forward_optional_wfa_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Both public lazy facades preserve the requested smoothing coefficient."""
+    """Both public lazy facades preserve first-window and smoothing parameters."""
     import ifera.allocation.walk_forward_allocation as walk_forward_allocation
 
     sentinel = object()
@@ -1443,6 +1622,7 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
         alpha=0.0,
         grid_increment=1.0,
         training_weeks=1,
+        first_training_weeks=2,
         embargo_weeks=0,
         simulation_weeks=1,
         returns_dtype=pl.Float64,
@@ -1451,6 +1631,7 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
         show_plot=False,
     )
     assert result is sentinel
+    assert internal_calls[0]["first_training_weeks"] == 2
     assert internal_calls[0]["allocation_alpha"] == 0.375
     assert internal_calls[0]["approximate_add_search"] is True
     assert internal_calls[0]["returns_dtype"] == pl.Float64
@@ -1460,6 +1641,7 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
         alpha=0.0,
         grid_increment=1.0,
         training_weeks=1,
+        first_training_weeks=3,
         embargo_weeks=0,
         simulation_weeks=1,
         returns_dtype=pl.Float64,
@@ -1468,6 +1650,7 @@ def test_walk_forward_wrappers_forward_allocation_alpha(
         show_plot=False,
     )
     assert result is sentinel
+    assert internal_calls[1]["first_training_weeks"] == 3
     assert internal_calls[1]["allocation_alpha"] == 0.625
     assert internal_calls[1]["approximate_add_search"] is True
     assert internal_calls[1]["returns_dtype"] == pl.Float64
@@ -1669,10 +1852,10 @@ def test_wrapper_rejects_empty_strategy_file(
         )
 
 
-def test_wrapper_rejects_duplicate_strategy_dates(
+def test_wrapper_warns_and_aggregates_duplicate_strategy_dates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A strategy cannot supply two ambiguous returns for the same daily row."""
+    """Multiple trades on a date use the documented simplified aggregation."""
     directory = _portfolio_directory(tmp_path, "duplicate_dates")
     _write_strategy(
         directory / "strategy.csv",
@@ -1681,10 +1864,12 @@ def test_wrapper_rejects_duplicate_strategy_dates(
     )
     monkeypatch.setattr(settings, "DATA_FOLDER", str(tmp_path))
 
-    with pytest.raises(ValueError, match="duplicate|dates"):
-        capital_allocation.find_optimal_capital_allocation_from_csv(
+    with pytest.warns(UserWarning, match="more than once"):
+        result = capital_allocation.find_optimal_capital_allocation_from_csv(
             "duplicate_dates", 0.0, 1.0, device="cpu", show_plot=False
         )
+
+    assert result.daily_results["combined_return"].to_list() == pytest.approx([0.03])
 
 
 def test_wrapper_rejects_nyse_holiday_observation(
