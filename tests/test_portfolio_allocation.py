@@ -59,6 +59,9 @@ def _fixed_optimizer(
         approximate_add_search: bool = False,
         allocation_tolerance: float | None = None,
         block_list: list[tuple[int, int, int]] | None = None,
+        objective: str = "kelly",
+        CMGR_limit: float | None = None,
+        calendar_days: int | None = None,
     ) -> torch.Tensor:
         if captured is not None:
             captured.update(
@@ -83,6 +86,9 @@ def _fixed_optimizer(
                     "approximate_add_search": approximate_add_search,
                     "allocation_tolerance": allocation_tolerance,
                     "block_list": block_list,
+                    "objective": objective,
+                    "CMGR_limit": CMGR_limit,
+                    "calendar_days": calendar_days,
                 }
             )
         allocation_tensor = torch.tensor(

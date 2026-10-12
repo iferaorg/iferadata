@@ -55,6 +55,7 @@ from ._capital_allocation_memory import (
     candidate_batch_size as _candidate_batch_size,
     search_candidate_batch_size as _search_candidate_batch_size,
 )
+from ._capital_allocation_objective import resolve_objective as _resolve_objective
 from ._capital_allocation_parameters import (
     SUPPORTED_DTYPES as _SUPPORTED_DTYPES,
     resolve_allocation_unit_limit as _resolve_allocation_unit_limit,
@@ -119,6 +120,9 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     approximate_add_search: bool = False,
     allocation_tolerance: float | None = None,
     block_list: BlockList | None = None,
+    objective: str = "kelly",
+    CMGR_limit: float | None = None,  # pylint: disable=invalid-name
+    calendar_days: int | None = None,
 ) -> torch.Tensor:
     """Return the best long-only allocation under overlap capital constraints.
 
@@ -144,6 +148,17 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     ``ADD_limit`` rejects candidates below an inclusive ADD floor. It uses
     historical ADD when bootstrapping is off and the selected percentile ADD
     when bootstrapping is on, independently of ``alpha``.
+
+    ``objective="minimize_add"`` instead minimizes drawdown magnitude by
+    maximizing the negative ADD directly, ignoring ``alpha``. A positive
+    ``CMGR_limit`` requires minimum historical monthly compound growth. With
+    no positive CMGR floor this objective returns the trivial all-cash optimum.
+    A positive floor uses ``calendar_days``, the inclusive observed date span,
+    and the report's formula: ``expm1(sum(log1p(returns @ f)) /
+    (calendar_days / 365.25 * 12))``. Bootstrap affects ADD only. The CMGR floor
+    is also supported for the default Kelly objective. These searches use the
+    grid and raise ValueError if its initial grid contains no feasible candidate;
+    a finer grid may find a feasible portfolio that a coarse grid misses.
 
     Two strategies are disjoint when they have no day on which both returns are
     non-NaN. An allocation must sum to at most ``max_total_allocation`` within
@@ -266,6 +281,13 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             integer triples. Indices refer to the corresponding dimensions of
             ``returns``. A nonzero allocation to ``blocked_by`` suppresses the
             blocked strategy's return on that day.
+        objective: ``"kelly"`` (default) uses the existing alpha-weighted growth
+            and drawdown objective; ``"minimize_add"`` minimizes ADD magnitude.
+        CMGR_limit: Optional minimum monthly compound growth as a fraction.
+            For example, ``0.02`` requires at least two percent CMGR. None and
+            nonpositive values leave this constraint inactive.
+        calendar_days: Positive integer inclusive observed calendar duration.
+            Required for a positive CMGR_limit; CSV wrappers derive it from dates.
 
     Returns:
         A one-dimensional tensor containing the optimal strategy allocations.
@@ -276,12 +298,17 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             be safely indexed or evaluated within the search memory budget.
     """
     _validate_returns(returns)
+    minimize_add, minimum_log_growth = _resolve_objective(
+        objective, CMGR_limit, calendar_days
+    )
     normalized_blocks = _normalize_block_list(
         block_list, returns.shape[0], returns.shape[1]
     )
     alpha_value, add_limit_value = _validate_alpha(alpha), _validate_add_limit(
         ADD_limit
     )
+    if minimize_add:
+        alpha_value = 0.0
     approximate_add_search_value = _validate_approximate_add_search(
         approximate_add_search
     )
@@ -322,6 +349,22 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     # drawdown calculation is requested. Grid, bootstrap, and refinement
     # controls are intentionally not validated unless that work is needed.
     _prepare_diagnostics(diagnostics, False, False)
+    if minimize_add and minimum_log_growth is None:
+        bootstrap_enabled, *_ = _resolve_grid_bootstrap_parameters(
+            bootstrap_on,
+            bootstrap_runs,
+            bootstrap_length,
+            percentile,
+            bootstrap_seed,
+            diagnostics is not None,
+            True,
+        )
+        _record_algorithm(diagnostics, "Drawdown-minimizing all-cash optimum")
+        if diagnostics is not None and bootstrap_enabled:
+            diagnostics.bootstrap_average_drawdown = 0.0
+        return torch.zeros(strategy_count, device=target_device, dtype=target_dtype)
+
+    growth_fast_paths_enabled = not minimize_add and minimum_log_growth is None
     continuous_allocation = (
         _maximize_kelly_with_selection(
             transposed_returns,
@@ -330,7 +373,9 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             selection_constraints,
             allocation_tolerance_value,
         )
-        if alpha_value == 0.0 and allocation_blocks is None
+        if growth_fast_paths_enabled
+        and alpha_value == 0.0
+        and allocation_blocks is None
         else None
     )
     if add_limit_value is None and continuous_allocation is not None:
@@ -348,7 +393,11 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         )
 
     blocked_fast_outcome = None
-    if alpha_value == 0.0 and allocation_blocks is not None:
+    if (
+        growth_fast_paths_enabled
+        and alpha_value == 0.0
+        and allocation_blocks is not None
+    ):
         blocked_fast_outcome = _try_blocked_fast_path(
             transposed_returns,
             max_total_allocation_value,
@@ -376,7 +425,12 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     add_fast_outcome = None
     add_branch_outcome = None
     add_branch_pilot_ran = False
-    if alpha_value == 0.0 and add_limit_value is not None and allocation_blocks is None:
+    if (
+        growth_fast_paths_enabled
+        and alpha_value == 0.0
+        and add_limit_value is not None
+        and allocation_blocks is None
+    ):
         add_fast_outcome = _try_add_fast_path(
             transposed_returns,
             continuous_allocation,
@@ -430,7 +484,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             "grid_increment is required when the continuous allocation solvers "
             f"cannot handle {unsupported_context}"
         )
-    drawdown_required = alpha_value > 0.0 or add_limit_value is not None
+    drawdown_required = minimize_add or alpha_value > 0.0 or add_limit_value is not None
     bootstrap_on_value = False
     bootstrap_runs_value = 1
     bootstrap_length_value = 1
@@ -497,7 +551,11 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         bootstrap_needed = blocked_fast_outcome.bootstrap_needed
         track_bootstrap_drawdown = blocked_fast_outcome.track_bootstrap_drawdown
         bootstrap_indices = blocked_fast_outcome.bootstrap_indices
-    if alpha_value == 0.0 and add_limit_value is None:
+    if minimize_add:
+        grid_algorithm = "Drawdown-minimizing CMGR-constrained allocation grid search"
+    elif minimum_log_growth is not None:
+        grid_algorithm = "CMGR-constrained Kelly allocation grid search"
+    elif alpha_value == 0.0 and add_limit_value is None:
         grid_algorithm = _RAW_KELLY_GRID_ALGORITHM
     elif alpha_value == 0.0:
         grid_algorithm = _ADD_GRID_ALGORITHM
@@ -593,21 +651,16 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         track_bootstrap_drawdown,
         add_limit_value,
         allocation_blocks,
+        minimize_add,
+        minimum_log_growth,
     )
-    if allocation_unit_limit == 0:
-        return _finalize_allocation_diagnostics(
-            best_allocation,
-            diagnostics,
-            bootstrap_indices,
-            transposed_returns,
-            percentile_value,
-            best_bootstrap_drawdown,
-            _bootstrap_average_drawdown,
-            allocation_blocks,
+    if minimum_log_growth is not None and bool(torch.isneginf(best_score).item()):
+        raise ValueError(
+            "No feasible allocation found on the initial grid satisfying CMGR_limit "
+            "and the other constraints; reduce grid_increment or relax the constraints"
         )
-
     refinement_increment = initial_increment
-    for _ in range(refinement_runs_value):
+    for _ in range(refinement_runs_value if allocation_unit_limit else 0):
         refinement_increment /= refinement_divisor_value
         while True:
             refinement_center = best_allocation
@@ -649,6 +702,8 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
                     track_bootstrap_drawdown,
                     add_limit_value,
                     allocation_blocks,
+                    minimize_add,
+                    minimum_log_growth,
                 )
             )
             if torch.equal(best_allocation, refinement_center):
@@ -887,6 +942,8 @@ def _update_best_allocation(
     track_bootstrap_drawdown: bool,
     add_limit: float | None,
     allocation_blocks: _AllocationBlocks | None = None,
+    minimize_add: bool = False,
+    minimum_log_growth: float | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Score allocation batches and retain only strict improvements."""
     for allocations in allocation_batches:
@@ -901,6 +958,8 @@ def _update_best_allocation(
                 percentile=percentile,
                 bootstrap_drawdown_output=bootstrap_drawdown_output,
                 add_limit=add_limit,
+                minimize_add=minimize_add,
+                minimum_log_growth=minimum_log_growth,
                 **_allocation_block_score_arguments(allocation_blocks),
             )
             if len(bootstrap_drawdown_output) != 1:
@@ -914,6 +973,8 @@ def _update_best_allocation(
                 bootstrap_indices=bootstrap_indices,
                 percentile=percentile,
                 add_limit=add_limit,
+                minimize_add=minimize_add,
+                minimum_log_growth=minimum_log_growth,
                 **_allocation_block_score_arguments(allocation_blocks),
             )
             batch_bootstrap_drawdowns = None
@@ -949,6 +1010,8 @@ def _allocation_scores(
     block_day_indices: torch.Tensor | None = None,
     blocked_strategy_indices: torch.Tensor | None = None,
     blocker_incidence: torch.Tensor | None = None,
+    minimize_add: bool = False,
+    minimum_log_growth: float | None = None,
 ) -> torch.Tensor:
     """Evaluate the modified Kelly objective for a batch of allocations."""
     portfolio_returns = _effective_portfolio_returns(
@@ -962,7 +1025,7 @@ def _allocation_scores(
     valid = finite & (torch.amin(portfolio_returns, dim=1) > -1.0)
     portfolio_returns[~valid] = 0.0
 
-    drawdown_required = alpha != 0.0 or add_limit is not None
+    drawdown_required = minimize_add or alpha != 0.0 or add_limit is not None
     average_drawdown = None
     if drawdown_required and bootstrap_indices is not None:
         average_drawdown = _bootstrap_average_drawdown(
@@ -974,7 +1037,11 @@ def _allocation_scores(
     if drawdown_required and average_drawdown is None:
         average_drawdown = _negative_rms_drawdown(portfolio_returns, dim=1)
     scores = growth
-    if alpha != 0.0:
+    if minimize_add:
+        if average_drawdown is None:
+            raise RuntimeError("Drawdown is unavailable for the minimize_add objective")
+        scores = average_drawdown
+    elif alpha != 0.0:
         if average_drawdown is None:
             raise RuntimeError("Drawdown is unavailable for the penalty")
         duration = portfolio_returns.shape[1]
@@ -983,6 +1050,8 @@ def _allocation_scores(
         if average_drawdown is None:
             raise RuntimeError("Drawdown is unavailable for ADD_limit")
         scores = scores.masked_fill(average_drawdown < add_limit, -torch.inf)
+    if minimum_log_growth is not None:
+        scores = scores.masked_fill(growth < minimum_log_growth, -torch.inf)
     scores = scores.nan_to_num(nan=-torch.inf, posinf=torch.inf, neginf=-torch.inf)
     scores = scores.masked_fill(~valid, -torch.inf)
     if bootstrap_drawdown_output is not None:

@@ -187,6 +187,8 @@ def find_optimal_capital_allocation_from_csv(
     max_correlation: float | None = None,
     approximate_add_search: bool = False,
     allocation_tolerance: float | None = None,
+    objective: str = "kelly",
+    CMGR_limit: float | None = None,  # pylint: disable=invalid-name
 ) -> PortfolioAllocationResult:
     """Optimize and report allocations for the CSV strategies in a portfolio.
 
@@ -249,6 +251,12 @@ def find_optimal_capital_allocation_from_csv(
             shared by continuous Kelly and spatial branch-and-bound searches;
             it is a practical iterate/box resolution, not a global
             optimizer-distance certificate.
+        objective: ``"kelly"`` preserves the growth/ADD-penalty objective.
+            ``"minimize_add"`` minimizes drawdown severity, ignoring ``alpha``.
+            Without a positive ``CMGR_limit`` it returns all-zero allocations.
+        CMGR_limit: Optional minimum compound monthly growth rate as a fraction.
+            Positive values constrain either objective using the same inclusive
+            calendar-date duration as reported CMGR. Nonpositive values are inactive.
 
     Returns:
         Strategy names, optimal allocation, combined daily results, financial
@@ -258,6 +266,7 @@ def find_optimal_capital_allocation_from_csv(
         FileNotFoundError: If the portfolio directory or its CSV files do not exist.
         TypeError: If a wrapper parameter has an invalid type.
         ValueError: If a CSV is malformed or contains invalid observations.
+            Also raised if no evaluated allocation satisfies the growth floor.
     """
     annualization_value = _validate_annualization_periods(annualization_periods)
     risk_free_value = _validate_risk_free_rate(risk_free_rate)
@@ -298,6 +307,12 @@ def find_optimal_capital_allocation_from_csv(
         approximate_add_search=approximate_add_search,
         allocation_tolerance=allocation_tolerance,
         block_list=list(block_list),
+        objective=objective,
+        CMGR_limit=CMGR_limit,
+        calendar_days=(
+            synchronized_returns["date"].item(-1) - synchronized_returns["date"].item(0)
+        ).days
+        + 1,
     )
     weights = allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
     daily_results = _combined_daily_results(

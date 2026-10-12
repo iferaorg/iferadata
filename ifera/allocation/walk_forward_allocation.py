@@ -94,6 +94,8 @@ def walk_forward_capital_allocation_from_csv(
     max_correlation: float | None = None,
     approximate_add_search: bool = False,
     allocation_tolerance: float | None = None,
+    objective: str = "kelly",
+    CMGR_limit: float | None = None,  # pylint: disable=invalid-name
 ) -> portfolio.WalkForwardPortfolioAllocationResult:
     """Optimize rolling training windows and simulate allocations out of sample.
 
@@ -123,8 +125,17 @@ def walk_forward_capital_allocation_from_csv(
     counterfactual target uses that fold's own training data; discovering a
     future-winning support does not introduce future returns into earlier targets.
 
-    EMA is post-processing: changing overlap constraints or a nonlinear
-    ``ADD_limit`` can mean a smoothed allocation does not satisfy the latest
+    ``objective="minimize_add"`` minimizes drawdown severity, ignoring ``alpha``;
+    without a positive ``CMGR_limit`` its optimum is all-zero allocations. A
+    positive ``CMGR_limit`` constrains either objective using the inclusive
+    duration between that fold's first and last observed training dates, matching
+    the report's compound monthly growth formula. Background regime searches
+    use the same fold-local duration. The floor constrains training results only;
+    it is not a guarantee for the out-of-sample simulation. An infeasible growth
+    floor raises ValueError.
+
+    EMA is post-processing: changing overlap constraints, an ``ADD_limit``, or
+    a ``CMGR_limit`` can mean a smoothed allocation does not satisfy the latest
     training fold's constraints, and it is not silently projected or clamped.
     """
     training_count = _validate_week_count(training_weeks, "training_weeks", True)
@@ -186,6 +197,8 @@ def walk_forward_capital_allocation_from_csv(
         ADD_limit=ADD_limit,
         approximate_add_search=approximate_add_search,
         allocation_tolerance=allocation_tolerance,
+        objective=objective,
+        CMGR_limit=CMGR_limit,
     )
     algorithm_counts: Counter[str] = Counter()
     optimizer = _algorithm_tracking_optimizer(base_optimizer, algorithm_counts)
@@ -315,6 +328,8 @@ def _ordinary_fold_allocations(
         calculated = optimizer(
             training.select(strategy_names).to_torch(),
             block_list=list(training_blocks),
+            calendar_days=(training["date"].item(-1) - training["date"].item(0)).days
+            + 1,
         )
         calculated = calculated.detach().clone()
         applied = _applied_allocation(calculated, previous_applied, allocation_alpha)
@@ -447,6 +462,8 @@ def _discover_support_regimes(
             min_correlation=min_correlation,
             max_correlation=max_correlation,
             block_list=list(training_blocks),
+            calendar_days=(training["date"].item(-1) - training["date"].item(0)).days
+            + 1,
         )
         calculated = calculated.detach().clone()
         support = _allocation_support(calculated)
@@ -478,11 +495,22 @@ def _regime_target(
         return discovered.calculated_allocation
     if not support:
         return torch.zeros_like(discovered.calculated_allocation)
-    subset_allocation = optimizer(
-        training_returns[:, list(support)],
-        bootstrap_seed=discovered.bootstrap_seed,
-        block_list=list(remap_block_list(discovered.block_list, support)),
-    )
+    try:
+        subset_allocation = optimizer(
+            training_returns[:, list(support)],
+            bootstrap_seed=discovered.bootstrap_seed,
+            block_list=list(remap_block_list(discovered.block_list, support)),
+            calendar_days=(
+                discovered.training_end_date - discovered.training_start_date
+            ).days
+            + 1,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Walk-forward background support {support} failed for training "
+            f"{discovered.training_start_date} through "
+            f"{discovered.training_end_date}: {exc}"
+        ) from exc
     full_allocation = torch.zeros_like(discovered.calculated_allocation)
     full_allocation[list(support)] = subset_allocation.to(
         device=full_allocation.device, dtype=full_allocation.dtype
