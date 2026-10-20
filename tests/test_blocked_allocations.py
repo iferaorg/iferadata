@@ -644,11 +644,11 @@ def test_csv_wrapper_detects_conflicting_legs_and_applies_blocking(
     )
 
 
-def test_csv_wrapper_warns_and_aggregates_multiple_trades_per_strategy_day(
+def test_csv_wrapper_accounts_for_multiple_trades_per_strategy_day(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The documented simplified duplicate-day behavior warns instead of rejecting."""
+    """Known closes enable exact entry accounting instead of duplicate-day aggregation."""
     directory = _portfolio_directory(tmp_path, "duplicate_trade_day")
     _write_block_strategy(
         directory / "alpha.csv",
@@ -666,18 +666,21 @@ def test_csv_wrapper_warns_and_aggregates_multiple_trades_per_strategy_day(
         _capturing_optimizer(captured, [1.0]),
     )
 
-    with pytest.warns(UserWarning, match="multiple trades|more than once"):
-        capital_allocation.find_optimal_capital_allocation_from_csv(
-            "duplicate_trade_day",
-            alpha=0.0,
-            grid_increment=1.0,
-            device="cpu",
-            show_plot=False,
-        )
+    result = capital_allocation.find_optimal_capital_allocation_from_csv(
+        "duplicate_trade_day",
+        alpha=0.0,
+        grid_increment=1.0,
+        device="cpu",
+        show_plot=False,
+    )
 
     torch.testing.assert_close(
         captured["returns"], torch.tensor([[0.3]], dtype=torch.float32)
     )
+    assert result.trade_results is not None
+    assert result.trade_results["status"].to_list() == ["executed", "executed"]
+    assert result.trade_results["risk"].to_list() == pytest.approx([1.0, 1.0])
+    assert result.statistics.ending_equity == pytest.approx(1.3)
 
 
 @pytest.mark.parametrize(
@@ -803,7 +806,7 @@ def test_csv_block_detection_requires_every_conflict_criterion(
 @pytest.mark.parametrize(
     ("extra_columns", "message"),
     [
-        ({"Closed": ["Jan 6, 2025 11:00am"]}, "incomplete"),
+        ({"Symbol": ["SPX"]}, "incomplete"),
         (
             {
                 "Closed": ["Jan 6, 2025 11:00am"],

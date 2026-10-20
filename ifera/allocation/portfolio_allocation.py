@@ -9,6 +9,7 @@ import math
 import warnings
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 from pathlib import Path
 
 import polars as pl
@@ -21,6 +22,13 @@ from ifera.settings import settings
 from . import capital_allocation
 from ._capital_allocation_blocks import Block
 from ._portfolio_blocking import build_block_list, parse_strategy_trade_legs
+from ._position_loading import load_position_model
+from ._position_model import PositionModel
+from ._position_reporting import (
+    position_return_frame,
+    print_position_report,
+    simulate_position_frame,
+)
 from ._strategy_selection import (
     strategy_correlation_matrix as _strategy_correlation_matrix,
     validate_strategy_selection_parameters as _validate_strategy_selection_parameters,
@@ -124,7 +132,14 @@ class PortfolioDiversification:
 
 @dataclass(frozen=True)
 class PortfolioAllocationResult:
-    """Allocation, algorithm usage, synchronized series, and wrapper statistics."""
+    """Allocation, algorithm usage, synchronized series, and wrapper statistics.
+
+    Position-ledger runs also expose ``trade_results`` with each trade's entry
+    equity, allocation fraction, fixed risk amount, marked/realized P/L, and
+    execution or rejection status. Monetary values are in initial-equity units.
+    ``unrealized_pnl_method`` identifies the synthetic mark convention, or is
+    None for the ordinary daily-return path.
+    """
 
     strategy_names: tuple[str, ...]
     allocation: torch.Tensor
@@ -132,6 +147,8 @@ class PortfolioAllocationResult:
     statistics: PortfolioStatistics
     diversification: PortfolioDiversification
     optimization_algorithm_counts: tuple[tuple[str, int], ...] = ()
+    trade_results: pl.DataFrame | None = None
+    unrealized_pnl_method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -153,7 +170,12 @@ class WalkForwardFold:
 
 @dataclass(frozen=True)
 class WalkForwardPortfolioAllocationResult:
-    """Fold details, algorithm usage, and aggregate out-of-sample results."""
+    """Fold details, algorithm usage, and aggregate out-of-sample results.
+
+    For position-ledger runs, ``trade_results`` is the continuous simulation's
+    entry audit in initial-equity units, not a concatenation of training ledgers.
+    ``unrealized_pnl_method`` is None for ordinary daily-return portfolios.
+    """
 
     strategy_names: tuple[str, ...]
     folds: tuple[WalkForwardFold, ...]
@@ -162,6 +184,8 @@ class WalkForwardPortfolioAllocationResult:
     statistics: PortfolioStatistics
     diversification: PortfolioDiversification
     optimization_algorithm_counts: tuple[tuple[str, int], ...] = ()
+    trade_results: pl.DataFrame | None = None
+    unrealized_pnl_method: str | None = None
 
 
 def find_optimal_capital_allocation_from_csv(
@@ -189,6 +213,7 @@ def find_optimal_capital_allocation_from_csv(
     allocation_tolerance: float | None = None,
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
+    unrealized_pnl_method: str = "linear",
 ) -> PortfolioAllocationResult:
     """Optimize and report allocations for the CSV strategies in a portfolio.
 
@@ -197,8 +222,15 @@ def find_optimal_capital_allocation_from_csv(
     ``Opened`` is reduced to a date, and ``ROR / 100`` is used as the daily
     return on risk. Complete ``Closed``, ``Symbol``, ``Exp``, and ``Legs`` metadata
     identifies overlapping trades with conflicting option legs, which are
-    converted to allocation-dependent block relationships. Multiple same-day
-    trades are aggregated with a warning and use simplified day-level blocking.
+    converted to allocation-dependent block relationships. When Closed timestamps
+    show overnight trades or multiple entries per strategy/day, a position ledger
+    sizes each new trade from start-of-day net liquidation and keeps that risk
+    amount until close. Original entry risk is reserved per position; entries
+    exceeding the capital budget are skipped in full. Marks are estimated using
+    the chosen unrealized P/L method. Such portfolios require grid search and
+    cannot use approximate_add_search or an explicit allocation_tolerance.
+    Without Closed timestamps, legacy multiple same-day trades are aggregated
+    with a warning and simplified day-level blocking.
 
     The returned daily frame spans every NYSE session from the first observed
     date through the last. A null strategy value means that strategy was
@@ -229,6 +261,9 @@ def find_optimal_capital_allocation_from_csv(
         bootstrap_length: Fixed number of sessions in each bootstrap path.
         percentile: Pessimistic bootstrap ADD percentile, expressed in percent.
         max_total_allocation: Allocation cap for each overlapping strategy group.
+            With position accounting, this instead caps reserved original risk
+            plus proposed entry risk relative to start-of-day equity. Existing
+            positions are not force-closed if losses later exceed this ratio.
         annualization_periods: Sessions per year for volatility and risk ratios.
         risk_free_rate: Annual effective risk-free rate used by Sharpe and Sortino.
         show_plot: Whether to display the combined log-scale equity curve.
@@ -257,10 +292,17 @@ def find_optimal_capital_allocation_from_csv(
         CMGR_limit: Optional minimum compound monthly growth rate as a fraction.
             Positive values constrain either objective using the same inclusive
             calendar-date duration as reported CMGR. Nonpositive values are inactive.
+        unrealized_pnl_method: ``"linear"`` spreads each trade's final P/L across
+            its inclusive NYSE holding sessions. ``"close_only"`` assumes zero
+            unrealized P/L until close. Both are estimates, not observed marks.
+            Used only when position-ledger accounting is required. Correlations
+            use the resulting daily unit-risk proxies; bootstrap resamples the
+            simulated portfolio daily returns, with shared indices for candidates.
 
     Returns:
         Strategy names, optimal allocation, combined daily results, financial
-        statistics, and diversification statistics.
+        statistics, and diversification statistics. Position-ledger results
+        additionally contain a per-trade execution audit in ``trade_results``.
 
     Raises:
         FileNotFoundError: If the portfolio directory or its CSV files do not exist.
@@ -283,10 +325,14 @@ def find_optimal_capital_allocation_from_csv(
         synchronized_returns,
         returns_tensor,
         block_list,
-    ) = _load_portfolio_returns(portfolio_name, returns_dtype)
+        position_model,
+    ) = _load_portfolio_inputs(portfolio_name, returns_dtype, unrealized_pnl_method)
 
     optimizer_diagnostics = capital_allocation.CapitalAllocationDiagnostics()
-    allocation = capital_allocation.find_optimal_capital_allocation(
+    optimizer = capital_allocation.find_optimal_capital_allocation
+    if position_model is not None:
+        optimizer = partial(optimizer, position_model=position_model)
+    allocation = optimizer(
         returns_tensor,
         alpha=alpha,
         grid_increment=grid_increment,
@@ -314,10 +360,17 @@ def find_optimal_capital_allocation_from_csv(
         ).days
         + 1,
     )
-    weights = allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
-    daily_results = _combined_daily_results(
-        synchronized_returns, strategy_names, weights, block_list
-    )
+    trade_results = None
+    if position_model is None:
+        weights = allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
+        daily_results = _combined_daily_results(
+            synchronized_returns, strategy_names, weights, block_list
+        )
+    else:
+        combined, trade_results = simulate_position_frame(
+            position_model, allocation, max_total_allocation, returns_dtype
+        )
+        daily_results = _add_equity_curve(combined)
     statistics = _portfolio_statistics(
         daily_results,
         annualization_value,
@@ -339,6 +392,10 @@ def find_optimal_capital_allocation_from_csv(
         diversification=diversification,
         optimization_algorithm_counts=(
             (optimizer_diagnostics.algorithm or "Custom/unknown optimizer", 1),
+        ),
+        trade_results=trade_results,
+        unrealized_pnl_method=(
+            unrealized_pnl_method if position_model is not None else None
         ),
     )
     _print_report(portfolio_name, result)
@@ -477,8 +534,14 @@ def _load_strategy_csv_data(
 
     opened_column = _required_column(raw_frame.columns, "Opened", path)
     return_column = _required_column(raw_frame.columns, "ROR", path)
-    trade_legs = parse_strategy_trade_legs(
-        raw_frame, path, strategy_index, opened_column
+    has_option_metadata = any(
+        column.strip().casefold() in {"symbol", "exp", "legs"}
+        for column in raw_frame.columns
+    )
+    trade_legs = (
+        parse_strategy_trade_legs(raw_frame, path, strategy_index, opened_column)
+        if has_option_metadata
+        else None
     )
     try:
         strategy_frame = raw_frame.select(
@@ -587,6 +650,29 @@ def _load_portfolio_returns(
     returns_tensor = synchronized_returns.select(strategy_names).to_torch()
     block_list = build_block_list(strategy_trade_legs, synchronized_returns["date"])
     return strategy_names, synchronized_returns, returns_tensor, block_list
+
+
+def _load_portfolio_inputs(
+    portfolio_name: str,
+    returns_dtype: type[pl.DataType],
+    unrealized_pnl_method: str,
+) -> tuple[
+    tuple[str, ...], pl.DataFrame, torch.Tensor, tuple[Block, ...], PositionModel | None
+]:
+    """Detect position accounting while preserving the ordinary daily input path."""
+    _validate_returns_dtype(returns_dtype)
+    if unrealized_pnl_method not in ("linear", "close_only"):
+        raise ValueError("unrealized_pnl_method must be 'linear' or 'close_only'")
+    csv_paths = _portfolio_csv_paths(_portfolio_path(portfolio_name))
+    names = tuple(path.stem for path in csv_paths)
+    _validate_strategy_names(names)
+    model = load_position_model(
+        csv_paths, names, unrealized_pnl_method, _nyse_market_dates
+    )
+    if model is None:
+        return (*_load_portfolio_returns(portfolio_name, returns_dtype), None)
+    frame = position_return_frame(model, returns_dtype)
+    return names, frame, frame.select(names).to_torch(), (), model
 
 
 def _combined_daily_results(
@@ -998,7 +1084,10 @@ def _print_report(portfolio_name: str, result: PortfolioAllocationResult) -> Non
     print(f"\nOptimal capital allocation: {portfolio_name}")
     _print_optimization_algorithms(result.optimization_algorithm_counts)
     print(f"Period: {statistics.start_date} to {statistics.end_date}")
-    print("Allocations:")
+    print_position_report(result.unrealized_pnl_method, result.trade_results)
+    print(
+        "Allocations:" if result.trade_results is None else "Per-new-trade allocations:"
+    )
     weights = result.allocation.detach().to(device="cpu", dtype=torch.float64).tolist()
     unused_strategy_names = []
     for strategy_name, weight in zip(result.strategy_names, weights):
@@ -1006,7 +1095,8 @@ def _print_report(portfolio_name: str, result: PortfolioAllocationResult) -> Non
             print(f"  {strategy_name}: {_format_percentage(weight)}")
         else:
             unused_strategy_names.append(strategy_name)
-    print(f"  Total: {_format_percentage(sum(weights))}")
+    total_label = "Total" if result.trade_results is None else "Sum of entry fractions"
+    print(f"  {total_label}: {_format_percentage(sum(weights))}")
     if unused_strategy_names:
         print("Strategies not used:\n  " + "\n  ".join(unused_strategy_names))
     _print_combined_statistics(statistics)

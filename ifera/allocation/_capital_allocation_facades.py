@@ -41,6 +41,7 @@ def find_optimal_capital_allocation_from_csv(
     allocation_tolerance: float | None = None,
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
+    unrealized_pnl_method: str = "linear",
 ) -> PortfolioAllocationResult:
     """Load a named CSV portfolio, optimize it, and report the result."""
     from .portfolio_allocation import (  # pylint: disable=import-outside-toplevel
@@ -77,4 +78,5 @@ def find_optimal_capital_allocation_from_csv(
         allocation_tolerance=allocation_tolerance,
         objective=objective,
         CMGR_limit=CMGR_limit,
+        unrealized_pnl_method=unrealized_pnl_method,
     )

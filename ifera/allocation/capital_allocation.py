@@ -6,8 +6,13 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from functools import partial
+from typing import TYPE_CHECKING
 import torch
+
+if TYPE_CHECKING:
+    from ._position_model import PositionModel
 
 from ._add_constrained_kelly import (
     validate_approximate_add_search as _validate_approximate_add_search,
@@ -123,6 +128,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
     calendar_days: int | None = None,
+    position_model: PositionModel | None = None,
 ) -> torch.Tensor:
     """Return the best long-only allocation under overlap capital constraints.
 
@@ -288,6 +294,13 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             nonpositive values leave this constraint inactive.
         calendar_days: Positive integer inclusive observed calendar duration.
             Required for a positive CMGR_limit; CSV wrappers derive it from dates.
+        position_model: Optional internal trade ledger for multi-day CSV portfolios.
+            Each candidate sizes individual entries from account equity, retaining
+            existing position sizes until close. The ledger admits complete trades
+            only when its capital budget permits. This requires a grid search and
+            replaces overlap cliques and day-level blocking. The supplied returns
+            remain the daily proxy used for strategy correlations and selection.
+            Approximate ADD searches and explicit allocation_tolerance are unsupported.
 
     Returns:
         A one-dimensional tensor containing the optimal strategy allocations.
@@ -304,6 +317,23 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     normalized_blocks = _normalize_block_list(
         block_list, returns.shape[0], returns.shape[1]
     )
+    if position_model is not None:
+        if normalized_blocks:
+            raise ValueError("position_model uses trade-level blocks; omit block_list")
+        if approximate_add_search:
+            raise ValueError(
+                "approximate_add_search is unsupported for multi-day position ledgers"
+            )
+        if allocation_tolerance is not None:
+            raise ValueError(
+                "allocation_tolerance is unsupported for multi-day position ledgers; "
+                "use grid_increment and refinement_runs"
+            )
+        if returns.shape != (
+            len(position_model.dates),
+            len(position_model.strategy_names),
+        ):
+            raise ValueError("position_model dimensions must match returns")
     alpha_value, add_limit_value = _validate_alpha(alpha), _validate_add_limit(
         ADD_limit
     )
@@ -334,7 +364,11 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
     )
     strategy_count = returns.shape[1]
     calculation_returns = returns.to(device=target_device, dtype=calculation_dtype)
-    maximal_cliques = _find_maximal_overlap_cliques(~torch.isnan(calculation_returns))
+    maximal_cliques = (
+        _find_maximal_overlap_cliques(~torch.isnan(calculation_returns))
+        if position_model is None
+        else []
+    )
     calculation_returns = torch.nan_to_num(calculation_returns, nan=0.0)
     transposed_returns = calculation_returns.transpose(0, 1).contiguous()
     del calculation_returns
@@ -364,7 +398,9 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             diagnostics.bootstrap_average_drawdown = 0.0
         return torch.zeros(strategy_count, device=target_device, dtype=target_dtype)
 
-    growth_fast_paths_enabled = not minimize_add and minimum_log_growth is None
+    growth_fast_paths_enabled = (
+        not minimize_add and minimum_log_growth is None and position_model is None
+    )
     continuous_allocation = (
         _maximize_kelly_with_selection(
             transposed_returns,
@@ -475,6 +511,10 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         add_branch_pilot_ran = branch_path.pilot_ran
 
     if grid_increment is None:
+        if position_model is not None:
+            raise ValueError(
+                "grid_increment is required for multi-day position-ledger searches"
+            )
         unsupported_context = (
             "the requested objective, overlap geometry, or trade blocking"
             if allocation_blocks is not None
@@ -569,6 +609,8 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         grid_algorithm = _PILOT_GRID_FALLBACK_ALGORITHM
     if allocation_blocks is not None:
         grid_algorithm = f"Blocking-aware {grid_algorithm}"
+    if position_model is not None:
+        grid_algorithm = f"Position-ledger {grid_algorithm}"
     _record_algorithm(diagnostics, grid_algorithm)
     ordinary_simplex = strategy_count == 1 or (
         len(maximal_cliques) == 1 and len(maximal_cliques[0]) == strategy_count
@@ -599,6 +641,18 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
             0 if allocation_blocks is None else allocation_blocks.group_count
         ),
     )
+    portfolio_evaluator = None
+    if position_model is not None:
+        portfolio_evaluator = partial(
+            position_model.evaluate, max_total_allocation=max_total_allocation_value
+        )
+        element_size = torch.empty((), dtype=calculation_dtype).element_size()
+        candidate_bytes = element_size * (
+            8 * returns.shape[0] + 4 * len(position_model.trades) + 8 * strategy_count
+        )
+        batch_size = min(
+            batch_size, 2048, max(1, (128 * 1024 * 1024) // candidate_bytes)
+        )
     if add_fast_outcome is None and not blocked_bootstrap_prepared and bootstrap_needed:
         bootstrap_indices = _sample_bootstrap_indices(
             returns.shape[0],
@@ -653,6 +707,7 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
         allocation_blocks,
         minimize_add,
         minimum_log_growth,
+        portfolio_evaluator,
     )
     if minimum_log_growth is not None and bool(torch.isneginf(best_score).item()):
         raise ValueError(
@@ -704,11 +759,25 @@ def find_optimal_capital_allocation(  # pylint: disable=too-many-branches,too-ma
                     allocation_blocks,
                     minimize_add,
                     minimum_log_growth,
+                    portfolio_evaluator,
                 )
             )
             if torch.equal(best_allocation, refinement_center):
                 break
 
+    if (
+        portfolio_evaluator is not None
+        and bootstrap_diagnostics_enabled
+        and bootstrap_indices is not None
+        and best_bootstrap_drawdown is None
+    ):
+        best_bootstrap_drawdown = _bootstrap_average_drawdown(
+            portfolio_evaluator(
+                best_allocation.to(dtype=calculation_dtype).unsqueeze(0)
+            ),
+            bootstrap_indices,
+            percentile_value,
+        )[0]
     return _finalize_allocation_diagnostics(
         best_allocation,
         diagnostics,
@@ -944,10 +1013,16 @@ def _update_best_allocation(
     allocation_blocks: _AllocationBlocks | None = None,
     minimize_add: bool = False,
     minimum_log_growth: float | None = None,
+    portfolio_evaluator: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Score allocation batches and retain only strict improvements."""
     for allocations in allocation_batches:
         calculation_allocations = allocations.to(dtype=transposed_returns.dtype)
+        score_arguments = _allocation_block_score_arguments(allocation_blocks)
+        if portfolio_evaluator is not None:
+            score_arguments["portfolio_returns_override"] = portfolio_evaluator(
+                calculation_allocations
+            )
         if track_bootstrap_drawdown:
             bootstrap_drawdown_output: list[torch.Tensor | None] = []
             scores = _allocation_scores(
@@ -960,7 +1035,7 @@ def _update_best_allocation(
                 add_limit=add_limit,
                 minimize_add=minimize_add,
                 minimum_log_growth=minimum_log_growth,
-                **_allocation_block_score_arguments(allocation_blocks),
+                **score_arguments,
             )
             if len(bootstrap_drawdown_output) != 1:
                 raise RuntimeError("Scoring did not return bootstrap diagnostics")
@@ -975,7 +1050,7 @@ def _update_best_allocation(
                 add_limit=add_limit,
                 minimize_add=minimize_add,
                 minimum_log_growth=minimum_log_growth,
-                **_allocation_block_score_arguments(allocation_blocks),
+                **score_arguments,
             )
             batch_bootstrap_drawdowns = None
         batch_score, batch_index = torch.max(scores, dim=0)
@@ -1012,14 +1087,19 @@ def _allocation_scores(
     blocker_incidence: torch.Tensor | None = None,
     minimize_add: bool = False,
     minimum_log_growth: float | None = None,
+    portfolio_returns_override: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Evaluate the modified Kelly objective for a batch of allocations."""
-    portfolio_returns = _effective_portfolio_returns(
-        allocations,
-        transposed_returns,
-        block_day_indices,
-        blocked_strategy_indices,
-        blocker_incidence,
+    portfolio_returns = (
+        _effective_portfolio_returns(
+            allocations,
+            transposed_returns,
+            block_day_indices,
+            blocked_strategy_indices,
+            blocker_incidence,
+        )
+        if portfolio_returns_override is None
+        else portfolio_returns_override.clone()
     )
     finite = torch.isfinite(portfolio_returns).all(dim=1)
     valid = finite & (torch.amin(portfolio_returns, dim=1) > -1.0)

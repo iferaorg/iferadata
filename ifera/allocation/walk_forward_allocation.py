@@ -25,6 +25,7 @@ from ._capital_allocation_blocks import (
     remap_block_list,
     slice_block_list,
 )
+from ._position_model import PositionModel
 from ._strategy_selection import validate_strategy_selection_parameters
 
 
@@ -96,6 +97,7 @@ def walk_forward_capital_allocation_from_csv(
     allocation_tolerance: float | None = None,
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
+    unrealized_pnl_method: str = "linear",
 ) -> portfolio.WalkForwardPortfolioAllocationResult:
     """Optimize rolling training windows and simulate allocations out of sample.
 
@@ -137,6 +139,22 @@ def walk_forward_capital_allocation_from_csv(
     EMA is post-processing: changing overlap constraints, an ``ADD_limit``, or
     a ``CMGR_limit`` can mean a smoothed allocation does not satisfy the latest
     training fold's constraints, and it is not silently projected or clamped.
+
+    Portfolios with multi-day or repeated-entry trades use a position ledger.
+    Training starts flat and includes only trades fully contained in the window,
+    with outcomes known before training ends. Simulation starts flat and then
+    carries positions continuously across folds: only NEW entries use a changed
+    allocation or EMA. ``unrealized_pnl_method`` selects estimated linear marks
+    or ``"close_only"`` marks. Final P/L interpolation is a hindsight valuation
+    assumption, not observed historical net liquidation. The timeline includes
+    every NYSE day through the last recorded close. Position-ledger searches
+    require ``grid_increment`` and support grid refinements, but reject explicit
+    ``allocation_tolerance`` or ``approximate_add_search=True``. The capital
+    limit is enforced when admitting entries, not by force-closing old trades.
+
+    Hard strategy-selection limits are unsupported with carried WFA positions:
+    changing supports could require early liquidation at unknown prices. Such
+    combinations raise ValueError. CSV optimization supports these limits.
     """
     training_count = _validate_week_count(training_weeks, "training_weeks", True)
     first_training_count = _validate_first_training_weeks(
@@ -166,7 +184,17 @@ def walk_forward_capital_allocation_from_csv(
         synchronized_returns,
         _,
         portfolio_block_list,
-    ) = portfolio._load_portfolio_returns(portfolio_name, returns_dtype)
+        position_model,
+    ) = portfolio._load_portfolio_inputs(
+        portfolio_name, returns_dtype, unrealized_pnl_method
+    )
+    if position_model is not None and selection_requested:
+        raise ValueError(
+            "Walk-forward carried positions do not support strategy-selection limits "
+            "(max_strategies, min_correlation, max_correlation): a changed support "
+            "could require closing existing trades at unknown prices. Remove these "
+            "limits or use find_optimal_capital_allocation_from_csv."
+        )
     first_date = synchronized_returns["date"].item(0)
     last_date = synchronized_returns["date"].item(-1)
     aligned_start = _first_complete_week_start(first_date)
@@ -223,41 +251,18 @@ def walk_forward_capital_allocation_from_csv(
             optimizer,
             allocation_alpha_value,
             portfolio_block_list,
+            position_model,
         )
 
-    folds: list[portfolio.WalkForwardFold] = []
-    simulation_frames: list[pl.DataFrame] = []
-    weighted_allocations: list[tuple[torch.Tensor, int]] = []
-    for fold_allocation in fold_allocations:
-        simulation, simulation_blocks = _date_slice_with_blocks(
-            synchronized_returns,
-            fold_allocation.window.simulation_start,
-            fold_allocation.window.simulation_stop,
-            portfolio_block_list,
-        )
-        weights = fold_allocation.applied_allocation.to(
-            device="cpu", dtype=torch.float64
-        ).tolist()
-        simulation_frames.append(
-            portfolio._apply_allocation(
-                simulation, strategy_names, weights, simulation_blocks
-            )
-        )
-        weighted_allocations.append(
-            (fold_allocation.applied_allocation, simulation.height)
-        )
-        folds.append(
-            portfolio.WalkForwardFold(
-                training_start_date=fold_allocation.training_start_date,
-                training_end_date=fold_allocation.training_end_date,
-                simulation_start_date=simulation["date"].item(0),
-                simulation_end_date=simulation["date"].item(-1),
-                calculated_allocation=fold_allocation.calculated_allocation,
-                applied_allocation=fold_allocation.applied_allocation,
-            )
-        )
-
-    simulated_returns = pl.concat(simulation_frames, how="vertical")
+    folds, simulated_returns, trade_results, weighted_allocations = _simulate_folds(
+        synchronized_returns,
+        strategy_names,
+        fold_allocations,
+        portfolio_block_list,
+        position_model,
+        max_total_allocation,
+        returns_dtype,
+    )
     daily_results = portfolio._add_equity_curve(simulated_returns)
     statistics = portfolio._portfolio_statistics(
         daily_results, annualization_value, risk_free_value, None
@@ -276,6 +281,10 @@ def walk_forward_capital_allocation_from_csv(
         statistics=statistics,
         diversification=diversification,
         optimization_algorithm_counts=tuple(algorithm_counts.items()),
+        trade_results=trade_results,
+        unrealized_pnl_method=(
+            unrealized_pnl_method if position_model is not None else None
+        ),
     )
     _print_report(portfolio_name, result)
     if show_plot:
@@ -286,6 +295,71 @@ def walk_forward_capital_allocation_from_csv(
         )
         _plot_allocations(portfolio_name, result)
     return result
+
+
+def _simulate_folds(
+    synchronized_returns: pl.DataFrame,
+    strategy_names: tuple[str, ...],
+    fold_allocations: tuple[_FoldAllocation, ...],
+    block_list: tuple[Block, ...],
+    position_model: PositionModel | None,
+    max_total_allocation: float,
+    returns_dtype: type[pl.DataType],
+) -> tuple[
+    list[portfolio.WalkForwardFold],
+    pl.DataFrame,
+    pl.DataFrame | None,
+    list[tuple[torch.Tensor, int]],
+]:
+    """Apply fold weights, retaining a single ledger across position-model folds."""
+    folds: list[portfolio.WalkForwardFold] = []
+    frames: list[pl.DataFrame] = []
+    schedule: list[torch.Tensor] = []
+    weighted_allocations: list[tuple[torch.Tensor, int]] = []
+    for allocation in fold_allocations:
+        simulation, simulation_blocks = _date_slice_with_blocks(
+            synchronized_returns,
+            allocation.window.simulation_start,
+            allocation.window.simulation_stop,
+            block_list,
+        )
+        if position_model is None:
+            weights = allocation.applied_allocation.to(
+                device="cpu", dtype=torch.float64
+            ).tolist()
+            frames.append(
+                portfolio._apply_allocation(
+                    simulation, strategy_names, weights, simulation_blocks
+                )
+            )
+        else:
+            schedule.append(
+                allocation.applied_allocation.unsqueeze(0).expand(simulation.height, -1)
+            )
+        weighted_allocations.append((allocation.applied_allocation, simulation.height))
+        folds.append(
+            portfolio.WalkForwardFold(
+                training_start_date=allocation.training_start_date,
+                training_end_date=allocation.training_end_date,
+                simulation_start_date=simulation["date"].item(0),
+                simulation_end_date=simulation["date"].item(-1),
+                calculated_allocation=allocation.calculated_allocation,
+                applied_allocation=allocation.applied_allocation,
+            )
+        )
+    trade_results = None
+    if position_model is None:
+        combined = pl.concat(frames, how="vertical")
+    else:
+        model = position_model.window(
+            fold_allocations[0].window.simulation_start,
+            fold_allocations[-1].window.simulation_stop,
+            closed_only=False,
+        )
+        combined, trade_results = portfolio.simulate_position_frame(
+            model, torch.cat(schedule), max_total_allocation, returns_dtype
+        )
+    return folds, combined, trade_results, weighted_allocations
 
 
 def _algorithm_tracking_optimizer(
@@ -312,6 +386,7 @@ def _ordinary_fold_allocations(
     optimizer: _AllocationOptimizer,
     allocation_alpha: float,
     block_list: tuple[Block, ...],
+    position_model: PositionModel | None = None,
 ) -> tuple[_FoldAllocation, ...]:
     """Calculate the original one-pass global EMA when selection is disabled."""
     fold_allocations: list[_FoldAllocation] = []
@@ -319,17 +394,33 @@ def _ordinary_fold_allocations(
     for window in portfolio.tqdm(
         windows, total=len(windows), desc="Walk-forward portfolio", unit="fold"
     ):
-        training, training_blocks = _date_slice_with_blocks(
-            synchronized_returns,
-            window.training_start,
-            window.training_stop,
-            block_list,
-        )
+        training_model = None
+        if position_model is None:
+            training, training_blocks = _date_slice_with_blocks(
+                synchronized_returns,
+                window.training_start,
+                window.training_stop,
+                block_list,
+            )
+        else:
+            training_model = position_model.window(
+                window.training_start, window.training_stop
+            )
+            returns_dtype = (
+                pl.Float64
+                if synchronized_returns.schema[strategy_names[0]] == pl.Float64
+                else pl.Float32
+            )
+            training = portfolio.position_return_frame(training_model, returns_dtype)
+            training_blocks = ()
         calculated = optimizer(
             training.select(strategy_names).to_torch(),
             block_list=list(training_blocks),
             calendar_days=(training["date"].item(-1) - training["date"].item(0)).days
             + 1,
+            **(
+                {"position_model": training_model} if training_model is not None else {}
+            ),
         )
         calculated = calculated.detach().clone()
         applied = _applied_allocation(calculated, previous_applied, allocation_alpha)
@@ -698,6 +789,7 @@ def _print_report(
     portfolio._print_optimization_algorithms(result.optimization_algorithm_counts)
     print(f"Folds: {len(result.folds)}")
     print(f"Period: {result.statistics.start_date} to {result.statistics.end_date}")
+    portfolio.print_position_report(result.unrealized_pnl_method, result.trade_results)
     print("Simulation-day-weighted average applied allocations:")
     weights = result.average_allocation.tolist()
     unused_strategy_names = []
@@ -706,7 +798,8 @@ def _print_report(
             unused_strategy_names.append(strategy_name)
             continue
         print(f"  {strategy_name}: {portfolio._format_percentage(weight)}")
-    print(f"  Total: {portfolio._format_percentage(sum(weights))}")
+    total_label = "Total" if result.trade_results is None else "Sum of entry fractions"
+    print(f"  {total_label}: {portfolio._format_percentage(sum(weights))}")
     if unused_strategy_names:
         print("Strategies not used:\n  " + "\n  ".join(unused_strategy_names))
     portfolio._print_combined_statistics(result.statistics)
@@ -774,7 +867,9 @@ def _plot_allocations(
         )
     axis.set_title(f"Walk-forward allocations: {portfolio_name}")
     axis.set_xlabel("Simulation period")
-    axis.set_ylabel("Allocation")
+    axis.set_ylabel(
+        "Allocation" if result.trade_results is None else "Allocation per new trade"
+    )
     axis.set_ylim(bottom=0.0)
     axis.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     axis.grid(visible=True, alpha=0.3)

@@ -221,12 +221,11 @@ def test_split_str_with_prepare_splits():
         max_depth=2,
     )
 
-    # Find a depth 1 split
-    depth_1_splits = [s for s in splits if len(s.parents) == 0]
-    assert len(depth_1_splits) > 0
+    # Find a split with a direct filter representation.
+    atomic_splits = [split for split in splits if split.filters]
+    assert atomic_splits
 
-    # Test printing a depth 1 split
-    result = str(depth_1_splits[0])
+    result = str(atomic_splits[0])
     assert "Split filters:" in result
     # Should have filter name, operator, and threshold
     assert (
@@ -236,13 +235,14 @@ def test_split_str_with_prepare_splits():
         or "open_minutes" in result
     )
 
-    # Find a child split if any
-    child_splits = [s for s in splits if len(s.parents) > 0]
-    if len(child_splits) > 0:
-        result = str(child_splits[0])
-        assert "Split filters:" in result
-        # Child split should have "&" in it (changed from "and")
-        assert " & " in result
+    # Boolean conjunctions may also be depth 1 splits and should print their parents.
+    composite_splits = [
+        split for split in splits if split.parents and not split.filters
+    ]
+    assert composite_splits
+    result = str(composite_splits[0])
+    assert "Split filters:" in result
+    assert " & " in result
 
 
 def test_split_str_empty_split():

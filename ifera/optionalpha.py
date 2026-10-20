@@ -957,7 +957,9 @@ class Split:
     Represents a split condition for filtering data.
 
     A single split can now represent multiple filters that result in the same mask.
-    Splits can be either depth 1 (original) or child splits created from parent combinations.
+    Splits can represent individual filters or conjunctions of parent splits.
+    With boolean pregeneration enabled, boolean-only conjunctions count as depth 1
+    even when they have parents.
 
     Attributes
     ----------
@@ -966,11 +968,12 @@ class Split:
     filters : list[FilterInfo]
         List of filters that result in this mask. Each FilterInfo contains:
         filter_idx, filter_name, threshold, and direction.
-        Empty for child splits.
+        Can coexist with parents when an individual filter and a conjunction
+        produce the same mask. These are alternative representations (logical OR).
     parents : list[set[Split]]
         List of sets of parent Split objects. Each set represents the parent
         splits that were combined with logical AND to create this child split.
-        Empty for depth 1 (original) splits.
+        Empty for individual filters; depth 1 boolean conjunctions have parents.
     sample_count : int
         Number of samples included in the split mask.
     score : float | None
@@ -1043,27 +1046,23 @@ class Split:
         list[list[tuple[int, str, str, float]]]
             List of conjunctions in DNF
         """
-        # Base case: depth 1 split with filters
-        if len(self.filters) > 0:
-            # Multiple filters in the same split represent OR relationship
-            result = []
-            for filter_info in self.filters:
-                operator = "<=" if filter_info.direction == "left" else ">="
-                result.append(
-                    [
-                        (
-                            filter_info.filter_idx,
-                            filter_info.filter_name,
-                            operator,
-                            filter_info.threshold,
-                        )
-                    ]
-                )
-            return result
+        # Direct filters and parent conjunctions are alternative representations.
+        all_conjunctions: list[list[tuple[int, str, str, float]]] = []
+        for filter_info in self.filters:
+            operator = "<=" if filter_info.direction == "left" else ">="
+            all_conjunctions.append(
+                [
+                    (
+                        filter_info.filter_idx,
+                        filter_info.filter_name,
+                        operator,
+                        filter_info.threshold,
+                    )
+                ]
+            )
 
         # Recursive case: child split with parents
         if len(self.parents) > 0:
-            all_conjunctions = []
             # Multiple parent sets represent OR relationship
             for parent_set in self.parents:
                 # Get DNF from each parent in the set
@@ -1089,10 +1088,7 @@ class Split:
                 # Add all combined terms from this parent list to the result
                 all_conjunctions.extend(combined_terms)
 
-            return all_conjunctions
-
-        # Empty split (shouldn't happen, but handle gracefully)
-        return []
+        return all_conjunctions
 
     def _merge_conjunction_terms(
         self, conjunction: list[tuple[int, str, str, float]]
@@ -1246,16 +1242,17 @@ def _compute_child_parent_sets(parent_a: Split, parent_b: Split) -> list[set[Spl
     Returns
     -------
     list[set[Split]]
-        List of parent sets containing only depth 1 splits
+        Parent sets flattened to splits with direct filters. A merged split
+        with both filters and parents stays intact to preserve its alternatives.
     """
 
-    def _get_depth_one_parent_sets(split: Split) -> list[set[Split]]:
-        if len(split.parents) > 0:
+    def _get_atomic_parent_sets(split: Split) -> list[set[Split]]:
+        if not split.filters and split.parents:
             return split.parents
         return [{split}]
 
-    parent_sets_a = _get_depth_one_parent_sets(parent_a)
-    parent_sets_b = _get_depth_one_parent_sets(parent_b)
+    parent_sets_a = _get_atomic_parent_sets(parent_a)
+    parent_sets_b = _get_atomic_parent_sets(parent_b)
 
     combined_sets: list[set[Split]] = []
     for parent_set_a in parent_sets_a:
@@ -2084,6 +2081,69 @@ def _remove_redundant_splits(
 
     # Return only new splits that don't match any old split
     return [new_splits[i] for i in keep_indices.tolist()]
+
+
+def _generate_boolean_splits(
+    splits: list[Split],
+    device: torch.device,
+    min_samples: int,
+    similarity_threshold: float,
+) -> list[Split]:
+    """Build all distinct boolean conjunctions before depth or score pruning.
+
+    Extend each frontier with individual boolean splits using the same exclusion
+    rules as ordinary child generation. Every accepted intersection is a strict
+    subset of both parents, so processing only new masks reaches a fixed point.
+    Parent sets retain the original filters for rendering and later conjunctions.
+    """
+    atoms = _merge_identical_splits(splits)
+    if len(atoms) < 2:
+        return atoms
+
+    all_splits = atoms.copy()
+    representations = atoms.copy()
+    frontier = atoms
+    atom_masks = torch.stack([split.mask for split in atoms], dim=0)
+    while frontier:
+        exclusions = _calculate_exclusion_mask(
+            frontier,
+            atoms,
+            device,
+            min_samples,
+            masks_b_stacked=atom_masks,
+            similarity_threshold=similarity_threshold,
+        )
+        children = _generate_child_splits(frontier, atoms, exclusions)
+        children = _merge_identical_splits(children)
+        representations.extend(children)
+        frontier = _remove_redundant_splits(children, all_splits)
+        all_splits.extend(frontier)
+
+    # All rounds have the same effective depth, so retain aliases of earlier masks.
+    # Original atoms stay unchanged to keep the parent graph acyclic.
+    return _merge_identical_splits(representations)
+
+
+def _has_numeric_only_representation(
+    split: Split,
+    numeric_bases: set[Split],
+    cache: dict[Split, bool],
+) -> bool:
+    """Check for a numeric-only alternative without expanding the split's DNF.
+
+    Numeric base splits can also have boolean aliases. A conjunction remains
+    numeric-only if every parent has a numeric-only representation. Memoization
+    lets later depths attach their first boolean block without revisiting aliases.
+    """
+    if split not in cache:
+        cache[split] = split in numeric_bases or any(
+            all(
+                _has_numeric_only_representation(parent, numeric_bases, cache)
+                for parent in parents
+            )
+            for parents in split.parents
+        )
+    return cache[split]
 
 
 @torch.compile()
@@ -2986,8 +3046,8 @@ class SplitGenerator:
         selected to distribute samples as evenly as possible across buckets.
     max_depth : int, optional
         Maximum depth for generating child splits. Default is 1 (only depth 1 splits).
-        If greater than 1, child splits are generated by combining parent splits
-        with logical AND up to the specified depth.
+        Each filter condition consumes one depth. With boolean pregeneration enabled,
+        any conjunction of two-valued filters instead counts as one depth in total.
     min_samples : int, optional
         Minimum number of samples required on each side of a split. Default is 1.
     score_func : callable, optional
@@ -3005,7 +3065,8 @@ class SplitGenerator:
         Number of times to repeat cross-validation when evaluating filters. Default is 2.
     min_score_improvement : float | None, optional
         If not None, filters with score improvement less than this value will be removed
-        from depth_1_splits before merging. Default is None.
+        before merging. Filters with exactly two distinct aligned values bypass
+        cross-validation and this cutoff. Default is None.
     purge_pct : float, optional
         Percentage of test set size to purge from end of training set during filter
         evaluation CV (0.0 to 1.0). Default is 0.1 (10%).
@@ -3019,6 +3080,12 @@ class SplitGenerator:
         Maximum allowed mask similarity before two parent splits are considered too
         similar to merge. Similarity is calculated as ``sum(a == b) / len(a)``.
         Default is 1.0.
+    pregenerate_boolean_conjunctions : bool, optional
+        Generate boolean-only conjunctions at depth 1 before scoring or pruning.
+        Default is False. Two-valued filters bypass evaluation in either mode.
+        When enabled, the generation printout separates original numeric and boolean
+        candidates from additional distinct boolean conjunction masks. Counts precede
+        evaluation and final mask merging.
 
     Examples
     --------
@@ -3051,6 +3118,7 @@ class SplitGenerator:
         embargo_pct: float = 0.0,
         min_train_pct: float = 0.2,
         similarity_threshold: float = 1.0,
+        pregenerate_boolean_conjunctions: bool = False,
     ):
         """Initialize the SplitGenerator with hyperparameters."""
         # Validate parameters
@@ -3080,6 +3148,7 @@ class SplitGenerator:
         self.embargo_pct = embargo_pct
         self.min_train_pct = min_train_pct
         self.similarity_threshold = similarity_threshold
+        self.pregenerate_boolean_conjunctions = pregenerate_boolean_conjunctions
 
         # Initialize filter_granularities with default values
         default_granularities = {
@@ -3188,6 +3257,174 @@ class SplitGenerator:
             self.min_train_pct,
         )
 
+    def _prepare_base_splits(
+        self,
+        filters_df: pl.DataFrame,
+        left_only_filters: list[str],
+        right_only_filters: list[str],
+        profits: torch.Tensor,
+        returns: torch.Tensor,
+        date_ordinals: torch.Tensor,
+        verbose: str,
+    ) -> tuple[list[Split], list[Split]]:
+        """Evaluate numeric filters and optionally expand boolean depth-one splits."""
+        boolean_splits: list[Split] = []
+        numeric_splits: list[Split] = []
+        filter_names = [col for col in filters_df.columns if col != "date"]
+        for col_idx, col_name in enumerate(filter_names):
+            splits = self._create_splits_for_filter(
+                col_idx, col_name, filters_df, left_only_filters, right_only_filters
+            )
+            # Classify the aligned values before threshold rounding or mask merging.
+            if filters_df.get_column(col_name).n_unique() == 2:
+                boolean_splits.extend(splits)
+            else:
+                numeric_splits.extend(splits)
+        original_numeric_count = len(numeric_splits)
+        original_boolean_count = len(boolean_splits)
+        if self.pregenerate_boolean_conjunctions:
+            boolean_splits = _generate_boolean_splits(
+                boolean_splits, self.device, self.min_samples, self.similarity_threshold
+            )
+            additional_count = sum(not split.filters for split in boolean_splits)
+            total_count = (
+                original_numeric_count + original_boolean_count + additional_count
+            )
+            print(
+                f"Generated {total_count} depth 1 splits "
+                f"(original numeric: {original_numeric_count}, "
+                f"original boolean: {original_boolean_count}, "
+                f"additional boolean conjunctions: {additional_count})."
+            )
+        else:
+            print(
+                f"Generated {original_numeric_count + original_boolean_count} depth 1 splits."
+            )
+
+        if self.score_func is not None and numeric_splits:
+            improvements = self._evaluate_filters(
+                numeric_splits, profits, returns, date_ordinals, verbose
+            )
+            if self.min_score_improvement is not None and improvements:
+                filtered = [
+                    split
+                    for split in numeric_splits
+                    if improvements.get(
+                        (split.filters[0].filter_name, split.filters[0].direction),
+                        float("-inf"),
+                    )
+                    >= self.min_score_improvement
+                ]
+                removed_count = len(numeric_splits) - len(filtered)
+                numeric_splits = filtered
+                if removed_count:
+                    print(
+                        f"Removed {removed_count} splits with score improvement "
+                        f"< {self.min_score_improvement:.6f}"
+                    )
+
+        numeric_indices = {split.filters[0].filter_idx for split in numeric_splits}
+        base_splits = _merge_identical_splits(numeric_splits + boolean_splits)
+        numeric_bases = [
+            split
+            for split in base_splits
+            if any(info.filter_idx in numeric_indices for info in split.filters)
+        ]
+        return base_splits, numeric_bases
+
+    def _generate_depth_children(
+        self,
+        previous_splits: list[Split],
+        numeric_splits: list[Split],
+        boolean_splits: list[Split],
+        numeric_only_cache: dict[Split, bool],
+    ) -> list[Split]:
+        """Extend by one filter, or by one boolean block when pregeneration is enabled."""
+        if self.pregenerate_boolean_conjunctions:
+            if not previous_splits or not numeric_splits:
+                return []
+
+            numeric_bases = set(numeric_splits)
+            numeric_only_parents = [
+                split
+                for split in previous_splits
+                if _has_numeric_only_representation(
+                    split, numeric_bases, numeric_only_cache
+                )
+            ]
+            parent_pairs = [
+                (previous_splits, numeric_splits),
+                (numeric_only_parents, boolean_splits),
+            ]
+        else:
+            parent_pairs = [(previous_splits, numeric_splits + boolean_splits)]
+        children: list[Split] = []
+        for parents, extensions in parent_pairs:
+            if not parents or not extensions:
+                continue
+            exclusions = _calculate_exclusion_mask(
+                parents,
+                extensions,
+                self.device,
+                self.min_samples,
+                similarity_threshold=self.similarity_threshold,
+            )
+            children.extend(_generate_child_splits(parents, extensions, exclusions))
+        return children
+
+    def _select_child_candidates(
+        self,
+        new_splits: list[Split],
+        all_splits: list[Split],
+        profits: torch.Tensor,
+        returns: torch.Tensor,
+        date_ordinals: torch.Tensor,
+    ) -> list[Split]:
+        """Deduplicate and score children, limiting expensive work for beam search."""
+        if self.keep_best_n is None:
+            candidates = _remove_redundant_splits(new_splits, all_splits)
+            candidates = _merge_identical_splits(candidates)
+            if self.score_func is not None:
+                _score_splits(
+                    candidates, profits, returns, self.score_func, date_ordinals
+                )
+            return candidates
+
+        _score_splits(new_splits, profits, returns, self.score_func, date_ordinals)
+        new_splits.sort(
+            key=lambda split: (
+                split.score if split.score is not None else float("-inf")
+            ),
+            reverse=True,
+        )
+        candidates: list[Split] = []
+        candidate_start_idx = 0
+        batch_size = 2 * self.keep_best_n
+        while len(candidates) < self.keep_best_n and candidate_start_idx < len(
+            new_splits
+        ):
+            candidate_end_idx = min(candidate_start_idx + batch_size, len(new_splits))
+            batch = new_splits[candidate_start_idx:candidate_end_idx]
+            batch = _remove_redundant_splits(batch, all_splits)
+            candidates = _merge_identical_splits(candidates + batch)
+            candidate_start_idx = candidate_end_idx
+        return candidates
+
+    def _print_depth_splits(
+        self, depth: int, splits: list[Split], verbose: str
+    ) -> None:
+        """Print the requested splits after scoring and pruning at each depth."""
+        if verbose == "best" and splits:
+            best_split = max(
+                splits,
+                key=lambda split: (
+                    split.score if split.score is not None else float("-inf")
+                ),
+            )
+            _print_splits_for_depth(depth, [best_split], self.score_func)
+        elif verbose == "all":
+            _print_splits_for_depth(depth, splits, self.score_func)
+
     def generate(
         self,
         trades_df: pl.DataFrame | object,
@@ -3240,10 +3477,14 @@ class SplitGenerator:
           consecutive unique values.
         - Left splits include values <= threshold, right splits include values >=
           threshold.
-        - At depth 2, child splits are created by combining depth 1 splits with each
-          other (avoiding duplicates using j > i).
-        - At depths > 2, child splits are created by combining the previous depth's
-          new splits with the original depth 1 splits.
+        - Filters with exactly two distinct aligned values always bypass evaluation.
+        - By default, each later depth adds one filter condition, including boolean
+          conditions. With pregenerate_boolean_conjunctions enabled, boolean groups
+          are expanded at depth 1 before scoring or pruning using the same exclusion
+          and mask-merging rules as other children.
+        - With pregeneration, each later depth adds a non-boolean condition or the
+          first boolean block to a split with a numeric-only representation.
+          With keep_best_n, only retained children are extended in either mode.
         """
         trades_df = _coerce_table_to_polars(trades_df).sort("date")
         filters_df = _coerce_table_to_polars(filters_df).sort("date")
@@ -3296,69 +3537,16 @@ class SplitGenerator:
             device=self.device,
         )
 
-        # Find all depth 1 splits
-        depth_1_splits: list[Split] = []
         filter_names = [col for col in filters_df.columns if col != "date"]
-
-        for col_idx, col_name in enumerate(filter_names):
-            filter_splits = self._create_splits_for_filter(
-                col_idx,
-                col_name,
-                filters_df,
-                left_only_filters_updated,
-                right_only_filters_updated,
-            )
-            depth_1_splits.extend(filter_splits)
-        print(f"Generated {len(depth_1_splits)} depth 1 splits.")
-
-        # Evaluate filters using cross-validation if score_func is provided
-        if self.score_func is not None:
-            # Evaluate filters before scoring to get score improvements
-            filter_score_improvements = self._evaluate_filters(
-                depth_1_splits,
-                profits,
-                y,
-                date_ordinals,
-                verbose,
-            )
-
-            # Remove splits with insufficient score improvement if min_score_improvement is set
-            if (
-                self.min_score_improvement is not None
-                and len(filter_score_improvements) > 0
-            ):
-                filtered_splits = []
-                for split in depth_1_splits:
-                    # Check if this split should be kept
-                    should_keep = False
-                    if len(split.filters) > 0:
-                        # Get the first filter (depth 1 splits should have only one filter)
-                        filter_info = split.filters[0]
-                        key = (filter_info.filter_name, filter_info.direction)
-                        if key in filter_score_improvements:
-                            if (
-                                filter_score_improvements[key]
-                                >= self.min_score_improvement
-                            ):
-                                should_keep = True
-                    else:
-                        # Keep splits without filters
-                        should_keep = True
-
-                    if should_keep:
-                        filtered_splits.append(split)
-
-                original_count = len(depth_1_splits)
-                depth_1_splits = filtered_splits
-                removed_count = original_count - len(depth_1_splits)
-                if removed_count > 0:
-                    print(
-                        f"Removed {removed_count} splits with score improvement "
-                        f"< {self.min_score_improvement:.6f}"
-                    )
-
-        # Merge splits with identical masks
-        depth_1_splits = _merge_identical_splits(depth_1_splits)
+        depth_1_splits, numeric_splits = self._prepare_base_splits(
+            filters_df,
+            left_only_filters_updated,
+            right_only_filters_updated,
+            profits,
+            y,
+            date_ordinals,
+            verbose,
+        )
 
         # Score depth_1_splits if score_func is provided
         if self.score_func is not None:
@@ -3372,160 +3560,40 @@ class SplitGenerator:
         else:
             all_splits = depth_1_splits.copy()
 
-        # Print depth 1 splits if verbose is enabled
-        if verbose == "best":
-            if len(all_splits) > 0:
-                best_split = max(
-                    all_splits,
-                    key=lambda s: s.score if s.score is not None else float("-inf"),
-                )
-                _print_splits_for_depth(1, [best_split], self.score_func)
-        elif verbose == "all":
-            _print_splits_for_depth(1, all_splits, self.score_func)
+        self._print_depth_splits(1, all_splits, verbose)
 
-        # Generate child splits if max_depth > 1
-        if self.max_depth > 1:
-            # Track the previous depth's new splits
-            # Use all_splits (which contains filtered depth 1 splits if keep_best_n is set)
-            previous_depth_splits = all_splits
-
-            # Pre-stack masks for depth_1_splits to avoid redundant stacking in each iteration
-            depth_1_masks_stacked = torch.stack(
-                [split.mask for split in depth_1_splits], dim=0
+        numeric_bases = set(numeric_splits)
+        boolean_splits = [
+            split for split in depth_1_splits if split not in numeric_bases
+        ]
+        numeric_only_cache: dict[Split, bool] = {}
+        previous_depth_splits = all_splits
+        for depth in range(2, self.max_depth + 1):
+            new_splits = self._generate_depth_children(
+                previous_depth_splits,
+                numeric_splits,
+                boolean_splits,
+                numeric_only_cache,
             )
+            print(f"Generated {len(new_splits)} depth {depth} splits.")
+            if not new_splits:
+                break
+            new_splits = self._select_child_candidates(
+                new_splits, all_splits, profits, y, date_ordinals
+            )
+            if not new_splits:
+                break
 
-            for depth in range(2, self.max_depth + 1):
-                # Calculate exclusion mask between the two parent sets
-                # Pass the pre-stacked depth_1_masks to avoid redundant stacking
-                exclusion_mask = _calculate_exclusion_mask(
-                    previous_depth_splits,
-                    depth_1_splits,
-                    self.device,
-                    self.min_samples,
-                    masks_b_stacked=depth_1_masks_stacked,
-                    similarity_threshold=self.similarity_threshold,
-                )
-
-                # Generate child splits from non-exclusive parent pairs
-                new_splits = _generate_child_splits(
-                    previous_depth_splits,
-                    depth_1_splits,
-                    exclusion_mask,
-                )
-                print(f"Generated {len(new_splits)} depth {depth} splits.")
-
-                # Exit early if no new splits were generated
-                if len(new_splits) == 0:
-                    break
-
-                # Optimization: Score new_splits immediately and work with candidates only
-                # This avoids expensive operations on all splits when keep_best_n is set
-                if self.keep_best_n is not None and self.score_func is not None:
-                    # Step 1: Score all new splits
-                    _score_splits(
-                        new_splits, profits, y, self.score_func, date_ordinals
-                    )
-
-                    # Step 2: Sort new splits by descending score
-                    new_splits.sort(
-                        key=lambda s: s.score if s.score is not None else float("-inf"),
-                        reverse=True,
-                    )
-
-                    # Step 3-4: Process candidates in batches
-                    candidate_splits: list[Split] = []
-                    candidate_start_idx = 0
-                    batch_size = 2 * self.keep_best_n
-
-                    # Loop to ensure we get enough valid candidates
-                    while len(
-                        candidate_splits
-                    ) < self.keep_best_n and candidate_start_idx < len(new_splits):
-                        # Select next batch of candidates
-                        candidate_end_idx = min(
-                            candidate_start_idx + batch_size, len(new_splits)
-                        )
-                        batch = new_splits[candidate_start_idx:candidate_end_idx]
-
-                        # Remove redundant splits and merge identical ones on this batch
-                        batch = _remove_redundant_splits(batch, all_splits)
-                        if len(batch) > 0:
-                            batch = _merge_identical_splits(batch)
-                            candidate_splits.extend(batch)
-
-                        candidate_start_idx = candidate_end_idx
-
-                    # Step 5: Add candidate splits to all_splits (not all new_splits)
-                    all_splits.extend(candidate_splits)
-
-                    # Keep only top n all_splits
-                    all_splits = _keep_top_n_splits(all_splits, self.keep_best_n)
-
-                    # Update previous_depth_splits to only contain kept splits from candidates
-                    all_splits_set = set(id(s) for s in all_splits)
-                    previous_depth_splits = [
-                        split
-                        for split in candidate_splits
-                        if id(split) in all_splits_set
-                    ]
-
-                    # Exit early if no new splits were kept
-                    if len(previous_depth_splits) == 0:
-                        break
-                else:
-                    # Original path when keep_best_n is not set or score_func is not provided
-                    # Remove new splits that have identical masks to any existing splits
-                    new_splits = _remove_redundant_splits(new_splits, all_splits)
-
-                    # Exit early if no new splits remain
-                    if len(new_splits) == 0:
-                        break
-
-                    # Merge identical splits among new splits
-                    new_splits = _merge_identical_splits(new_splits)
-
-                    # Exit early if no new splits remain
-                    if len(new_splits) == 0:
-                        break
-
-                    # Score new_splits if score_func is provided
-                    if self.score_func is not None:
-                        _score_splits(
-                            new_splits, profits, y, self.score_func, date_ordinals
-                        )
-
-                    # Add new splits to all_splits
-                    all_splits.extend(new_splits)
-
-                    # Keep only top n all_splits if keep_best_n is specified
-                    if self.keep_best_n is not None:
-                        all_splits = _keep_top_n_splits(all_splits, self.keep_best_n)
-
-                        # Update previous_depth_splits to contain only kept splits from new_splits
-                        all_splits_set = set(id(s) for s in all_splits)
-                        previous_depth_splits = [
-                            split for split in new_splits if id(split) in all_splits_set
-                        ]
-
-                        # Exit early if no new splits were kept
-                        if len(previous_depth_splits) == 0:
-                            break
-                    else:
-                        # Update previous_depth_splits for the next iteration
-                        previous_depth_splits = new_splits
-
-                # Print splits for this depth if verbose is enabled
-                if verbose == "best":
-                    if len(all_splits) > 0:
-                        best_split = max(
-                            all_splits,
-                            key=lambda s: (
-                                s.score if s.score is not None else float("-inf")
-                            ),
-                        )
-                        _print_splits_for_depth(depth, [best_split], self.score_func)
-                elif verbose == "all":
-                    _print_splits_for_depth(depth, all_splits, self.score_func)
+            all_splits.extend(new_splits)
+            if self.keep_best_n is not None:
+                all_splits = _keep_top_n_splits(all_splits, self.keep_best_n)
+                kept_splits = set(all_splits)
+                previous_depth_splits = [
+                    split for split in new_splits if split in kept_splits
+                ]
+            else:
+                previous_depth_splits = new_splits
+            self._print_depth_splits(depth, all_splits, verbose)
 
         # Convert filters_df to torch tensor X
         X = torch.tensor(  # pylint: disable=invalid-name
@@ -3559,6 +3627,7 @@ def prepare_splits(
     embargo_pct: float = 0.0,
     min_train_pct: float = 0.2,
     similarity_threshold: float = 1.0,
+    pregenerate_boolean_conjunctions: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor, list[Split]]:
     """
     Prepare splits and tensors for Option Alpha trading analysis.
@@ -3594,10 +3663,8 @@ def prepare_splits(
         separated. Default is None.
     max_depth : int, optional
         Maximum depth for generating child splits. Default is 1 (only depth 1 splits).
-        If greater than 1, child splits are generated by combining parent splits
-        with logical AND up to the specified depth. At depth 2, combines depth 1
-        splits with each other. At depths > 2, combines previous depth's new splits
-        with depth 1 splits.
+        Each filter condition consumes one depth. With boolean pregeneration enabled,
+        any conjunction of two-valued filters instead counts as one depth in total.
     min_samples : int, optional
         Minimum number of samples required on each side of a split. Default is 1.
         Only splits with at least min_samples samples on the selected side will be
@@ -3632,7 +3699,8 @@ def prepare_splits(
         Only used if score_func is not None.
     min_score_improvement : float | None, optional
         If not None, filters with score improvement less than this value will be removed
-        from depth_1_splits before merging. Only used if score_func is not None.
+        before merging. Filters with exactly two distinct aligned values bypass
+        cross-validation and this cutoff. Only used if score_func is not None.
         Default is None.
     purge_pct : float, optional
         Percentage of test set size to purge from end of training set during filter
@@ -3650,6 +3718,12 @@ def prepare_splits(
         Maximum allowed mask similarity before two parent splits are considered too
         similar to merge. Similarity is calculated as ``sum(a == b) / len(a)``.
         Default is 1.0.
+    pregenerate_boolean_conjunctions : bool, optional
+        Generate boolean-only conjunctions at depth 1 before scoring or pruning.
+        Default is False. Two-valued filters bypass evaluation in either mode.
+        When enabled, the generation printout separates original numeric and boolean
+        candidates from additional distinct boolean conjunction masks. Counts precede
+        evaluation and final mask merging.
 
     Returns
     -------
@@ -3672,10 +3746,10 @@ def prepare_splits(
     - For each filter column, splits are created at the midpoint between
       consecutive unique values.
     - Left splits include values <= threshold, right splits include values >= threshold.
-    - At depth 2, child splits are created by combining depth 1 splits with each other
-      (avoiding duplicates using j > i).
-    - At depths > 2, child splits are created by combining the previous depth's new
-      splits with the original depth 1 splits.
+    - By default, each filter condition consumes one depth, including booleans.
+    - With pregenerate_boolean_conjunctions enabled, boolean-only conjunctions
+      consume one depth in total and use the usual exclusion and mask-merging rules.
+      Their depth 1 Split objects can have nonempty parents.
     .. deprecated::
         Use :class:`SplitGenerator` instead. This function is kept for backwards
         compatibility but will be removed in a future version.
@@ -3699,5 +3773,6 @@ def prepare_splits(
         embargo_pct=embargo_pct,
         min_train_pct=min_train_pct,
         similarity_threshold=similarity_threshold,
+        pregenerate_boolean_conjunctions=pregenerate_boolean_conjunctions,
     )
     return generator.generate(trades_df, filters_df, spread_width, verbose)

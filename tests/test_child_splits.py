@@ -12,8 +12,8 @@ from ifera.optionalpha import (
 )
 
 
-def test_max_depth_1_no_child_splits():
-    """Test that max_depth=1 produces no child splits (default behavior)."""
+def test_max_depth_1_allows_only_atomic_or_boolean_conjunctions():
+    """Depth 1 permits a numeric condition or a conjunction of Boolean conditions."""
     trades_df = pd.DataFrame(
         {"risk": [100.0, 200.0, 150.0], "profit": [50.0, 100.0, 75.0]},
         index=pd.DatetimeIndex(["2022-01-10", "2022-01-11", "2022-01-12"], name="date"),
@@ -35,12 +35,16 @@ def test_max_depth_1_no_child_splits():
         max_depth=1,
     )
 
-    # All splits should have empty parents list (tier 1 splits)
+    boolean_indices = {
+        idx for idx in range(X.shape[1]) if torch.unique(X[:, idx]).numel() == 2
+    }
     for split in splits:
-        assert len(split.parents) == 0, "Tier 1 splits should have empty parents list"
-        assert (
-            len(split.filters) > 0
-        ), "Tier 1 splits should have non-empty filters list"
+        terms = split._get_dnf_terms()
+        assert terms, "Every split should have a filter representation"
+        for conjunction in terms:
+            assert len(conjunction) == 1 or all(
+                term[0] in boolean_indices for term in conjunction
+            ), "A depth 1 conjunction should contain only Boolean conditions"
 
 
 def test_max_depth_2_generates_child_splits():
@@ -78,9 +82,16 @@ def test_max_depth_2_generates_child_splits():
     assert len(child_splits) > 0, "Should have child splits with max_depth=2"
     assert len(tier1_splits) > 0, "Should still have tier 1 splits"
 
-    # Child splits should have empty filters list
+    # A Boolean conjunction may share a mask with a direct numeric condition.
     for split in child_splits:
-        assert len(split.filters) == 0, "Child splits should have empty filters list"
+        for filter_info in split.filters:
+            values = X[:, filter_info.filter_idx]
+            expected_mask = (
+                values <= filter_info.threshold
+                if filter_info.direction == "left"
+                else values >= filter_info.threshold
+            )
+            assert torch.equal(split.mask, expected_mask)
 
 
 def test_child_split_mask_is_and_of_parents():
@@ -566,17 +577,22 @@ def test_parent_indices_valid():
         max_depth=2,
     )
 
-    tier1_splits = [s for s in splits if len(s.parents) == 0]
     child_splits = [s for s in splits if len(s.parents) > 0]
 
-    # All parents should be Split objects from tier 1
-    tier1_set = set(tier1_splits)
+    # Flattened parents retain direct filter conditions, including merged aliases.
     for child in child_splits:
         for parent_set in child.parents:
-            assert parent_set.issubset(tier1_set), "Parents should be in tier 1 splits"
             assert all(
-                len(parent.parents) == 0 for parent in parent_set
-            ), "Parents should be tier 1 splits"
+                parent.filters for parent in parent_set
+            ), "Parents should retain direct filter representations"
+            for parent in parent_set:
+                assert any(
+                    torch.equal(parent.mask, split.mask) for split in splits
+                ), "Each parent mask should have a returned split representation"
+            expected_mask = torch.ones_like(child.mask)
+            for parent in parent_set:
+                expected_mask &= parent.mask
+            assert torch.equal(child.mask, expected_mask)
 
 
 def test_generate_child_splits_accepts_iterables():

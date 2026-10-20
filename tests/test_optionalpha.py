@@ -751,7 +751,7 @@ def test_prepare_splits_basic():
         assert hasattr(split, "mask")
         assert hasattr(split, "filters")
         assert isinstance(split.filters, list)
-        assert len(split.filters) > 0
+        assert split.filters or split.parents
         # Each filter tuple should have 4 elements: (filter_idx, filter_name, threshold, direction)
         for filter_tuple in split.filters:
             assert len(filter_tuple) == 4
@@ -1063,10 +1063,16 @@ def test_prepare_splits_exclusion_empty_intersection():
         trades_df, filters_df, 20, [], [], torch.device("cpu"), torch.float32
     )
 
-    # Check that splits with empty intersection don't appear as child splits at depth 2
-    # Since we're at max_depth=1, we should only have depth 1 splits
+    # Depth 1 may include Boolean conjunctions, but never empty intersections.
+    boolean_indices = {
+        idx for idx in range(X.shape[1]) if torch.unique(X[:, idx]).numel() == 2
+    }
     for split in splits:
-        assert len(split.parents) == 0, "Should only have depth 1 splits"
+        assert split.mask.any(), "An empty intersection should not produce a split"
+        for conjunction in split._get_dnf_terms():
+            assert len(conjunction) == 1 or all(
+                term[0] in boolean_indices for term in conjunction
+            ), "Depth 1 conjunctions should contain only Boolean conditions"
 
 
 def test_prepare_splits_device_dtype():
@@ -1403,21 +1409,29 @@ def test_prepare_splits_depth_2_uses_cached_masks():
         min_samples=1,
     )
 
-    # Should have depth 1 and depth 2 splits
-    depth_1_splits = [s for s in splits if len(s.parents) == 0]
-    depth_2_splits = [s for s in splits if len(s.parents) > 0]
+    atomic_splits = [split for split in splits if split.filters]
+    composite_splits = [split for split in splits if split.parents]
 
-    # Verify we have both depth 1 and depth 2 splits
-    assert len(depth_1_splits) > 0, "Should have depth 1 splits"
-    assert len(depth_2_splits) > 0, "Should have depth 2 splits"
+    assert atomic_splits, "Should have original filter conditions"
+    assert composite_splits, "Should have conjunctions of filter conditions"
 
-    # Verify depth 2 splits have parents
-    depth_1_set = set(depth_1_splits)
-    for split in depth_2_splits:
-        assert len(split.parents) > 0, "Depth 2 splits should have parents"
-        # Each parent set should be from depth 1
+    boolean_indices = {
+        idx for idx in range(X.shape[1]) if torch.unique(X[:, idx]).numel() == 2
+    }
+    for split in composite_splits:
+        for conjunction in split._get_dnf_terms():
+            numeric_count = sum(term[0] not in boolean_indices for term in conjunction)
+            boolean_depth = int(any(term[0] in boolean_indices for term in conjunction))
+            assert numeric_count + boolean_depth <= 2
         for parent_set in split.parents:
-            assert parent_set.issubset(depth_1_set)
+            expected_mask = torch.ones_like(split.mask)
+            for parent in parent_set:
+                assert parent.filters
+                assert any(
+                    torch.equal(parent.mask, atomic.mask) for atomic in atomic_splits
+                )
+                expected_mask &= parent.mask
+            assert torch.equal(split.mask, expected_mask)
 
 
 def test_merge_identical_splits_large_dataset():

@@ -44,6 +44,7 @@ def walk_forward_capital_allocation_from_csv(
     allocation_tolerance: float | None = None,
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
+    unrealized_pnl_method: str = "linear",
 ) -> WalkForwardPortfolioAllocationResult:
     """Run rolling portfolio optimization and report out-of-sample results."""
     from .walk_forward_allocation import (  # pylint: disable=import-outside-toplevel
@@ -83,4 +84,5 @@ def walk_forward_capital_allocation_from_csv(
         allocation_tolerance=allocation_tolerance,
         objective=objective,
         CMGR_limit=CMGR_limit,
+        unrealized_pnl_method=unrealized_pnl_method,
     )
