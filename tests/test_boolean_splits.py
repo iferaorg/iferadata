@@ -386,8 +386,8 @@ def test_identical_boolean_children_merge_and_preserve_parent_alternatives():
     assert len(parent_sets) == len(set(parent_sets))
 
 
-def test_keep_best_n_runs_after_complete_boolean_closure():
-    """Pruning atomic masks must not lose a better three-boolean conjunction."""
+def test_keep_best_n_can_reach_deeper_boolean_conjunctions():
+    """A retained boolean frontier can keep improving through three-filter conjunctions."""
     rows = list(product([0, 1], repeat=3))
     columns = {name: [row[index] for row in rows] for index, name in enumerate("abc")}
 

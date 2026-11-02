@@ -178,6 +178,31 @@ def masked_sharpe(
     return sharpe_ratio
 
 
+def masked_sortino(
+    profits: torch.Tensor,
+    returns: torch.Tensor,
+    mask: torch.Tensor,
+    date_ordinals: torch.Tensor,
+) -> torch.Tensor:
+    del profits
+    calendar_ordinals = _calendar_day_ordinals(date_ordinals)
+    date_indices = (date_ordinals - calendar_ordinals[0]).to(torch.long)
+    padded_returns = torch.zeros(
+        (mask.shape[0], calendar_ordinals.shape[0]),
+        dtype=returns.dtype,
+        device=returns.device,
+    )
+    padded_returns.scatter_add_(
+        1,
+        date_indices.unsqueeze(0).expand(mask.shape[0], -1),
+        returns.unsqueeze(0) * mask.to(returns.dtype),
+    )
+    mean_return = torch.mean(padded_returns, dim=1)
+    downside_std = torch.sqrt(torch.mean(torch.clamp(padded_returns, max=0) ** 2, dim=1))
+    sortino_ratio = mean_return * 365.25 / (downside_std * (365.25**0.5) + 1.0)
+    return sortino_ratio
+
+
 def masked_total_profit(
     profits: torch.Tensor,
     returns: torch.Tensor,
@@ -331,13 +356,14 @@ generator = ifera.SplitGenerator(
     max_splits_per_filter=64,
     max_depth=4,
     min_samples=20,
-    score_func=masked_sharpe, # masked_dd_score,
-    keep_best_n=64,
+    score_func=masked_sortino, # masked_dd_score,
+    keep_best_n=128,
     filter_granularities=granularities,
     filter_eval_folds=4,
     filter_eval_repeats=512,
     min_score_improvement=0.01,
     purge_pct=0.01,
+    pregenerate_boolean_conjunctions=True,
 )
 
 t = time.time()

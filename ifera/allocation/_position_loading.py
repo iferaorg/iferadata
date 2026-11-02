@@ -19,6 +19,7 @@ from ._portfolio_blocking import (
     _matching_column,
     parse_strategy_trade_legs,
 )
+from ._portfolio_returns import strategy_return_expression
 from ._position_model import PositionModel, PositionTrade
 
 _OPTION_COLUMNS = ("Symbol", "Exp", "Legs")
@@ -45,11 +46,11 @@ def _required_column(frame: pl.DataFrame, name: str, path: Path) -> str:
 
 
 def _strategy_trades(
-    raw: pl.DataFrame, path: Path, strategy_index: int
+    raw: pl.DataFrame, path: Path, strategy_index: int, fees_per_leg: float = 0.0
 ) -> tuple[pl.DataFrame, pl.DataFrame | None]:
     """Normalize individual trades and, when supplied, their option-leg data."""
     opened_column = _required_column(raw, "Opened", path)
-    return_column = _required_column(raw, "ROR", path)
+    return_expression = strategy_return_expression(raw, path, fees_per_leg)
     closed_column = _matching_column(raw.columns, "Closed")
     opened = _datetime_expression(opened_column)
     if closed_column is None:
@@ -64,9 +65,7 @@ def _strategy_trades(
             pl.col("trade_index").cast(pl.Int64),
             opened.alias("opened"),
             closed.alias("closed"),
-            (pl.col(return_column).cast(pl.Float64, strict=True) / 100.0).alias(
-                "return_on_risk"
-            ),
+            return_expression.alias("return_on_risk"),
         )
     except pl.exceptions.PolarsError as exc:
         raise ValueError(f"Could not parse {path.name}: {exc}") from exc
@@ -137,6 +136,7 @@ def load_position_model(
     strategy_names: tuple[str, ...],
     valuation_method: str,
     market_dates: Callable[[date, date], pl.DataFrame],
+    fees_per_leg: float = 0.0,
 ) -> PositionModel | None:
     """Load a trade ledger only for multi-day or multiple-entry strategies.
 
@@ -155,7 +155,7 @@ def load_position_model(
     ):
         return None
     loaded = tuple(
-        _strategy_trades(raw, path, strategy_index)
+        _strategy_trades(raw, path, strategy_index, fees_per_leg)
         for strategy_index, (raw, path) in enumerate(zip(raw_frames, csv_paths))
     )
     trades = pl.concat([frame for frame, _ in loaded], how="vertical").sort(

@@ -98,6 +98,7 @@ def walk_forward_capital_allocation_from_csv(
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
     unrealized_pnl_method: str = "linear",
+    fees_per_leg: float = 0.0,
 ) -> portfolio.WalkForwardPortfolioAllocationResult:
     """Optimize rolling training windows and simulate allocations out of sample.
 
@@ -116,6 +117,13 @@ def walk_forward_capital_allocation_from_csv(
     concatenated out-of-sample returns. Historical ADD is reported; bootstrap
     ADD is intentionally omitted. Strategy returns and optimizer inputs use
     ``returns_dtype``, which defaults to ``polars.Float32``.
+
+    ``fees_per_leg`` is a nonnegative per-contract, per-leg transaction fee.
+    Returns are recomputed from P/L minus quantity-scaled fees, divided by Risk.
+    Expired trades pay only entry fees; other statuses pay entry and exit fees.
+    The same net returns feed training, strategy selection, and simulation.
+    Multi-day positions use the net terminal return with the selected mark
+    method. At zero fees, legacy ROR-only files remain supported.
 
     Without strategy-selection limits, ``allocation_alpha`` applies one
     recursive EMA to consecutive fold optima. With any selection limit, a
@@ -186,7 +194,7 @@ def walk_forward_capital_allocation_from_csv(
         portfolio_block_list,
         position_model,
     ) = portfolio._load_portfolio_inputs(
-        portfolio_name, returns_dtype, unrealized_pnl_method
+        portfolio_name, returns_dtype, unrealized_pnl_method, fees_per_leg
     )
     if position_model is not None and selection_requested:
         raise ValueError(

@@ -1682,6 +1682,17 @@ def _find_identical_mask_groups(masks: torch.Tensor) -> torch.Tensor:
     return group_ids
 
 
+def _split_mask_keys(splits: list[Split]) -> list[bytes]:
+    """Pack exact mask keys in bounded batches without pairwise GPU comparisons."""
+    keys: list[bytes] = []
+    for start in range(0, len(splits), 1024):
+        masks = torch.stack([split.mask for split in splits[start : start + 1024]])
+        packed_masks = np.packbits(masks.detach().cpu().numpy(), axis=1)
+        length_prefix = masks.shape[1].to_bytes(8, "little")
+        keys.extend(length_prefix + row.tobytes() for row in packed_masks)
+    return keys
+
+
 def _merge_identical_splits(splits: list[Split]) -> list[Split]:
     """
     Merge splits with identical masks.
@@ -1696,41 +1707,21 @@ def _merge_identical_splits(splits: list[Split]) -> list[Split]:
     list[Split]
         List of merged Split objects
     """
-    if len(splits) == 0:
-        return splits
-
-    # Stack all masks into a 2D tensor (n_splits x n_samples)
-    all_masks = torch.stack([split.mask for split in splits], dim=0)
-
-    # Find groups of identical masks
-    group_ids = _find_identical_mask_groups(all_masks)
-
-    # Get unique group ids and build merged splits
-    unique_groups = torch.unique(group_ids, sorted=True)
+    groups: dict[bytes, list[Split]] = {}
+    for key, split in zip(_split_mask_keys(splits), splits):
+        groups.setdefault(key, []).append(split)
     merged_splits: list[Split] = []
-
-    for group_id in unique_groups:
-        group_id_int = int(group_id.item())
-        # Find all splits in this group
-        group_mask = group_ids == group_id
-        group_indices = group_mask.nonzero(as_tuple=True)[0]
-
-        # Merge filters and parents from all splits in the group
-        merged_filters = []
-        merged_parents: list[set[Split]] = []
-        for idx in group_indices:
-            idx_int = int(idx.item())
-            merged_filters.extend(splits[idx_int].filters)
-            merged_parents.extend(splits[idx_int].parents)
-
-        # Create merged split using the mask from the first split in the group
+    for group in groups.values():
         merged_split = Split(
-            mask=splits[group_id_int].mask,
-            filters=merged_filters,
-            parents=_deduplicate_parent_sets(merged_parents),
+            mask=group[0].mask,
+            filters=list(
+                dict.fromkeys(info for split in group for info in split.filters)
+            ),
+            parents=_deduplicate_parent_sets(
+                [parents for split in group for parents in split.parents]
+            ),
         )
-        # Preserve the score from the first split in the group
-        merged_split.score = splits[group_id_int].score
+        merged_split.score = group[0].score
         merged_splits.append(merged_split)
 
     return merged_splits
@@ -2071,16 +2062,42 @@ def _remove_redundant_splits(
     if len(new_splits) == 0 or len(old_splits) == 0:
         return new_splits
 
-    # Stack masks for vectorized comparison
-    new_masks = torch.stack([split.mask for split in new_splits], dim=0)
-    old_masks = torch.stack([split.mask for split in old_splits], dim=0)
+    old_keys = set(_split_mask_keys(old_splits))
+    return [
+        split
+        for key, split in zip(_split_mask_keys(new_splits), new_splits)
+        if key not in old_keys
+    ]
 
-    # Use compiled function to find which splits to keep
-    keep_mask = _find_redundant_mask_indices(new_masks, old_masks)
-    keep_indices = keep_mask.nonzero(as_tuple=True)[0]
 
-    # Return only new splits that don't match any old split
-    return [new_splits[i] for i in keep_indices.tolist()]
+def _prune_boolean_splits(
+    splits: list[Split],
+    keep_best_n: int | None,
+    score_func,
+    profits: torch.Tensor | None,
+    returns: torch.Tensor | None,
+    date_ordinals: torch.Tensor | None,
+) -> list[Split]:
+    """Score fresh boolean candidates in batches and retain the global best beam."""
+    if keep_best_n is None:
+        return splits
+    if (
+        score_func is None
+        or profits is None
+        or returns is None
+        or date_ordinals is None
+    ):
+        raise ValueError("Boolean pruning requires a score function and trade tensors")
+    unscored = [split for split in splits if split.score is None]
+    for start in range(0, len(unscored), 1024):
+        _score_splits(
+            unscored[start : start + 1024], profits, returns, score_func, date_ordinals
+        )
+    kept = _keep_top_n_splits(splits, keep_best_n)
+    # Child masks are views; compact winners so they do not pin rejected GPU rows.
+    for split in kept:
+        split.mask = split.mask.clone()
+    return kept
 
 
 def _generate_boolean_splits(
@@ -2088,23 +2105,38 @@ def _generate_boolean_splits(
     device: torch.device,
     min_samples: int,
     similarity_threshold: float,
+    *,
+    score_func=None,
+    keep_best_n: int | None = None,
+    profits: torch.Tensor | None = None,
+    returns: torch.Tensor | None = None,
+    date_ordinals: torch.Tensor | None = None,
+    verbose: str = "no",
 ) -> list[Split]:
-    """Build all distinct boolean conjunctions before depth or score pruning.
+    """Build boolean conjunctions, applying the configured beam at every round.
 
     Extend each frontier with individual boolean splits using the same exclusion
-    rules as ordinary child generation. Every accepted intersection is a strict
-    subset of both parents, so processing only new masks reaches a fixed point.
-    Parent sets retain the original filters for rendering and later conjunctions.
+    rules as ordinary child generation. With keep_best_n, score and prune both the
+    first frontier and every subsequent combination depth. Return all original atoms
+    plus at most keep_best_n retained conjunctions for later numeric combinations.
+    Without a beam, generation remains exhaustive. Seen mask keys consume host
+    memory without retaining rejected GPU masks or a quadratic comparison matrix.
     """
     atoms = _merge_identical_splits(splits)
     if len(atoms) < 2:
         return atoms
 
-    all_splits = atoms.copy()
-    representations = atoms.copy()
-    frontier = atoms
+    originals = atoms.copy()
+    original_keys = set(_split_mask_keys(atoms))
+    seen_keys = original_keys.copy()
+    best_splits = _prune_boolean_splits(
+        atoms, keep_best_n, score_func, profits, returns, date_ordinals
+    )
+    frontier = best_splits
     atom_masks = torch.stack([split.mask for split in atoms], dim=0)
+    combination_depth = 1
     while frontier:
+        combination_depth += 1
         exclusions = _calculate_exclusion_mask(
             frontier,
             atoms,
@@ -2115,13 +2147,34 @@ def _generate_boolean_splits(
         )
         children = _generate_child_splits(frontier, atoms, exclusions)
         children = _merge_identical_splits(children)
-        representations.extend(children)
-        frontier = _remove_redundant_splits(children, all_splits)
-        all_splits.extend(frontier)
+        child_keys = _split_mask_keys(children)
+        originals = _merge_identical_splits(
+            originals
+            + [
+                split
+                for key, split in zip(child_keys, children)
+                if key in original_keys
+            ]
+        )
+        candidates = _merge_identical_splits(best_splits + children)
+        best_splits = _prune_boolean_splits(
+            candidates, keep_best_n, score_func, profits, returns, date_ordinals
+        )
+        frontier = [
+            split
+            for key, split in zip(_split_mask_keys(best_splits), best_splits)
+            if key not in seen_keys
+        ]
+        seen_keys.update(child_keys)
+        if verbose != "no":
+            print(
+                f"Boolean conjunction depth {combination_depth}: "
+                f"generated {len(children)} unique candidates, "
+                f"kept {len(best_splits)}, next frontier {len(frontier)}."
+            )
 
-    # All rounds have the same effective depth, so retain aliases of earlier masks.
-    # Original atoms stay unchanged to keep the parent graph acyclic.
-    return _merge_identical_splits(representations)
+    # Merge aliases into new objects, leaving the original parent atoms acyclic.
+    return _merge_identical_splits(originals + best_splits)
 
 
 def _has_numeric_only_representation(
@@ -3056,7 +3109,10 @@ class SplitGenerator:
         float tensor containing a score for each batch. Default is None.
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
-        score_func must also be provided. Default is None.
+        score_func must also be provided. Also bounds the frontier and retained
+        candidates at every boolean combination depth when pregeneration is enabled.
+        This beam search can prune branches whose later conjunctions would score well.
+        Default is None (exhaustive boolean generation).
     filter_granularities : dict[str, float] | None, optional
         Dictionary mapping filter names to granularity values. Default is None.
     filter_eval_folds : int, optional
@@ -3081,11 +3137,13 @@ class SplitGenerator:
         similar to merge. Similarity is calculated as ``sum(a == b) / len(a)``.
         Default is 1.0.
     pregenerate_boolean_conjunctions : bool, optional
-        Generate boolean-only conjunctions at depth 1 before scoring or pruning.
+        Generate boolean-only conjunctions at depth 1 before the main search.
         Default is False. Two-valued filters bypass evaluation in either mode.
-        When enabled, the generation printout separates original numeric and boolean
-        candidates from additional distinct boolean conjunction masks. Counts precede
-        evaluation and final mask merging.
+        With keep_best_n, score and prune every boolean combination depth, preserving
+        original atoms plus the retained conjunctions as main-search extensions.
+        The generation printout separates original numeric and boolean candidates
+        from additional retained boolean conjunction masks. Counts precede numeric
+        filter evaluation and final mask merging.
 
     Examples
     --------
@@ -3284,7 +3342,16 @@ class SplitGenerator:
         original_boolean_count = len(boolean_splits)
         if self.pregenerate_boolean_conjunctions:
             boolean_splits = _generate_boolean_splits(
-                boolean_splits, self.device, self.min_samples, self.similarity_threshold
+                boolean_splits,
+                self.device,
+                self.min_samples,
+                self.similarity_threshold,
+                score_func=self.score_func,
+                keep_best_n=self.keep_best_n,
+                profits=profits,
+                returns=returns,
+                date_ordinals=date_ordinals,
+                verbose=verbose,
             )
             additional_count = sum(not split.filters for split in boolean_splits)
             total_count = (
@@ -3480,8 +3547,8 @@ class SplitGenerator:
         - Filters with exactly two distinct aligned values always bypass evaluation.
         - By default, each later depth adds one filter condition, including boolean
           conditions. With pregenerate_boolean_conjunctions enabled, boolean groups
-          are expanded at depth 1 before scoring or pruning using the same exclusion
-          and mask-merging rules as other children.
+          are expanded at depth 1 using the same exclusion and mask-merging rules
+          as other children, with keep_best_n applied at every combination depth.
         - With pregeneration, each later depth adds a non-boolean condition or the
           first boolean block to a split with a numeric-only representation.
           With keep_best_n, only retained children are extended in either mode.
@@ -3676,7 +3743,10 @@ def prepare_splits(
         float tensor containing a score for each batch. Default is None.
     keep_best_n : int | None, optional
         If not None, keep only the top n splits based on their scores. If set,
-        score_func must also be provided. Default is None.
+        score_func must also be provided. Also bounds the frontier and retained
+        candidates at every boolean combination depth when pregeneration is enabled.
+        This beam search can prune branches whose later conjunctions would score well.
+        Default is None (exhaustive boolean generation).
     verbose : str, optional
         Controls printing of splits. Default is "no".
         - "no": No printing
@@ -3719,11 +3789,13 @@ def prepare_splits(
         similar to merge. Similarity is calculated as ``sum(a == b) / len(a)``.
         Default is 1.0.
     pregenerate_boolean_conjunctions : bool, optional
-        Generate boolean-only conjunctions at depth 1 before scoring or pruning.
+        Generate boolean-only conjunctions at depth 1 before the main search.
         Default is False. Two-valued filters bypass evaluation in either mode.
-        When enabled, the generation printout separates original numeric and boolean
-        candidates from additional distinct boolean conjunction masks. Counts precede
-        evaluation and final mask merging.
+        With keep_best_n, score and prune every boolean combination depth, preserving
+        original atoms plus the retained conjunctions as main-search extensions.
+        The generation printout separates original numeric and boolean candidates
+        from additional retained boolean conjunction masks. Counts precede numeric
+        filter evaluation and final mask merging.
 
     Returns
     -------

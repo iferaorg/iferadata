@@ -22,6 +22,7 @@ from ifera.settings import settings
 from . import capital_allocation
 from ._capital_allocation_blocks import Block
 from ._portfolio_blocking import build_block_list, parse_strategy_trade_legs
+from ._portfolio_returns import strategy_return_expression, validate_fees_per_leg
 from ._position_loading import load_position_model
 from ._position_model import PositionModel
 from ._position_reporting import (
@@ -214,14 +215,18 @@ def find_optimal_capital_allocation_from_csv(
     objective: str = "kelly",
     CMGR_limit: float | None = None,  # pylint: disable=invalid-name
     unrealized_pnl_method: str = "linear",
+    fees_per_leg: float = 0.0,
 ) -> PortfolioAllocationResult:
     """Optimize and report allocations for the CSV strategies in a portfolio.
 
     CSV files are read from ``DATA_FOLDER/results/portfolios/{portfolio_name}``.
-    Each file is one strategy with case-insensitive ``Opened`` and ``ROR`` columns.
-    ``Opened`` is reduced to a date, and ``ROR / 100`` is used as the daily
-    return on risk. Complete ``Closed``, ``Symbol``, ``Exp``, and ``Legs`` metadata
-    identifies overlapping trades with conflicting option legs, which are
+    Each file is one strategy with case-insensitive column names. Returns are
+    recomputed as ``(P/L - fees_per_leg * leg_count * Quantity * sides) / Risk``,
+    where sides is one for expired trades and two otherwise. With zero fees,
+    legacy files lacking P/L and Risk may still supply ``ROR / 100`` instead.
+    ``Opened`` is reduced to a date. Complete ``Closed``, ``Symbol``, ``Exp``,
+    and ``Legs`` metadata identifies overlapping trades with conflicting option
+    legs, which are
     converted to allocation-dependent block relationships. When Closed timestamps
     show overnight trades or multiple entries per strategy/day, a position ledger
     sizes each new trade from start-of-day net liquidation and keeps that risk
@@ -298,6 +303,11 @@ def find_optimal_capital_allocation_from_csv(
             Used only when position-ledger accounting is required. Correlations
             use the resulting daily unit-risk proxies; bootstrap resamples the
             simulated portfolio daily returns, with shared indices for candidates.
+        fees_per_leg: Nonnegative fee per leg, per contract, per transaction side,
+            in the same currency units as P/L and Risk. Expired positions pay
+            entry fees only; all other statuses pay entry and exit fees. Nonzero
+            fees require P/L, Risk, Quantity, Status, and Legs columns. Multi-day
+            positions use the net terminal return with the selected mark method.
 
     Returns:
         Strategy names, optimal allocation, combined daily results, financial
@@ -326,7 +336,9 @@ def find_optimal_capital_allocation_from_csv(
         returns_tensor,
         block_list,
         position_model,
-    ) = _load_portfolio_inputs(portfolio_name, returns_dtype, unrealized_pnl_method)
+    ) = _load_portfolio_inputs(
+        portfolio_name, returns_dtype, unrealized_pnl_method, fees_per_leg
+    )
 
     optimizer_diagnostics = capital_allocation.CapitalAllocationDiagnostics()
     optimizer = capital_allocation.find_optimal_capital_allocation
@@ -511,10 +523,12 @@ def _validate_returns_dtype(value: object) -> type[pl.DataType]:
 
 
 def _load_strategy_csv(
-    path: Path, returns_dtype: type[pl.DataType] = pl.Float32
+    path: Path,
+    returns_dtype: type[pl.DataType] = pl.Float32,
+    fees_per_leg: float = 0.0,
 ) -> pl.DataFrame:
     """Load and validate one strategy's dated fractional daily returns."""
-    strategy_frame, _ = _load_strategy_csv_data(path, returns_dtype, 0)
+    strategy_frame, _ = _load_strategy_csv_data(path, returns_dtype, 0, fees_per_leg)
     return strategy_frame
 
 
@@ -522,6 +536,7 @@ def _load_strategy_csv_data(
     path: Path,
     returns_dtype: type[pl.DataType],
     strategy_index: int,
+    fees_per_leg: float = 0.0,
 ) -> tuple[pl.DataFrame, pl.DataFrame | None]:
     """Load daily returns and normalized option-leg metadata from one CSV."""
     returns_dtype_value = _validate_returns_dtype(returns_dtype)
@@ -533,7 +548,7 @@ def _load_strategy_csv_data(
         raise ValueError(f"Strategy CSV is empty: {path.name}")
 
     opened_column = _required_column(raw_frame.columns, "Opened", path)
-    return_column = _required_column(raw_frame.columns, "ROR", path)
+    return_expression = strategy_return_expression(raw_frame, path, fees_per_leg)
     has_option_metadata = any(
         column.strip().casefold() in {"symbol", "exp", "legs"}
         for column in raw_frame.columns
@@ -546,11 +561,7 @@ def _load_strategy_csv_data(
     try:
         strategy_frame = raw_frame.select(
             _opened_date_expression(opened_column),
-            (
-                (pl.col(return_column).cast(pl.Float64, strict=True) / 100.0).cast(
-                    returns_dtype_value, strict=True
-                )
-            ).alias("return"),
+            return_expression.cast(returns_dtype_value, strict=True).alias("return"),
         )
     except pl.exceptions.PolarsError as exc:
         raise ValueError(f"Could not parse {path.name}: {exc}") from exc
@@ -632,6 +643,7 @@ def _synchronize_strategy_returns(
 def _load_portfolio_returns(
     portfolio_name: str,
     returns_dtype: type[pl.DataType] = pl.Float32,
+    fees_per_leg: float = 0.0,
 ) -> tuple[tuple[str, ...], pl.DataFrame, torch.Tensor, tuple[Block, ...]]:
     """Load, validate, and synchronize every strategy in a named portfolio."""
     portfolio_path = _portfolio_path(portfolio_name)
@@ -639,7 +651,7 @@ def _load_portfolio_returns(
     strategy_names = tuple(path.stem for path in csv_paths)
     _validate_strategy_names(strategy_names)
     loaded_strategies = tuple(
-        _load_strategy_csv_data(path, returns_dtype, strategy_index)
+        _load_strategy_csv_data(path, returns_dtype, strategy_index, fees_per_leg)
         for strategy_index, path in enumerate(csv_paths)
     )
     strategy_frames = tuple(strategy[0] for strategy in loaded_strategies)
@@ -656,21 +668,26 @@ def _load_portfolio_inputs(
     portfolio_name: str,
     returns_dtype: type[pl.DataType],
     unrealized_pnl_method: str,
+    fees_per_leg: float = 0.0,
 ) -> tuple[
     tuple[str, ...], pl.DataFrame, torch.Tensor, tuple[Block, ...], PositionModel | None
 ]:
     """Detect position accounting while preserving the ordinary daily input path."""
     _validate_returns_dtype(returns_dtype)
+    fees_value = validate_fees_per_leg(fees_per_leg)
     if unrealized_pnl_method not in ("linear", "close_only"):
         raise ValueError("unrealized_pnl_method must be 'linear' or 'close_only'")
     csv_paths = _portfolio_csv_paths(_portfolio_path(portfolio_name))
     names = tuple(path.stem for path in csv_paths)
     _validate_strategy_names(names)
     model = load_position_model(
-        csv_paths, names, unrealized_pnl_method, _nyse_market_dates
+        csv_paths, names, unrealized_pnl_method, _nyse_market_dates, fees_value
     )
     if model is None:
-        return (*_load_portfolio_returns(portfolio_name, returns_dtype), None)
+        return (
+            *_load_portfolio_returns(portfolio_name, returns_dtype, fees_value),
+            None,
+        )
     frame = position_return_frame(model, returns_dtype)
     return names, frame, frame.select(names).to_torch(), (), model
 
