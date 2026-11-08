@@ -5,11 +5,10 @@ from __future__ import annotations
 import sys
 from copy import deepcopy
 from itertools import product
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import torch
 import yaml
-
 
 # Type aliases for better readability
 ActionDict = Dict[str, Any]  # Actions can have various value types

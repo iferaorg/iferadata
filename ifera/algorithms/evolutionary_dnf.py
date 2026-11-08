@@ -13,7 +13,7 @@ The objective has signature ``objective(bounds, active_conjunctions) -> values``
 * ``values`` must be a floating tensor shaped ``(batch,)`` on the same device,
   containing finite, strictly positive objective values to maximize.
 
-The callback must score candidates independently of batch size and order, and
+The objective must score candidates independently of batch size and order, and
 must neither mutate nor retain its input tensors. Deterministic scores preserve
 the meaning of elitism. It alone accesses observations or feature distributions.
 Optimization runs without autograd. Results and callback inputs use the selected
@@ -33,6 +33,13 @@ A Boolean literal costs one condition. Each nontrivial continuous bound costs
 one inequality, so an interior interval costs two. Inactive clauses cost nothing.
 This counts syntactic conditions, without logical minimization. Penalties are
 dimensionless: rescaling all objective values preserves the fitness ranking.
+
+An optional observer can be installed with ``set_evaluation_callback(callback)``.
+After each complete population evaluation it receives
+``callback(generation, bounds, active, objective, score)``. Generation zero is the
+initial population; subsequent generations are numbered one through the requested
+count. The tensors are the population's actual storage, without copies or device
+transfers. Treat them as read-only; retaining them keeps that storage alive.
 """
 
 from dataclasses import dataclass
@@ -45,6 +52,7 @@ import torch
 from torch import Tensor
 
 Objective = Callable[[Tensor, Tensor], Tensor]
+EvaluationCallback = Callable[[int, Tensor, Tensor, Tensor, Tensor], None]
 
 
 def _is_memory_error(error: Exception) -> bool:
@@ -258,6 +266,38 @@ class EvolutionaryDNFOptimizer:
         self.num_features = num_boolean_features + num_continuous_features
         self._genome_bytes = max_conjunctions * (self.num_features * 8 + 1)
         self._workspace_bytes = max(256, self._genome_bytes * 32 + tournament_size * 48)
+        self._evaluation_callback: Optional[EvaluationCallback] = None
+
+    def set_evaluation_callback(self, callback: Optional[EvaluationCallback]) -> None:
+        """Install or replace the evaluation observer; pass ``None`` to disable it.
+
+        The signature is ``callback(generation, bounds, active, objective, score)``.
+        It runs once after all evaluation batches finish, including generation
+        zero, with the entire current population and its cached elites. Bounds
+        have shape ``(population, max_conjunctions, features, 2)``; active flags
+        have shape ``(population, max_conjunctions)``; objective and score each
+        have shape ``(population,)`` and contain raw values and penalized fitness.
+
+        All tensors are passed directly by reference on their existing device.
+        The observer must not modify them. Retaining references prolongs their
+        storage lifetime. It runs without autograd, its return value is ignored,
+        and its exceptions propagate without evaluation retries. Registration
+        persists across optimize calls; generation numbering restarts each run.
+        """
+        if callback is not None and not callable(callback):
+            raise TypeError("evaluation callback must be callable or None")
+        self._evaluation_callback = callback
+
+    def _notify_evaluation(self, generation: int, population: _Population) -> None:
+        """Pass completed population tensors to the current observer without copies."""
+        if self._evaluation_callback is not None:
+            self._evaluation_callback(
+                generation,
+                population.bounds,
+                population.active,
+                population.objectives,
+                population.scores,
+            )
 
     @staticmethod
     def _validate_parameters(parameters: dict[str, object]) -> None:
@@ -706,6 +746,8 @@ class EvolutionaryDNFOptimizer:
         deterministic objectives. Requested population is an upper bound and may
         shrink as free memory changes. There are no per-individual/feature loops;
         Python loops cover only generations, memory chunks, and allocator retries.
+        An installed evaluation callback receives the complete population after
+        each evaluation, starting at generation zero, without cloning its tensors.
         """
         if not callable(objective):
             raise TypeError("objective must be callable")
@@ -734,12 +776,14 @@ class EvolutionaryDNFOptimizer:
         evaluations, batch_limit = self._evaluate(
             objective, population, self.objective_batch_size or population.size
         )
-        for _ in range(generations):
+        self._notify_evaluation(0, population)
+        for generation in range(1, generations + 1):
             population, elites = self._generation(population, generator)
             new_evaluations, batch_limit = self._evaluate(
                 objective, population, batch_limit, elites
             )
             evaluations += new_evaluations
+            self._notify_evaluation(generation, population)
         best = int(population.scores.argmax().item())
         bounds = population.bounds[best].clone()
         active = population.active[best].clone()

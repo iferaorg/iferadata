@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from algorithms.graphplan import GraphPlan
+from ifera.algorithms.graphplan import GraphPlan
 
 
 def test_graphplan_sample():

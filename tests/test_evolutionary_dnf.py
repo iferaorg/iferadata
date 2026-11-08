@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from algorithms import evolutionary_dnf
-from algorithms.evolutionary_dnf import EvolutionaryDNFOptimizer
+from ifera.algorithms import evolutionary_dnf
+from ifera.algorithms.evolutionary_dnf import EvolutionaryDNFOptimizer
 
 
 def _matches(bounds, active_conjunctions, features):

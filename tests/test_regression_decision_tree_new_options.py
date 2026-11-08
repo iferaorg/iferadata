@@ -3,7 +3,7 @@
 import torch
 import pytest
 
-from algorithms.regression_decision_tree import RegressionDecisionTree
+from ifera.algorithms.regression_decision_tree import RegressionDecisionTree
 
 
 def test_criterion_parameter_validation():

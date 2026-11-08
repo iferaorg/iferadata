@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from algorithms.evolutionary_dnf import EvolutionaryDNFOptimizer, _Population
+from ifera.algorithms.evolutionary_dnf import EvolutionaryDNFOptimizer, _Population
 
 
 def _population(scores):
