@@ -12,7 +12,7 @@ networkx==3.6.1
 requests==2.33.0
 beautifulsoup4==4.15.0
 python-dateutil==2.9.0.post0
-holidays==0.88
+holidays==0.107
 readerwriterlock==1.0.9
 rich==15.0.0
 tensordict==0.15.6
