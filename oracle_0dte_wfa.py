@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
-from sqlalchemy import create_engine, Engine
+from sqlalchemy import create_engine, Engine, text
 from tqdm.auto import tqdm
 
 warnings.filterwarnings("default")
@@ -1922,9 +1922,11 @@ def main(run_analysis: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
     print(f"Using device: {DEVICE}")
     print("Connecting to Oracle...")
     engine = create_engine(f"oracle+oracledb://{user}:{password}@{dsn}")
-    print("✅ Connected to Oracle successfully.")
 
     try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1 FROM dual"))
+        print("✅ Connected to Oracle successfully.")
         static_data = load_static_backtest_data(engine)
 
         master_trades: List[Dict] = []

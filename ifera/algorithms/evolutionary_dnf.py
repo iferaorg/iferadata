@@ -119,6 +119,8 @@ class DNFOptimizationResult:
     ``evaluations`` counts successfully scored candidates, excluding OOM retries.
     ``population_size`` is the final effective population, which may be smaller
     than the requested maximum. Memory use does not grow with generation count.
+    Optional final simplification adds its trials to ``evaluations`` and reports
+    accepted removals and trial counts separately; it does not add generations.
     """
 
     bounds: Tensor
@@ -130,6 +132,8 @@ class DNFOptimizationResult:
     population_size: int
     generations: int
     evaluations: int
+    simplification_steps: int = 0
+    simplification_evaluations: int = 0
 
 
 @dataclass
@@ -200,6 +204,12 @@ class EvolutionaryDNFOptimizer:
     generations. Unknown callback workspace, other processes, and OS OOM
     kills prevent an absolute memory guarantee. Set a workspace estimate and a
     conservative batch cap for objectives with large or nonlinear workspaces.
+
+    ``simplify=True`` greedily removes one active restriction at a time from the
+    winning DNF after evolution. Every round scores all single-removal neighbors
+    and accepts the best only when penalized fitness strictly improves. Boolean
+    literals become unrestricted; continuous lower/upper sides are independent.
+    Conjunction slots and their activation flags are preserved.
     """
 
     def __init__(
@@ -229,6 +239,7 @@ class EvolutionaryDNFOptimizer:
         objective_batch_size: Optional[int] = None,
         objective_bytes_per_candidate: int = 0,
         max_memory_bytes: Optional[int] = None,
+        simplify: bool = False,
     ) -> None:
         parameters = locals().copy()
         parameters.pop("self")
@@ -256,6 +267,7 @@ class EvolutionaryDNFOptimizer:
         self.objective_batch_size = objective_batch_size
         self.objective_bytes_per_candidate = objective_bytes_per_candidate
         self.max_memory_bytes = max_memory_bytes
+        self.simplify = simplify
         self.device = torch.device(
             device
             if device is not None
@@ -283,6 +295,7 @@ class EvolutionaryDNFOptimizer:
         storage lifetime. It runs without autograd, its return value is ignored,
         and its exceptions propagate without evaluation retries. Registration
         persists across optimize calls; generation numbering restarts each run.
+        Final simplification is separate and does not send population callbacks.
         """
         if callback is not None and not callable(callback):
             raise TypeError("evaluation callback must be callable or None")
@@ -302,6 +315,8 @@ class EvolutionaryDNFOptimizer:
     @staticmethod
     def _validate_parameters(parameters: dict[str, object]) -> None:
         """Reject invalid counts, probabilities, scales, and memory controls."""
+        if not isinstance(parameters["simplify"], bool):
+            raise ValueError("simplify must be a bool")
         minimums = {
             "num_boolean_features": 0,
             "num_continuous_features": 0,
@@ -559,6 +574,96 @@ class EvolutionaryDNFOptimizer:
             self._clear_cache()
         return population.size - start, limit
 
+    def _simplification_bounds(self, bounds: Tensor) -> Tensor:
+        """Canonicalize a winner without changing its effective objective/fitness."""
+        return bounds
+
+    @staticmethod
+    def _selected_candidate(population: _Population, index: int) -> _Population:
+        """Own a single candidate without retaining the source population."""
+        return _Population(
+            population.bounds[index : index + 1].clone(),
+            population.active[index : index + 1].clone(),
+            population.objectives[index : index + 1].clone(),
+            population.scores[index : index + 1].clone(),
+        )
+
+    def _best_removal(
+        self, objective: Objective, incumbent: _Population, restrictions: Tensor
+    ) -> _Population:
+        """Construct, score, and retain the best neighbor inside the OOM retry."""
+        size = restrictions.shape[0]
+        neighbors = self._empty_population(size)
+        neighbors.bounds.copy_(incumbent.bounds.expand(size, -1, -1, -1))
+        neighbors.active.copy_(incumbent.active.expand(size, -1))
+        clause, feature, endpoint = restrictions.unbind(dim=1)
+        rows = torch.arange(size, device=self.device)
+        # In valid Boolean intervals exactly one endpoint restricts the literal,
+        # so resetting it also removes the complete Boolean condition.
+        neighbors.bounds[rows, clause, feature, endpoint] = endpoint.to(
+            dtype=neighbors.bounds.dtype
+        )
+        values, scores = self._score_batch(
+            objective, neighbors.bounds, neighbors.active
+        )
+        neighbors.objectives.copy_(values)
+        neighbors.scores.copy_(scores)
+        return self._selected_candidate(neighbors, int(scores.argmax().item()))
+
+    def _simplify(
+        self, objective: Objective, incumbent: _Population, limit: int
+    ) -> tuple[_Population, int, int]:
+        """Greedily widen the best DNF, streaming bounded single-removal batches."""
+        incumbent.bounds = self._simplification_bounds(incumbent.bounds).clone()
+        steps, evaluations = 0, 0
+        workspace = (
+            self._workspace_bytes
+            + self.objective_bytes_per_candidate
+            + self._genome_bytes
+            + 16
+        )
+        while True:
+            bounds = incumbent.bounds[0]
+            restricted = torch.stack((bounds[..., 0] > 0, bounds[..., 1] < 1), dim=-1)
+            restrictions = torch.nonzero(
+                restricted & incumbent.active[0, :, None, None]
+            )
+            count = restrictions.shape[0]
+            if not count:
+                break
+            winner = incumbent
+            offset = 0
+            while offset < count:
+                resident = (
+                    incumbent.nbytes
+                    + winner.nbytes
+                    + restrictions.numel() * restrictions.element_size()
+                )
+                size = self._batch_limit(
+                    min(limit, count - offset), resident, workspace
+                )
+                try:
+                    candidate = self._best_removal(
+                        objective, incumbent, restrictions[offset : offset + size]
+                    )
+                except (RuntimeError, MemoryError) as error:
+                    if not _is_memory_error(error) or size == 1:
+                        raise
+                    limit = max(1, size // 2)
+                else:
+                    evaluations += size
+                    offset += size
+                    if bool(candidate.scores[0] > winner.scores[0]):
+                        winner = candidate
+                    del candidate
+                    continue
+                self._clear_cache()
+            if not bool(winner.scores[0] > incumbent.scores[0]):
+                break
+            incumbent = winner
+            steps += 1
+        return incumbent, steps, evaluations
+
     def _mutate(
         self, bounds: Tensor, active: Tensor, generator: torch.Generator
     ) -> None:
@@ -745,9 +850,11 @@ class EvolutionaryDNFOptimizer:
         generations retain cached elites, so the best fitness cannot decrease for
         deterministic objectives. Requested population is an upper bound and may
         shrink as free memory changes. There are no per-individual/feature loops;
-        Python loops cover only generations, memory chunks, and allocator retries.
+        Python loops cover generations, greedy rounds, memory chunks, and OOM retries.
         An installed evaluation callback receives the complete population after
         each evaluation, starting at generation zero, without cloning its tensors.
+        Optional simplification then improves the final winner separately, without
+        population callbacks; its trials are included in the evaluation count.
         """
         if not callable(objective):
             raise TypeError("objective must be callable")
@@ -785,17 +892,25 @@ class EvolutionaryDNFOptimizer:
             evaluations += new_evaluations
             self._notify_evaluation(generation, population)
         best = int(population.scores.argmax().item())
-        bounds = population.bounds[best].clone()
-        active = population.active[best].clone()
-        boolean, continuous = self.complexity(bounds[None], active[None])
+        winner = self._selected_candidate(population, best)
+        population_size = population.size
+        del population
+        simplification_steps, simplification_evaluations = 0, 0
+        if self.simplify:
+            winner, simplification_steps, simplification_evaluations = self._simplify(
+                objective, winner, batch_limit
+            )
+        boolean, continuous = self.complexity(winner.bounds, winner.active)
         return DNFOptimizationResult(
-            bounds=bounds,
-            active_conjunctions=active,
-            objective_value=float(population.objectives[best].item()),
-            fitness=float(population.scores[best].item()),
+            bounds=winner.bounds[0].clone(),
+            active_conjunctions=winner.active[0].clone(),
+            objective_value=float(winner.objectives[0].item()),
+            fitness=float(winner.scores[0].item()),
             boolean_conditions=int(boolean.item()),
             continuous_conditions=int(continuous.item()),
-            population_size=population.size,
+            population_size=population_size,
             generations=generations,
-            evaluations=evaluations,
+            evaluations=evaluations + simplification_evaluations,
+            simplification_steps=simplification_steps,
+            simplification_evaluations=simplification_evaluations,
         )

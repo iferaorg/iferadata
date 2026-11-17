@@ -1,0 +1,240 @@
+# Percentages use percentage points, e.g. 1.5 means 1.5%.
+# Premium and risk use account dollars; spread uses combination price points.
+feature_templates:
+  is_day:
+    type: bool
+    category: any
+    parameters:
+    - day
+  time:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 86400
+    granularity: 60
+    parameters: []
+  rsi:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  stoch:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - days
+    - smooth_k
+    - smooth_d
+    - component
+    - days_ago
+  cci:
+    type: continuous
+    category: any
+    min_value: -300
+    max_value: 300
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  adx:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  momentum:
+    type: continuous
+    category: any
+    min_value: -300
+    max_value: 300
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  macd:
+    type: continuous
+    category: any
+    min_value: -100
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - fast
+    - slow
+    - signal
+    - component
+    - days_ago
+  change_since_open:
+    type: continuous
+    category: any
+    min_value: -10
+    max_value: 10
+    granularity: 0.01
+    parameters: []
+  change_since_prev_close:
+    type: continuous
+    category: any
+    min_value: -10
+    max_value: 10
+    granularity: 0.01
+    parameters: []
+  gap:
+    type: continuous
+    category: any
+    min_value: -10
+    max_value: 10
+    granularity: 0.01
+    parameters: []
+  leg_delta:
+    type: continuous
+    category: any
+    min_value: -1
+    max_value: 1
+    granularity: 0.01
+    parameters:
+    - leg
+  position_premium:
+    type: continuous
+    category: entry
+    min_value: 0
+    max_value: 10000
+    granularity: 1
+    parameters: []
+  position_risk:
+    type: continuous
+    category: entry
+    min_value: 0
+    max_value: 10000
+    granularity: 1
+    parameters: []
+  position_reward_risk:
+    type: continuous
+    category: entry
+    min_value: 0
+    max_value: 500
+    granularity: 0.01
+    parameters: []
+  minutes_since_open:
+    type: continuous
+    category: exit
+    min_value: 0
+    max_value: 390
+    granularity: 1
+    parameters: []
+  return_pct:
+    type: continuous
+    category: exit
+    min_value: -200
+    max_value: 200
+    granularity: 0.01
+    parameters:
+    - component
+  ror_pct:
+    type: continuous
+    category: exit
+    min_value: -100
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - component
+  underlying_above_ma:
+    type: bool
+    category: any
+    parameters:
+    - days
+    - ma_type
+  ma_comparison:
+    type: bool
+    category: any
+    parameters:
+    - days1
+    - days2
+    - ma_type
+  event_day:
+    type: bool
+    category: any
+    parameters:
+    - event_type
+    - days
+  macd_above_signal:
+    type: bool
+    category: any
+    parameters:
+    - fast
+    - slow
+    - signal
+    - days_ago
+  stoch_rsi:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - days
+    - rsi_days
+    - smooth_k
+    - smooth_d
+    - component
+    - days_ago
+  williams_r:
+    type: continuous
+    category: any
+    min_value: -100
+    max_value: 0
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  ultimate:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - short
+    - medium
+    - long
+    - days_ago
+  mfi:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  chande:
+    type: continuous
+    category: any
+    min_value: -100
+    max_value: 100
+    granularity: 0.01
+    parameters:
+    - days
+    - days_ago
+  position_bid_ask_spread:
+    type: continuous
+    category: any
+    min_value: 0
+    max_value: 10
+    granularity: 0.01
+    parameters: []
+  position_itm_pct:
+    type: continuous
+    category: exit
+    min_value: -10
+    max_value: 10
+    granularity: 0.01
+    parameters: []

@@ -1,0 +1,203 @@
+# Feature instances reference package-owned feature_templates.yaml.
+features:
+  is_monday:
+    template: is_day
+    day: Monday
+  is_tuesday:
+    template: is_day
+    day: Tuesday
+  is_wednesday:
+    template: is_day
+    day: Wednesday
+  is_thursday:
+    template: is_day
+    day: Thursday
+  is_friday:
+    template: is_day
+    day: Friday
+  time:
+    template: time
+  rsi_14_intra:
+    template: rsi
+    days: 14
+    days_ago: 0
+  stoch_14_3_3_intra:
+    template: stoch
+    days: 14
+    smooth_k: 3
+    smooth_d: 3
+    component: d
+    days_ago: 0
+  cci_20_intra:
+    template: cci
+    days: 20
+    days_ago: 0
+  adx_14_intra:
+    template: adx
+    days: 14
+    days_ago: 0
+  momentum_10_intra:
+    template: momentum
+    days: 10
+    days_ago: 0
+  macd_13_26_9_intra:
+    template: macd
+    fast: 13
+    slow: 26
+    signal: 9
+    component: histogram
+    days_ago: 0
+  change_since_open:
+    template: change_since_open
+  change_since_prev_close:
+    template: change_since_prev_close
+  gap:
+    template: gap
+  short_call_delta:
+    template: leg_delta
+    leg: short_call
+  short_put_delta:
+    template: leg_delta
+    leg: short_put
+  long_call_delta:
+    template: leg_delta
+    leg: long_call
+  long_put_delta:
+    template: leg_delta
+    leg: long_put
+  position_premium:
+    template: position_premium
+  position_risk:
+    template: position_risk
+  position_reward_risk:
+    template: position_reward_risk
+  minutes_since_open:
+    template: minutes_since_open
+  return_pct:
+    template: return_pct
+    component: last
+  ror_pct:
+    template: ror_pct
+    component: last
+  underlying_above_ema_5:
+    template: underlying_above_ma
+    days: 5
+    ma_type: EMA
+  underlying_above_ema_10:
+    template: underlying_above_ma
+    days: 10
+    ma_type: EMA
+  underlying_above_ema_20:
+    template: underlying_above_ma
+    days: 20
+    ma_type: EMA
+  ema_5_above_ema_10:
+    template: ma_comparison
+    days1: 5
+    days2: 10
+    ma_type: EMA
+  ema_5_above_ema_20:
+    template: ma_comparison
+    days1: 5
+    days2: 20
+    ma_type: EMA
+  is_fomc_meeting:
+    template: event_day
+    event_type: FOMC Meeting
+    days: 0
+  is_cpi_release:
+    template: event_day
+    event_type: CPI Release
+    days: 0
+  is_ppi_release:
+    template: event_day
+    event_type: PPI Release
+    days: 0
+  is_pce_release:
+    template: event_day
+    event_type: PCE Release
+    days: 0
+  is_nonfarm_payrolls:
+    template: event_day
+    event_type: Nonfarm Payrolls
+    days: 0
+  is_triple_witching:
+    template: event_day
+    event_type: Triple Witching
+    days: 0
+  is_monthly_expiration:
+    template: event_day
+    event_type: Monthly Expiration
+    days: 0
+  is_end_of_month:
+    template: event_day
+    event_type: End of Month
+    days: 0
+  is_end_of_quarter:
+    template: event_day
+    event_type: End of Quarter
+    days: 0
+  is_first_weekly:
+    template: event_day
+    event_type: First Weekly
+    days: 0
+  is_manufacturing_pmi:
+    template: event_day
+    event_type: Manufacturing PMI
+    days: 0
+  is_services_pmi:
+    template: event_day
+    event_type: Services PMI
+    days: 0
+  is_consumer_sentiment:
+    template: event_day
+    event_type: Consumer Sentiment
+    days: 0
+  stoch_rsi_14_14_3_3_intra:
+    template: stoch_rsi
+    days: 14
+    rsi_days: 14
+    smooth_k: 3
+    smooth_d: 3
+    component: d
+    days_ago: 0
+  williams_r_14_intra:
+    template: williams_r
+    days: 14
+    days_ago: 0
+  ultimate_7_14_28_intra:
+    template: ultimate
+    short: 7
+    medium: 14
+    long: 28
+    days_ago: 0
+  mfi_14_intra:
+    template: mfi
+    days: 14
+    days_ago: 0
+  chande_9_intra:
+    template: chande
+    days: 9
+    days_ago: 0
+  macd_12_26_9_above_signal:
+    template: macd_above_signal
+    fast: 12
+    slow: 26
+    signal: 9
+    days_ago: 0
+  position_bid_ask_spread:
+    template: position_bid_ask_spread
+  position_itm_pct:
+    template: position_itm_pct
+  return_pct_high:
+    template: return_pct
+    component: high
+  return_pct_low:
+    template: return_pct
+    component: low
+  ror_pct_high:
+    template: ror_pct
+    component: high
+  ror_pct_low:
+    template: ror_pct
+    component: low

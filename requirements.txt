@@ -18,3 +18,8 @@ readerwriterlock==1.0.9
 rich==14.3.3
 tensordict==0.10.0
 httpx==0.28.1
+SQLAlchemy>=2.0,<3
+oracledb>=3.0,<5
+yfinance>=0.2.66,<2
+pandas>=1.5,<4
+pypdf>=5,<7
