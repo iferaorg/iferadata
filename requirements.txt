@@ -1,6 +1,6 @@
 numpy==2.4.0
 polars==1.38.1
-tqdm==4.67.3
+tqdm==4.70.1
 boto3==1.44.3 
 pydantic==2.13.4
 pydantic-settings==2.15.0 
