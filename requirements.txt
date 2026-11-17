@@ -9,7 +9,7 @@ einops==0.8.2
 PyGithub==2.10.0
 PyYAML==6.0.3
 networkx==3.6.1
-requests==2.33.0
+requests==2.34.2
 beautifulsoup4==4.15.0
 python-dateutil==2.9.0.post0
 holidays==0.107
