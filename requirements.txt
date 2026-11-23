@@ -1,7 +1,7 @@
 numpy==2.4.0
 polars==2.0.0
 tqdm==4.70.1
-boto3==1.44.3 
+boto3==1.44.7 
 pydantic==2.14.3
 pydantic-settings==2.15.0 
 torch==2.14.1
